@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The inside of the hexagon.
+
+       This project exists as its own assembly rather than a folder so the
+       "no infrastructure in the domain" rule is enforced by the compiler
+       instead of by discipline. There is no reference here to EF Core,
+       ASP.NET Core or StackExchange.Redis, so domain code physically cannot
+       name those types — a violation is a build error, not a code review
+       comment. -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
+  </ItemGroup>
+
+  <!-- Belt and braces: fail the build the moment someone adds a package here.
+       An architecture test (NetArchTest / ArchUnitNET) can later assert the
+       same rule at the namespace level; this catches it a step earlier. -->
+  <Target Name="EnforceDomainPurity" BeforeTargets="CoreCompile">
+    <Error Condition="@(PackageReference->Count()) &gt; 0"
+           Code="ENCORE001"
+           Text="Encore.Modules.Inventory.Domain must have zero PackageReference items. The domain depends on Encore.Shared and the BCL, nothing else. Put the dependency behind a port in Encore.Modules.Inventory/Ports and implement it in Adapters." />
+  </Target>
+
+</Project>

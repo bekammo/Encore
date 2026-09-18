@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!-- The host. Owns no business logic: it composes the modules and runs
+       the web server. Each module is reached through exactly one seam,
+       its Add*Module() / Map*Module() extension pair. -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\Encore.Modules.Catalog\Encore.Modules.Catalog.csproj" />
+    <ProjectReference Include="..\Encore.Modules.Inventory\Encore.Modules.Inventory.csproj" />
+    <ProjectReference Include="..\Encore.Modules.Orders\Encore.Modules.Orders.csproj" />
+    <ProjectReference Include="..\Encore.Modules.Payments\Encore.Modules.Payments.csproj" />
+    <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

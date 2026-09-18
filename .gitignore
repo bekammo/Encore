@@ -1,0 +1,23 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+## Rider / VS Code
+.idea/
+.vscode/
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Environment
+.env
+appsettings.Development.json
+appsettings.*.local.json
+
+## Docs — everything except the README stays local
+*.md
+!README.md

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Cross-cutting contracts only: marker interfaces and shared abstractions
+       that more than one module needs to agree on. No logic, no infrastructure.
+
+       Zero PackageReference items is deliberate and load-bearing: every module
+       references this project, including Inventory's Domain, which is required
+       to stay free of infrastructure. If Shared picked up a dependency, that
+       dependency would reach the whole solution through the back door. -->
+
+</Project>

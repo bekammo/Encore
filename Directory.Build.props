@@ -1,0 +1,13 @@
+<Project>
+
+  <!-- Shared build settings for every project in the solution. Individual
+       .csproj files stay short so that what they *do* say — package
+       references and project references — is the interesting part. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+</Project>
