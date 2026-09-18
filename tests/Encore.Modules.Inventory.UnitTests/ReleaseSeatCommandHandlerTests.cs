@@ -6,13 +6,12 @@ using Encore.Modules.Inventory.Ports;
 namespace Encore.Modules.Inventory.UnitTests;
 
 /// <summary>
-/// The checkout use case, driven through fake ports. The case worth reading first
-/// is <see cref="Handle_WhenSeatAlreadySoldToThisClient_ShouldReturnSold"/>: a
-/// retried checkout is a success, and the only reason the handler can tell that
-/// from somebody else's purchase is that <see cref="Seat"/> keeps the buyer's id
-/// on the row after it sells.
+/// The give-it-back use case. The theme worth reading for is that almost
+/// everything here is a success: a client asking not to hold a seat gets what
+/// they asked for whether or not they were holding it, because the state they
+/// want already holds.
 /// </summary>
-public class SellSeatCommandHandlerTests
+public class ReleaseSeatCommandHandlerTests
 {
     private static readonly Guid SeatId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid EventId = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -24,7 +23,10 @@ public class SellSeatCommandHandlerTests
     /// <summary>Inside the 5-minute hold taken at <see cref="T0"/>.</summary>
     private static readonly DateTime WithinHold = T0.AddMinutes(4);
 
-    private static SellSeatCommand Command => new(EventId, SeatId, ClientA);
+    /// <summary>After it has lapsed.</summary>
+    private static readonly DateTime AfterHold = T0.AddMinutes(6);
+
+    private static ReleaseSeatCommand Command => new(EventId, SeatId, ClientA);
 
     private static Seat AvailableSeat() => Seat.Create(SeatId, EventId);
 
@@ -44,7 +46,7 @@ public class SellSeatCommandHandlerTests
         return seat;
     }
 
-    private static SellSeatCommandHandler HandlerFor(
+    private static ReleaseSeatCommandHandler HandlerFor(
         FakeSeatRepository seats,
         FakeDistributedLock? distributedLock = null,
         DateTime? now = null) =>
@@ -53,17 +55,17 @@ public class SellSeatCommandHandlerTests
     // -- Happy path -------------------------------------------------------
 
     [Fact]
-    public async Task Handle_WhenHoldIsLive_ShouldReturnSold()
+    public async Task Handle_WhenClientHoldsTheSeat_ShouldReturnReleased()
     {
         var seats = new FakeSeatRepository(SeatHeldBy(ClientA));
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.Sold, result.Outcome);
+        Assert.Equal(ReleaseSeatOutcome.Released, result.Outcome);
     }
 
     [Fact]
-    public async Task Handle_WhenHoldIsLive_ShouldPersistTheSale()
+    public async Task Handle_WhenClientHoldsTheSeat_ShouldReturnItToThePool()
     {
         var seat = SeatHeldBy(ClientA);
         var seats = new FakeSeatRepository(seat);
@@ -71,52 +73,40 @@ public class SellSeatCommandHandlerTests
         await HandlerFor(seats).HandleAsync(Command);
 
         Assert.Equal(1, seats.SaveCalls);
-        Assert.Equal(SeatStatus.Sold, seat.Status);
-        Assert.Equal(ClientA, seat.HeldByClientId);
+        Assert.Equal(SeatStatus.Available, seat.Status);
+        Assert.Null(seat.HeldByClientId);
+        Assert.Null(seat.HoldExpiresAt);
     }
 
     [Fact]
-    public async Task Handle_WhenSaleCompletes_ShouldRaiseSeatSold()
+    public async Task Handle_WhenReleased_ShouldRaiseSeatReleasedAsCancelled()
     {
         var seat = SeatHeldBy(ClientA);
         var seats = new FakeSeatRepository(seat);
 
         await HandlerFor(seats).HandleAsync(Command);
 
-        var sold = Assert.IsType<Domain.Events.SeatSold>(Assert.Single(seat.DomainEvents));
-        Assert.Equal(ClientA, sold.ClientId);
+        var released = Assert.IsType<Domain.Events.SeatReleased>(Assert.Single(seat.DomainEvents));
+        Assert.Equal(Domain.Events.SeatReleaseReason.Cancelled, released.Reason);
+        Assert.Equal(ClientA, released.ClientId);
     }
 
-    // -- Idempotency for the buyer ----------------------------------------
+    // -- Asking for a state that already holds is a success ---------------
 
-    /// <summary>
-    /// A retried or double-submitted checkout. The purchase already went through,
-    /// so reporting failure would be untrue.
-    /// </summary>
     [Fact]
-    public async Task Handle_WhenSeatAlreadySoldToThisClient_ShouldReturnSold()
+    public async Task Handle_WhenSeatIsAlreadyAvailable_ShouldReturnReleased()
     {
-        var seats = new FakeSeatRepository(SeatSoldTo(ClientA));
+        var seats = new FakeSeatRepository(AvailableSeat());
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.Sold, result.Outcome);
+        Assert.Equal(ReleaseSeatOutcome.Released, result.Outcome);
     }
 
     [Fact]
-    public async Task Handle_WhenSeatAlreadySoldToThisClient_ShouldNotWriteAgain()
+    public async Task Handle_WhenSeatIsAlreadyAvailable_ShouldRaiseNoEvent()
     {
-        var seats = new FakeSeatRepository(SeatSoldTo(ClientA));
-
-        await HandlerFor(seats).HandleAsync(Command);
-
-        Assert.Equal(0, seats.SaveCalls);
-    }
-
-    [Fact]
-    public async Task Handle_WhenSeatAlreadySoldToThisClient_ShouldRaiseNoSecondSeatSold()
-    {
-        var seat = SeatSoldTo(ClientA);
+        var seat = AvailableSeat();
         var seats = new FakeSeatRepository(seat);
 
         await HandlerFor(seats).HandleAsync(Command);
@@ -124,15 +114,18 @@ public class SellSeatCommandHandlerTests
         Assert.Empty(seat.DomainEvents);
     }
 
-    /// <summary>The distinction the idempotency rests on: sold, but not to you.</summary>
+    /// <summary>
+    /// The hold lapsed while the request was in flight. The client wanted not to
+    /// be holding the seat; they are not. Refusing would be pedantry.
+    /// </summary>
     [Fact]
-    public async Task Handle_WhenSeatSoldToSomebodyElse_ShouldReturnAlreadySold()
+    public async Task Handle_WhenOwnHoldHasAlreadyLapsed_ShouldReturnReleased()
     {
-        var seats = new FakeSeatRepository(SeatSoldTo(ClientB));
+        var seats = new FakeSeatRepository(SeatHeldBy(ClientA));
 
-        var result = await HandlerFor(seats).HandleAsync(Command);
+        var result = await HandlerFor(seats, now: AfterHold).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.AlreadySold, result.Outcome);
+        Assert.Equal(ReleaseSeatOutcome.Released, result.Outcome);
     }
 
     // -- Refusals ---------------------------------------------------------
@@ -144,36 +137,19 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.NotTheHolder, result.Outcome);
+        Assert.Equal(ReleaseSeatOutcome.NotTheHolder, result.Outcome);
+        Assert.Equal(0, seats.SaveCalls);
     }
 
+    /// <summary>A sale is not undone by asking to release the seat.</summary>
     [Fact]
-    public async Task Handle_WhenOwnHoldHasLapsed_ShouldReturnHoldExpired()
+    public async Task Handle_WhenSeatIsSold_ShouldReturnAlreadySold()
     {
-        var seats = new FakeSeatRepository(SeatHeldBy(ClientA));
-
-        var result = await HandlerFor(seats, now: T0.AddMinutes(6)).HandleAsync(Command);
-
-        Assert.Equal(SellSeatOutcome.HoldExpired, result.Outcome);
-    }
-
-    [Fact]
-    public async Task Handle_WhenNobodyHoldsTheSeat_ShouldReturnNoActiveHold()
-    {
-        var seats = new FakeSeatRepository(AvailableSeat());
+        var seats = new FakeSeatRepository(SeatSoldTo(ClientA));
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.NoActiveHold, result.Outcome);
-    }
-
-    [Fact]
-    public async Task Handle_WhenRefused_ShouldNotPersist()
-    {
-        var seats = new FakeSeatRepository(SeatHeldBy(ClientB));
-
-        await HandlerFor(seats).HandleAsync(Command);
-
+        Assert.Equal(ReleaseSeatOutcome.AlreadySold, result.Outcome);
         Assert.Equal(0, seats.SaveCalls);
     }
 
@@ -184,69 +160,53 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.SeatNotFound, result.Outcome);
+        Assert.Equal(ReleaseSeatOutcome.SeatNotFound, result.Outcome);
     }
 
-    /// <summary>
-    /// The event id on the command is checked against the seat, so a seat cannot
-    /// be bought through another event's route — and the refusal is
-    /// indistinguishable from "no such seat", so nobody can use this to discover
-    /// which seat ids exist.
-    /// </summary>
     [Fact]
     public async Task Handle_WhenSeatBelongsToADifferentEvent_ShouldReportNotFound()
     {
         var seats = new FakeSeatRepository(SeatHeldBy(ClientA));
-        var wrongEvent = new SellSeatCommand(Guid.NewGuid(), SeatId, ClientA);
+        var wrongEvent = new ReleaseSeatCommand(Guid.NewGuid(), SeatId, ClientA);
 
         var result = await HandlerFor(seats).HandleAsync(wrongEvent);
 
-        Assert.Equal(SellSeatOutcome.SeatNotFound, result.Outcome);
+        Assert.Equal(ReleaseSeatOutcome.SeatNotFound, result.Outcome);
         Assert.Equal(0, seats.SaveCalls);
     }
 
-    // -- The lock stays an optimisation on this path too -------------------
+    // -- Locking behaves as it does on the other write paths ---------------
 
-    /// <summary>
-    /// The sale is the most expensive thing to get wrong, and it still must not
-    /// depend on Redis. Correctness is the concurrency token's job here as well.
-    /// </summary>
     [Fact]
-    public async Task Handle_WhenLockCannotBeAcquired_ShouldStillCompleteTheSale()
+    public async Task Handle_WhenLockServiceUnavailable_ShouldStillRelease()
     {
         var seats = new FakeSeatRepository(SeatHeldBy(ClientA));
-        var distributedLock = new FakeDistributedLock(LockOutcome.Unavailable);
 
-        var result = await HandlerFor(seats, distributedLock).HandleAsync(Command);
+        var result = await HandlerFor(seats, new FakeDistributedLock(LockOutcome.Unavailable))
+            .HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.Sold, result.Outcome);
+        Assert.Equal(ReleaseSeatOutcome.Released, result.Outcome);
         Assert.Equal(1, seats.SaveCalls);
     }
 
+    /// <summary>
+    /// Unlike holding, contention here is not refused: there is no cap for a
+    /// missed lock to undermine, and the row's concurrency token settles the
+    /// race on its own.
+    /// </summary>
     [Fact]
-    public async Task Handle_WhenLockCannotBeAcquired_ShouldNotReleaseSomebodyElsesLock()
+    public async Task Handle_WhenSeatLockHeldByAnother_ShouldStillRelease()
     {
         var seats = new FakeSeatRepository(SeatHeldBy(ClientA));
-        var distributedLock = new FakeDistributedLock(LockOutcome.Unavailable);
 
-        await HandlerFor(seats, distributedLock).HandleAsync(Command);
+        var result = await HandlerFor(seats, new FakeDistributedLock(LockOutcome.HeldByAnother))
+            .HandleAsync(Command);
 
-        Assert.Equal(0, distributedLock.ReleaseCalls);
+        Assert.Equal(ReleaseSeatOutcome.Released, result.Outcome);
     }
 
     [Fact]
-    public async Task Handle_WhenLockAcquired_ShouldReleaseIt()
-    {
-        var seats = new FakeSeatRepository(SeatHeldBy(ClientA));
-        var distributedLock = new FakeDistributedLock();
-
-        await HandlerFor(seats, distributedLock).HandleAsync(Command);
-
-        Assert.Equal(1, distributedLock.ReleaseCalls);
-    }
-
-    [Fact]
-    public async Task Handle_ShouldLockOnTheSeatBeingSold()
+    public async Task Handle_ShouldLockOnTheSeat()
     {
         var seats = new FakeSeatRepository(SeatHeldBy(ClientA));
         var distributedLock = new FakeDistributedLock();
@@ -254,51 +214,25 @@ public class SellSeatCommandHandlerTests
         await HandlerFor(seats, distributedLock).HandleAsync(Command);
 
         Assert.Equal($"seat:{SeatId}", distributedLock.LastResource);
+        Assert.Equal(1, distributedLock.ReleaseCalls);
     }
 
-    // -- Lost race, retried once ------------------------------------------
+    // -- A lost race is retried exactly once ------------------------------
 
     [Fact]
-    public async Task Handle_WhenFirstWriteLosesRace_ShouldReloadBeforeRetrying()
+    public async Task Handle_WhenFirstWriteLosesTheRace_ShouldReloadAndSucceed()
     {
         var seats = new FakeSeatRepository(SeatHeldBy(ClientA), SeatHeldBy(ClientA))
             .WithSaveOutcomes(new ConcurrentSeatModificationException(SeatId), null);
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.Sold, result.Outcome);
+        Assert.Equal(ReleaseSeatOutcome.Released, result.Outcome);
         Assert.Equal(2, seats.GetByIdCalls);
     }
 
-    /// <summary>
-    /// The two rules meeting: this client lost the write race against their own
-    /// concurrent checkout, and the reload shows the seat already theirs. The
-    /// answer is success, not a race-loss the customer cannot act on.
-    /// </summary>
     [Fact]
-    public async Task Handle_WhenReloadShowsTheClientAlreadyBoughtIt_ShouldReturnSold()
-    {
-        var seats = new FakeSeatRepository(SeatHeldBy(ClientA), SeatSoldTo(ClientA))
-            .WithSaveOutcomes(new ConcurrentSeatModificationException(SeatId));
-
-        var result = await HandlerFor(seats).HandleAsync(Command);
-
-        Assert.Equal(SellSeatOutcome.Sold, result.Outcome);
-    }
-
-    [Fact]
-    public async Task Handle_WhenReloadShowsSomebodyElseBoughtIt_ShouldReturnAlreadySold()
-    {
-        var seats = new FakeSeatRepository(SeatHeldBy(ClientA), SeatSoldTo(ClientB))
-            .WithSaveOutcomes(new ConcurrentSeatModificationException(SeatId));
-
-        var result = await HandlerFor(seats).HandleAsync(Command);
-
-        Assert.Equal(SellSeatOutcome.AlreadySold, result.Outcome);
-    }
-
-    [Fact]
-    public async Task Handle_WhenBothAttemptsLoseRace_ShouldReturnLostRace()
+    public async Task Handle_WhenBothAttemptsLoseTheRace_ShouldReportLostRace()
     {
         var seats = new FakeSeatRepository(SeatHeldBy(ClientA), SeatHeldBy(ClientA))
             .WithSaveOutcomes(
@@ -307,20 +241,7 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.LostRace, result.Outcome);
-    }
-
-    [Fact]
-    public async Task Handle_WhenContentionPersists_ShouldNotRetryMoreThanOnce()
-    {
-        var seats = new FakeSeatRepository(SeatHeldBy(ClientA), SeatHeldBy(ClientA), SeatHeldBy(ClientA))
-            .WithSaveOutcomes(
-                new ConcurrentSeatModificationException(SeatId),
-                new ConcurrentSeatModificationException(SeatId),
-                null);
-
-        await HandlerFor(seats).HandleAsync(Command);
-
+        Assert.Equal(ReleaseSeatOutcome.LostRace, result.Outcome);
         Assert.Equal(2, seats.SaveCalls);
     }
 
@@ -358,9 +279,9 @@ public class SellSeatCommandHandlerTests
         }
 
         /// <summary>
-        /// Never called on this path: the hold cap counts holds, and selling one
-        /// releases capacity rather than consuming it. Throwing rather than
-        /// returning zero keeps that a fact the tests would catch changing.
+        /// Never called here: releasing gives hold capacity back rather than
+        /// consuming it, so the cap has nothing to say. Throwing keeps that a
+        /// fact the tests would notice changing.
         /// </summary>
         public Task<int> CountLiveHoldsAsync(
             Guid clientId,
@@ -368,7 +289,7 @@ public class SellSeatCommandHandlerTests
             Guid excludingSeatId,
             DateTime utcNow,
             CancellationToken cancellationToken = default) =>
-            throw new InvalidOperationException("Selling does not consult the hold cap.");
+            throw new InvalidOperationException("Releasing does not consult the hold cap.");
     }
 
     private sealed class FakeDistributedLock(LockOutcome outcome = LockOutcome.Acquired) : IDistributedLock

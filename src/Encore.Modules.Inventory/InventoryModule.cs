@@ -58,6 +58,7 @@ public static class InventoryModule
 
         services.AddScoped<HoldSeatCommandHandler>();
         services.AddScoped<SellSeatCommandHandler>();
+        services.AddScoped<ReleaseSeatCommandHandler>();
 
         // TODO: the per-client hold cap (DECISIONS 006) lands on top of this
         // handler, and the expired-hold sweep (Phase 7) is still to come. The

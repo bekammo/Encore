@@ -93,7 +93,9 @@ public sealed class SellSeatCommandHandler(
     {
         var seat = await _seats.GetByIdAsync(command.SeatId, cancellationToken).ConfigureAwait(false);
 
-        if (seat is null)
+        // Checked, never trusted — as with holding. A seat reached through
+        // another event's route is reported missing rather than sold.
+        if (seat is null || seat.EventId != command.EventId)
         {
             return SellSeatResult.SeatNotFound;
         }
