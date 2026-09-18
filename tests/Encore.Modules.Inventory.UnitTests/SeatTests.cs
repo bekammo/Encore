@@ -299,6 +299,21 @@ public class SeatTests
         Assert.Equal(SeatTransitionReason.HoldExpired, ex.Reason);
     }
 
+    /// <summary>
+    /// The refusal reason turns on who is asking, not on what the row says. A
+    /// client who never held the seat is told so, even though the lapsed hold
+    /// still sitting on the row makes their request look, to the row alone,
+    /// exactly like the holder's own expired one.
+    /// </summary>
+    [Fact]
+    public void Sell_WhenAnotherClientsHoldHasLapsed_ShouldSayNotTheHolder()
+    {
+        var seat = HeldBy(ClientA, T0);
+
+        var ex = Assert.Throws<SeatTransitionException>(() => seat.Sell(ClientB, AfterHold));
+        Assert.Equal(SeatTransitionReason.NotTheHolder, ex.Reason);
+    }
+
     [Fact]
     public void Sell_WhenSeatAvailableWithNoHold_ShouldThrow()
     {

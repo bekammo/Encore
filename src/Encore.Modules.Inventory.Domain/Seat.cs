@@ -202,12 +202,19 @@ public sealed class Seat
         if (EffectiveStatusAt(utcNow) is SeatStatus.Available)
         {
             // Same refusal, but "your hold ran out" and "you never held this" are
-            // very different things to tell a customer who is mid-checkout.
-            throw new SeatTransitionException(
-                Id,
-                Status is SeatStatus.Held
-                    ? SeatTransitionReason.HoldExpired
-                    : SeatTransitionReason.NoActiveHold);
+            // very different things to tell a customer who is mid-checkout — so
+            // the reason turns on who is asking, not merely on what the row says.
+            // Deciding it from Status alone told a client whose hold had lapsed
+            // apart from a client who never had one, which is the distinction
+            // that matters least; both look identical to the row.
+            var reason = (Status, HeldByClientId == clientId) switch
+            {
+                (SeatStatus.Held, true) => SeatTransitionReason.HoldExpired,
+                (SeatStatus.Held, false) => SeatTransitionReason.NotTheHolder,
+                _ => SeatTransitionReason.NoActiveHold
+            };
+
+            throw new SeatTransitionException(Id, reason);
         }
 
         if (HeldByClientId != clientId)
