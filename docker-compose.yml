@@ -10,12 +10,28 @@ services:
       - "5432:5432"
     volumes:
       - encore-postgres-data:/var/lib/postgresql/data
+    # So `docker compose up -d --wait` means "ready", not "started". Without it
+    # the app can win the race to connect and fail its first migration against a
+    # Postgres that is still initialising — a confusing first run for something
+    # that is not a real fault.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U encore -d encore"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
 
   redis:
     image: redis:7
     container_name: encore-redis
     ports:
       - "6379:6379"
+    # No volume on purpose: Redis holds short-lived locks here and nothing that
+    # would be a loss to restart empty.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
 
 volumes:
   encore-postgres-data:

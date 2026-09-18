@@ -56,7 +56,7 @@ public sealed class ConcurrentSellTests : IAsyncLifetime
         await _postgres.StartAsync();
 
         _options = new DbContextOptionsBuilder<InventoryDbContext>()
-            .UseNpgsql(_postgres.GetConnectionString())
+            .UseInventoryNpgsql(_postgres.GetConnectionString())
             .Options;
 
         await using var context = new InventoryDbContext(_options);

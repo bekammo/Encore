@@ -47,7 +47,7 @@ public sealed class ConcurrentHoldCapTests : IAsyncLifetime
         await Task.WhenAll(_postgres.StartAsync(), _redis.StartAsync());
 
         _options = new DbContextOptionsBuilder<InventoryDbContext>()
-            .UseNpgsql(_postgres.GetConnectionString())
+            .UseInventoryNpgsql(_postgres.GetConnectionString())
             .Options;
 
         _connection = await ConnectionMultiplexer.ConnectAsync(_redis.GetConnectionString());

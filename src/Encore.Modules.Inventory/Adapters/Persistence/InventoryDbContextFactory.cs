@@ -29,7 +29,7 @@ public sealed class InventoryDbContextFactory : IDesignTimeDbContextFactory<Inve
             ?? LocalDevelopmentConnection;
 
         var options = new DbContextOptionsBuilder<InventoryDbContext>()
-            .UseNpgsql(connectionString)
+            .UseInventoryNpgsql(connectionString)
             .Options;
 
         return new InventoryDbContext(options);

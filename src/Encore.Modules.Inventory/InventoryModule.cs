@@ -22,7 +22,9 @@ public static class InventoryModule
         IConfiguration configuration)
     {
         services.AddDbContext<InventoryDbContext>(options =>
-            options.UseNpgsql(configuration.GetConnectionString("Inventory")));
+            options.UseInventoryNpgsql(
+                configuration.GetConnectionString("Inventory")
+                ?? throw new InvalidOperationException("Missing connection string 'Inventory'.")));
 
         // Named per module even though every module currently points at the same
         // database. The names are the seam: extracting Inventory later means
@@ -59,6 +61,16 @@ public static class InventoryModule
         services.AddScoped<HoldSeatCommandHandler>();
         services.AddScoped<SellSeatCommandHandler>();
         services.AddScoped<ReleaseSeatCommandHandler>();
+
+        // Off unless asked for. The run profiles set it so that a developer with
+        // a fresh `docker compose up` gets a schema from `dotnet run`; anything
+        // deployed applies migrations as its own deliberate step. The module
+        // reads a setting rather than the environment name, because which
+        // environment this is happens to be the host's business, not Inventory's.
+        if (configuration.GetValue<bool>("Inventory:MigrateOnStartup"))
+        {
+            services.AddHostedService<InventoryMigrator>();
+        }
 
         // TODO: the per-client hold cap (DECISIONS 006) lands on top of this
         // handler, and the expired-hold sweep (Phase 7) is still to come. The
