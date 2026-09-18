@@ -21,7 +21,7 @@ public class HoldSeatCommandHandlerTests
 
     private static readonly DateTime T0 = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
 
-    private static HoldSeatCommand Command => new(SeatId, ClientA);
+    private static HoldSeatCommand Command => new(EventId, SeatId, ClientA);
 
     private static Seat AvailableSeat() => Seat.Create(SeatId, EventId);
 
@@ -157,25 +157,25 @@ public class HoldSeatCommandHandlerTests
     }
 
     [Fact]
-    public async Task Handle_WhenLockAcquired_ShouldReleaseIt()
+    public async Task Handle_WhenLocksAcquired_ShouldReleaseBoth()
     {
         var seats = new FakeSeatRepository(AvailableSeat());
         var distributedLock = new FakeDistributedLock();
 
         await HandlerFor(seats, distributedLock).HandleAsync(Command);
 
-        Assert.Equal(1, distributedLock.ReleaseCalls);
+        Assert.Equal(2, distributedLock.ReleaseCalls);
     }
 
     [Fact]
-    public async Task Handle_WhenAttemptRefused_ShouldStillReleaseLock()
+    public async Task Handle_WhenAttemptRefused_ShouldStillReleaseLocks()
     {
         var seats = new FakeSeatRepository(SeatHeldBy(ClientB));
         var distributedLock = new FakeDistributedLock();
 
         await HandlerFor(seats, distributedLock).HandleAsync(Command);
 
-        Assert.Equal(1, distributedLock.ReleaseCalls);
+        Assert.Equal(2, distributedLock.ReleaseCalls);
     }
 
     [Fact]
@@ -186,7 +186,39 @@ public class HoldSeatCommandHandlerTests
 
         await HandlerFor(seats, distributedLock).HandleAsync(Command);
 
-        Assert.Equal($"seat:{SeatId}", distributedLock.LastResource);
+        Assert.Contains($"seat:{SeatId}", distributedLock.Acquired);
+    }
+
+    [Fact]
+    public async Task Handle_ShouldLockOnTheClientAndEvent()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat());
+        var distributedLock = new FakeDistributedLock();
+
+        await HandlerFor(seats, distributedLock).HandleAsync(Command);
+
+        Assert.Contains($"client:{ClientA}:event:{EventId}", distributedLock.Acquired);
+    }
+
+    /// <summary>
+    /// The ordering is the deadlock argument, so it is pinned rather than left to
+    /// the reader: client lock outside seat lock, released innermost first. A
+    /// second use case taking both in the other order is all it would take.
+    /// </summary>
+    [Fact]
+    public async Task Handle_ShouldTakeClientLockOutsideSeatLock()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat());
+        var distributedLock = new FakeDistributedLock();
+
+        await HandlerFor(seats, distributedLock).HandleAsync(Command);
+
+        Assert.Equal(
+            [$"client:{ClientA}:event:{EventId}", $"seat:{SeatId}"],
+            distributedLock.Acquired);
+        Assert.Equal(
+            [$"seat:{SeatId}", $"client:{ClientA}:event:{EventId}"],
+            distributedLock.Released);
     }
 
     [Fact]
@@ -297,21 +329,142 @@ public class HoldSeatCommandHandlerTests
         Assert.Empty(seat.DomainEvents);
     }
 
+    // -- The per-client hold cap (DECISIONS 006) --------------------------
+
+    [Fact]
+    public async Task Handle_WhenClientHoldsFewerThanTheCap_ShouldHold()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat())
+            .WithLiveHolds(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent - 1);
+
+        var result = await HandlerFor(seats).HandleAsync(Command);
+
+        Assert.Equal(HoldSeatOutcome.Held, result.Outcome);
+    }
+
+    [Fact]
+    public async Task Handle_WhenClientIsAtTheCap_ShouldRefuse()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat())
+            .WithLiveHolds(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent);
+
+        var result = await HandlerFor(seats).HandleAsync(Command);
+
+        Assert.Equal(HoldSeatOutcome.HoldCapReached, result.Outcome);
+    }
+
+    [Fact]
+    public async Task Handle_WhenCapReached_ShouldNotWrite()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat())
+            .WithLiveHolds(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent);
+
+        await HandlerFor(seats).HandleAsync(Command);
+
+        Assert.Equal(0, seats.SaveCalls);
+    }
+
+    /// <summary>
+    /// The case the exclusion exists for. A client holding their full allowance
+    /// who re-sends a request for one of those very seats must still be told
+    /// yes — it is already true. Counting the requested seat would refuse them
+    /// their own seat on exactly the retry path idempotency exists to protect.
+    /// </summary>
+    [Fact]
+    public async Task Handle_WhenAtCapAndReHoldingASeatTheyAlreadyHold_ShouldSucceed()
+    {
+        var seats = new FakeSeatRepository(SeatHeldBy(ClientA))
+            .WithLiveHolds(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent - 1);
+
+        var result = await HandlerFor(seats).HandleAsync(Command);
+
+        Assert.Equal(HoldSeatOutcome.Held, result.Outcome);
+    }
+
+    [Fact]
+    public async Task Handle_ShouldExcludeTheRequestedSeatFromTheCount()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat());
+
+        await HandlerFor(seats).HandleAsync(Command);
+
+        Assert.Equal(SeatId, seats.LastCountExcluded);
+    }
+
+    /// <summary>
+    /// The honest half of DECISIONS 006: the cap is a policy enforced
+    /// best-effort, not an invariant. With the lock unavailable the handler does
+    /// not refuse — it proceeds, exactly as it does for the seat lock, because
+    /// aborting would promote Redis to a correctness dependency. A breach is a
+    /// refund email; refusing every hold because Redis blinked is an outage.
+    /// </summary>
+    [Fact]
+    public async Task Handle_WhenLockUnavailable_ShouldStillEnforceCapOnTheHappyPath()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat())
+            .WithLiveHolds(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent);
+
+        var result = await HandlerFor(seats, new FakeDistributedLock(acquires: false))
+            .HandleAsync(Command);
+
+        // Uncontended, the count is still correct, so the cap still holds. What
+        // the missing lock costs is the *race*, which this test cannot show and
+        // ConcurrentHoldCapTests does.
+        Assert.Equal(HoldSeatOutcome.HoldCapReached, result.Outcome);
+    }
+
+    // -- The event id is checked, not trusted -----------------------------
+
+    [Fact]
+    public async Task Handle_WhenSeatBelongsToADifferentEvent_ShouldReportNotFound()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat());
+        var wrongEvent = new HoldSeatCommand(Guid.NewGuid(), SeatId, ClientA);
+
+        var result = await HandlerFor(seats).HandleAsync(wrongEvent);
+
+        Assert.Equal(HoldSeatOutcome.SeatNotFound, result.Outcome);
+    }
+
+    [Fact]
+    public async Task Handle_WhenSeatBelongsToADifferentEvent_ShouldNotWrite()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat());
+        var wrongEvent = new HoldSeatCommand(Guid.NewGuid(), SeatId, ClientA);
+
+        await HandlerFor(seats).HandleAsync(wrongEvent);
+
+        Assert.Equal(0, seats.SaveCalls);
+    }
+
     // -- Fakes ------------------------------------------------------------
 
     private sealed class FakeSeatRepository(params Seat?[] loads) : ISeatRepository
     {
         private readonly Seat?[] _loads = loads.Length == 0 ? [null] : loads;
         private readonly List<Exception?> _saveOutcomes = [];
+        private int _liveHolds;
 
         public int GetByIdCalls { get; private set; }
 
         public int SaveCalls { get; private set; }
 
+        public int CountLiveHoldsCalls { get; private set; }
+
+        /// <summary>The seat id the last count was asked to leave out.</summary>
+        public Guid? LastCountExcluded { get; private set; }
+
         /// <summary>One entry per expected save: an exception to throw, or null to succeed.</summary>
         public FakeSeatRepository WithSaveOutcomes(params Exception?[] outcomes)
         {
             _saveOutcomes.AddRange(outcomes);
+            return this;
+        }
+
+        /// <summary>How many *other* seats this client is holding at the event.</summary>
+        public FakeSeatRepository WithLiveHolds(int count)
+        {
+            _liveHolds = count;
             return this;
         }
 
@@ -329,13 +482,32 @@ public class HoldSeatCommandHandlerTests
 
             return outcome is null ? Task.CompletedTask : Task.FromException(outcome);
         }
+
+        public Task<int> CountLiveHoldsAsync(
+            Guid clientId,
+            Guid eventId,
+            Guid excludingSeatId,
+            DateTime utcNow,
+            CancellationToken cancellationToken = default)
+        {
+            CountLiveHoldsCalls++;
+            LastCountExcluded = excludingSeatId;
+
+            return Task.FromResult(_liveHolds);
+        }
     }
 
     private sealed class FakeDistributedLock(bool acquires = true) : IDistributedLock
     {
-        public int ReleaseCalls { get; private set; }
+        /// <summary>Resources locked, in acquisition order.</summary>
+        public List<string> Acquired { get; } = [];
 
-        public string? LastResource { get; private set; }
+        /// <summary>Resources unlocked, in release order.</summary>
+        public List<string> Released { get; } = [];
+
+        public int ReleaseCalls => Released.Count;
+
+        public string? LastResource => Acquired.Count is 0 ? null : Acquired[^1];
 
         public TimeSpan LastTtl { get; private set; }
 
@@ -344,10 +516,15 @@ public class HoldSeatCommandHandlerTests
             TimeSpan ttl,
             CancellationToken cancellationToken = default)
         {
-            LastResource = resource;
             LastTtl = ttl;
 
-            return Task.FromResult(acquires ? "token" : null);
+            if (!acquires)
+            {
+                return Task.FromResult<string?>(null);
+            }
+
+            Acquired.Add(resource);
+            return Task.FromResult<string?>("token");
         }
 
         public Task<bool> ReleaseAsync(
@@ -355,7 +532,7 @@ public class HoldSeatCommandHandlerTests
             string token,
             CancellationToken cancellationToken = default)
         {
-            ReleaseCalls++;
+            Released.Add(resource);
             return Task.FromResult(true);
         }
     }

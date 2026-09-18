@@ -5,17 +5,28 @@ namespace Encore.Modules.Inventory.Application;
 
 /// <summary>
 /// The "put this seat in my basket" use case. Thin by design: read the clock,
-/// take the lock, load the aggregate, let the domain decide whether the
-/// transition is legal, persist. Every rule it appears to enforce actually
-/// lives in <see cref="Domain.Seat"/>; this class only sequences the ports.
+/// take the locks, load the aggregate, let the domain decide whether the
+/// transition is legal, persist. Every rule about the seat itself lives in
+/// <see cref="Domain.Seat"/>; the one rule this class owns is the per-client
+/// hold cap, which spans several rows and so cannot live in an aggregate whose
+/// consistency boundary is one.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>The Redis lock is an optimisation and is treated like one.</b> Failing to
-/// acquire it is not an error and does not abort the attempt — the handler
-/// carries on to Postgres, where the concurrency token settles the race properly.
-/// Correctness therefore survives Redis being gone entirely; all that is lost is
-/// the throughput saved by keeping the losers off the database.
+/// <b>The Redis locks are an optimisation and are treated like one.</b> Failing
+/// to acquire either is not an error and does not abort the attempt — the
+/// handler carries on to Postgres, where the concurrency token settles the race
+/// properly. Correctness therefore survives Redis being gone entirely; what is
+/// lost is the throughput saved by keeping the losers off the database, and the
+/// hold cap's reliability (see below).
+/// </para>
+/// <para>
+/// <b>Two locks, always in the same order: client+event, then seat.</b> The
+/// client lock has to span the cap count *and* the write, or the check-then-act
+/// gap it exists to close stays open. That forces it outside the seat lock. The
+/// order being fixed and identical on every path is what makes deadlock
+/// impossible — a cycle needs two callers disagreeing about it — so if a third
+/// use case ever takes both, it takes them this way round.
 /// </para>
 /// <para>
 /// <b>A lost race is retried exactly once.</b> Losing means somebody else wrote
@@ -33,9 +44,21 @@ public sealed class HoldSeatCommandHandler(
     TimeProvider timeProvider)
 {
     /// <summary>
-    /// How long the per-seat lock survives if it is never released. Sized to one
-    /// write attempt, never to the business-level hold window: it is a safety net
-    /// for a process that died mid-write, not a booking.
+    /// How many seats one client may hold at one event at once
+    /// (<c>DECISIONS.md</c> 006).
+    /// </summary>
+    /// <remarks>
+    /// A constant rather than configuration, deliberately. Per-event caps — a
+    /// small venue wanting a tighter limit — would be a different rule with a
+    /// different home, and leaving this settable invites it being changed
+    /// without anyone arguing for the new number.
+    /// </remarks>
+    public const int MaxHoldsPerClientPerEvent = 4;
+
+    /// <summary>
+    /// How long a lock survives if it is never released. Sized to one write
+    /// attempt, never to the business-level hold window: it is a safety net for
+    /// a process that died mid-write, not a booking.
     /// </summary>
     private static readonly TimeSpan LockTtl = TimeSpan.FromSeconds(5);
 
@@ -55,30 +78,40 @@ public sealed class HoldSeatCommandHandler(
         HoldSeatCommand command,
         CancellationToken cancellationToken = default)
     {
-        var resource = ResourceFor(command.SeatId);
+        var clientResource = ClientResourceFor(command.ClientId, command.EventId);
+        var seatResource = SeatResourceFor(command.SeatId);
 
-        // A null token means somebody else holds the lock. That is not a failure
-        // condition here: proceed anyway and let optimistic concurrency decide.
-        var token = await _distributedLock
-            .TryAcquireAsync(resource, LockTtl, cancellationToken)
+        // Outer: serialises this client against themselves across the several
+        // seats the cap counts. Rarely contended, so rarely missed.
+        var clientToken = await _distributedLock
+            .TryAcquireAsync(clientResource, LockTtl, cancellationToken)
             .ConfigureAwait(false);
 
         try
         {
-            var result = await AttemptAsync(command, cancellationToken).ConfigureAwait(false);
+            // Inner: the hot one during a flash sale. A null token means somebody
+            // else has it, which is not a failure condition — proceed anyway and
+            // let optimistic concurrency decide.
+            var seatToken = await _distributedLock
+                .TryAcquireAsync(seatResource, LockTtl, cancellationToken)
+                .ConfigureAwait(false);
 
-            return result.Outcome is HoldSeatOutcome.LostRace
-                ? await AttemptAsync(command, cancellationToken).ConfigureAwait(false)
-                : result;
+            try
+            {
+                var result = await AttemptAsync(command, cancellationToken).ConfigureAwait(false);
+
+                return result.Outcome is HoldSeatOutcome.LostRace
+                    ? await AttemptAsync(command, cancellationToken).ConfigureAwait(false)
+                    : result;
+            }
+            finally
+            {
+                await ReleaseAsync(seatResource, seatToken, cancellationToken).ConfigureAwait(false);
+            }
         }
         finally
         {
-            if (token is not null)
-            {
-                await _distributedLock
-                    .ReleaseAsync(resource, token, cancellationToken)
-                    .ConfigureAwait(false);
-            }
+            await ReleaseAsync(clientResource, clientToken, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -86,9 +119,17 @@ public sealed class HoldSeatCommandHandler(
         HoldSeatCommand command,
         CancellationToken cancellationToken)
     {
+        // One reading per attempt, shared by the cap count and the transition, so
+        // the two cannot disagree about when "now" is. Re-read on a retry, because
+        // by then it genuinely is later.
+        var utcNow = _timeProvider.GetUtcNow().UtcDateTime;
+
         var seat = await _seats.GetByIdAsync(command.SeatId, cancellationToken).ConfigureAwait(false);
 
-        if (seat is null)
+        // The command's event id is checked, never trusted: it decides which
+        // holds get counted and which lock is taken, so a wrong one would apply
+        // the cap to the wrong event's basket.
+        if (seat is null || seat.EventId != command.EventId)
         {
             return HoldSeatResult.SeatNotFound;
         }
@@ -98,9 +139,21 @@ public sealed class HoldSeatCommandHandler(
         // they must not survive into the attempt that does.
         seat.ClearDomainEvents();
 
+        // Counted inside the attempt rather than once up front: after losing a
+        // race the world has moved, and a cap decision made against the old world
+        // is a decision about a state that no longer exists.
+        var otherHolds = await _seats
+            .CountLiveHoldsAsync(command.ClientId, command.EventId, command.SeatId, utcNow, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (otherHolds >= MaxHoldsPerClientPerEvent)
+        {
+            return HoldSeatResult.HoldCapReached;
+        }
+
         try
         {
-            seat.Hold(command.ClientId, _timeProvider.GetUtcNow().UtcDateTime);
+            seat.Hold(command.ClientId, utcNow);
             await _seats.SaveAsync(seat, cancellationToken).ConfigureAwait(false);
 
             return HoldSeatResult.Held(seat.HoldExpiresAt!.Value);
@@ -124,5 +177,16 @@ public sealed class HoldSeatCommandHandler(
         // it to some catch-all response here would hide that until it mattered.
     }
 
-    private static string ResourceFor(Guid seatId) => $"seat:{seatId}";
+    private async Task ReleaseAsync(string resource, string? token, CancellationToken cancellationToken)
+    {
+        if (token is not null)
+        {
+            await _distributedLock.ReleaseAsync(resource, token, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static string SeatResourceFor(Guid seatId) => $"seat:{seatId}";
+
+    private static string ClientResourceFor(Guid clientId, Guid eventId) =>
+        $"client:{clientId}:event:{eventId}";
 }

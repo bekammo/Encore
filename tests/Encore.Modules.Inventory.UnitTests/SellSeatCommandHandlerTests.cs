@@ -338,6 +338,19 @@ public class SellSeatCommandHandlerTests
 
             return outcome is null ? Task.CompletedTask : Task.FromException(outcome);
         }
+
+        /// <summary>
+        /// Never called on this path: the hold cap counts holds, and selling one
+        /// releases capacity rather than consuming it. Throwing rather than
+        /// returning zero keeps that a fact the tests would catch changing.
+        /// </summary>
+        public Task<int> CountLiveHoldsAsync(
+            Guid clientId,
+            Guid eventId,
+            Guid excludingSeatId,
+            DateTime utcNow,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Selling does not consult the hold cap.");
     }
 
     private sealed class FakeDistributedLock(bool acquires = true) : IDistributedLock

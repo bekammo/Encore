@@ -62,4 +62,25 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
             throw new ConcurrentSeatModificationException(seat.Id, ex);
         }
     }
+
+    /// <inheritdoc />
+    public Task<int> CountLiveHoldsAsync(
+        Guid clientId,
+        Guid eventId,
+        Guid excludingSeatId,
+        DateTime utcNow,
+        CancellationToken cancellationToken = default)
+        // Expiry is part of the predicate rather than something filtered
+        // afterwards, so a lapsed hold never counts even though its row still
+        // says Held. Served by ix_seats_event_client_status; without that index
+        // this is a sequential scan on every hold attempt during a flash sale,
+        // which is the worst possible moment for one.
+        => _context.Seats
+            .Where(seat =>
+                seat.EventId == eventId
+                && seat.HeldByClientId == clientId
+                && seat.Status == SeatStatus.Held
+                && seat.HoldExpiresAt > utcNow
+                && seat.Id != excludingSeatId)
+            .CountAsync(cancellationToken);
 }

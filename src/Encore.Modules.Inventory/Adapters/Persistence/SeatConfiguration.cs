@@ -55,6 +55,17 @@ public sealed class SeatConfiguration : IEntityTypeConfiguration<Seat>
             .HasColumnType("xid")
             .IsRowVersion();
 
+        // Serves the per-client hold cap's count (DECISIONS 006), which runs on
+        // every hold attempt. Column order is selectivity order: the event
+        // narrows hardest, then the client, and status separates the handful of
+        // rows left. HoldExpiresAt is deliberately not in the key — by the time
+        // those three have been applied the candidate set is at most a few rows,
+        // and keeping the index off the column that changes on every hold avoids
+        // churning it on the hottest write path in the system.
+        builder
+            .HasIndex(seat => new { seat.EventId, seat.HeldByClientId, seat.Status })
+            .HasDatabaseName("ix_seats_event_client_status");
+
         // Raised events are in-memory bookkeeping handed to the outbox on save.
         builder.Ignore(seat => seat.DomainEvents);
     }

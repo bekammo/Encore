@@ -31,4 +31,7 @@ public sealed record HoldSeatResult(HoldSeatOutcome Outcome, DateTime? HoldExpir
 
     /// <summary>Lost the race twice over. The caller should try again.</summary>
     public static HoldSeatResult LostRace { get; } = new(HoldSeatOutcome.LostRace);
+
+    /// <summary>The client is already at their hold cap for this event.</summary>
+    public static HoldSeatResult HoldCapReached { get; } = new(HoldSeatOutcome.HoldCapReached);
 }
