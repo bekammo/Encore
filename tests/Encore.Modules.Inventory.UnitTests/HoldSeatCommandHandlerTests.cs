@@ -575,6 +575,12 @@ public class HoldSeatCommandHandlerTests
 
             return Task.FromResult(_liveHolds);
         }
+
+        /// <summary>Seats already exist on this path; creating them is a different use case.</summary>
+        public Task AddRangeAsync(
+            IReadOnlyCollection<Seat> seats,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Holding does not create seats.");
     }
 
     /// <summary>

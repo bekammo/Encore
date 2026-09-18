@@ -68,4 +68,19 @@ public interface ISeatRepository
         Guid excludingSeatId,
         DateTime utcNow,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Inserts a batch of new seats as one transaction — all of them, or none.
+    /// </summary>
+    /// <remarks>
+    /// A seat map is one act, not N acts: half a venue is not a smaller venue,
+    /// it is a broken one that somebody then has to reconcile by hand.
+    /// <para>
+    /// Deliberately does not throw <see cref="ConcurrentSeatModificationException"/>.
+    /// These rows do not exist yet, so there is no concurrency token to lose and
+    /// nothing to race against. A duplicate id would be a key violation, which is
+    /// a caller bug rather than a lost race, and is left to propagate.
+    /// </para>
+    /// </remarks>
+    Task AddRangeAsync(IReadOnlyCollection<Seat> seats, CancellationToken cancellationToken = default);
 }

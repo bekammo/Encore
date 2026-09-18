@@ -83,4 +83,15 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
                 && seat.HoldExpiresAt > utcNow
                 && seat.Id != excludingSeatId)
             .CountAsync(cancellationToken);
+
+    /// <inheritdoc />
+    public async Task AddRangeAsync(
+        IReadOnlyCollection<Seat> seats,
+        CancellationToken cancellationToken = default)
+    {
+        // One SaveChangesAsync, so EF wraps the whole batch in a single
+        // transaction and a half-written seat map is not reachable.
+        await _context.Seats.AddRangeAsync(seats, cancellationToken).ConfigureAwait(false);
+        await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
 }

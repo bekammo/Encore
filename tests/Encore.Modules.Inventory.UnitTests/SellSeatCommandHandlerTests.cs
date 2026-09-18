@@ -369,6 +369,12 @@ public class SellSeatCommandHandlerTests
             DateTime utcNow,
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Selling does not consult the hold cap.");
+
+        /// <summary>Seats already exist on this path; creating them is a different use case.</summary>
+        public Task AddRangeAsync(
+            IReadOnlyCollection<Seat> seats,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("This use case does not create seats.");
     }
 
     private sealed class FakeDistributedLock(LockOutcome outcome = LockOutcome.Acquired) : IDistributedLock

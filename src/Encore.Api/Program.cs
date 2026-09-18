@@ -5,6 +5,14 @@ using Encore.Modules.Payments;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// The only two pieces of middleware in the host, and both are framework rather
+// than package, so Encore.Api keeps its zero-PackageReference property. They
+// earn their place by making every response one shape: without them a framework
+// 404 or 415 comes back with an empty body while the modules return
+// problem+json, and an unhandled exception under load returns nothing a caller
+// can read.
+builder.Services.AddProblemDetails();
+
 // One registration call per module, and the host is not allowed to know
 // anything else about them. The method bodies are empty today; the seam
 // existing today is the point. When a module is extracted into its own
@@ -17,12 +25,13 @@ builder.Services
 
 var app = builder.Build();
 
+app.UseExceptionHandler();
+
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
-// Inventory deliberately has no Map*Module() call: it exposes use cases, not
-// CRUD, and its HTTP surface gets designed alongside the hold/sell flow.
 app.MapCatalogModule();
 app.MapOrdersModule();
 app.MapPaymentsModule();
+app.MapInventoryModule();
 
 app.Run();

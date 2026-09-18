@@ -1,7 +1,9 @@
 using Encore.Modules.Inventory.Adapters.Caching;
 using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Application;
+using Encore.Modules.Inventory.Endpoints;
 using Encore.Modules.Inventory.Ports;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -61,6 +63,7 @@ public static class InventoryModule
         services.AddScoped<HoldSeatCommandHandler>();
         services.AddScoped<SellSeatCommandHandler>();
         services.AddScoped<ReleaseSeatCommandHandler>();
+        services.AddScoped<CreateSeatMapCommandHandler>();
 
         // Off unless asked for. The run profiles set it so that a developer with
         // a fresh `docker compose up` gets a schema from `dotnet run`; anything
@@ -72,9 +75,20 @@ public static class InventoryModule
             services.AddHostedService<InventoryMigrator>();
         }
 
-        // TODO: the per-client hold cap (DECISIONS 006) lands on top of this
-        // handler, and the expired-hold sweep (Phase 7) is still to come. The
-        // outbox dispatcher is a Soundcheck concern and is deliberately absent.
+        // TODO: the expired-hold sweep (Phase 7) is still to come. The outbox
+        // dispatcher is a Soundcheck concern and is deliberately absent.
         return services;
+    }
+
+    /// <summary>Maps the module's HTTP surface.</summary>
+    /// <remarks>
+    /// Inventory went without one until now on the grounds that its surface
+    /// should be designed alongside the hold and sell flow rather than ahead of
+    /// it. That flow exists, so this does.
+    /// </remarks>
+    public static IEndpointRouteBuilder MapInventoryModule(this IEndpointRouteBuilder endpoints)
+    {
+        endpoints.MapSeatEndpoints();
+        return endpoints;
     }
 }

@@ -8,6 +8,14 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <!-- The outcome-to-status mapping is an implementation detail of the HTTP
+       layer, so it stays internal — but it is also the part most worth testing,
+       since it decides ~18 responses and a wrong one is invisible until a client
+       hits it. Testing it directly beats standing up a host to infer it. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Encore.Modules.Inventory.UnitTests" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Inventory.Domain\Encore.Modules.Inventory.Domain.csproj" />
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
