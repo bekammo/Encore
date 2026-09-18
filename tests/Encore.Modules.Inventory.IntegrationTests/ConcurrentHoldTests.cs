@@ -85,7 +85,12 @@ public sealed class ConcurrentHoldTests : IAsyncLifetime
     {
         // Arrange — every attempt gets its own context and loads the seat now, so
         // all 50 are working from the same row version.
-        var now = DateTime.UtcNow;
+        //
+        // Truncated to whole microseconds: Postgres timestamptz resolves to a
+        // microsecond while DateTime ticks are 100ns, so an untruncated instant
+        // cannot survive the round trip intact and the expiry assertion at the
+        // end would fail on a hold that was in fact perfectly correct.
+        var now = new DateTime(DateTime.UtcNow.Ticks / 10 * 10, DateTimeKind.Utc);
         var contexts = new List<InventoryDbContext>(ConcurrentAttempts);
         var sessions = new List<(EfSeatRepository Repository, Seat Seat, Guid ClientId)>(ConcurrentAttempts);
 

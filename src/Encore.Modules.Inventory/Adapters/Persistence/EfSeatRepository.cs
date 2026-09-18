@@ -23,8 +23,30 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
     private readonly InventoryDbContext _context = context;
 
     /// <inheritdoc />
-    public Task<Seat?> GetByIdAsync(Guid seatId, CancellationToken cancellationToken = default)
-        => _context.Seats.SingleOrDefaultAsync(seat => seat.Id == seatId, cancellationToken);
+    public async Task<Seat?> GetByIdAsync(Guid seatId, CancellationToken cancellationToken = default)
+    {
+        // EF's identity map would hand back the instance this context is already
+        // tracking — stale concurrency token, previous attempt's mutations and all
+        // — rather than what the database currently says. A caller reloading after
+        // losing a race would then re-attempt against exactly the state that just
+        // lost, and the retry would be theatre. Force a real read instead.
+        var tracked = _context.ChangeTracker
+            .Entries<Seat>()
+            .FirstOrDefault(entry => entry.Entity.Id == seatId);
+
+        if (tracked is null)
+        {
+            return await _context.Seats
+                .SingleOrDefaultAsync(seat => seat.Id == seatId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        await tracked.ReloadAsync(cancellationToken).ConfigureAwait(false);
+
+        // Reload detaches the entry when the row has gone, in which case the
+        // instance it still points at describes a seat that no longer exists.
+        return tracked.State is EntityState.Detached ? null : tracked.Entity;
+    }
 
     /// <inheritdoc />
     public async Task SaveAsync(Seat seat, CancellationToken cancellationToken = default)

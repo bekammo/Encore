@@ -1,5 +1,6 @@
 using Encore.Modules.Inventory.Adapters.Caching;
 using Encore.Modules.Inventory.Adapters.Persistence;
+using Encore.Modules.Inventory.Application;
 using Encore.Modules.Inventory.Ports;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -39,9 +40,12 @@ public static class InventoryModule
         // the expiry sweep only.
         services.AddSingleton(TimeProvider.System);
 
-        // TODO: HoldSeatCommandHandler (Phase 5) and the expired-hold sweep
-        // (Phase 7). The outbox dispatcher is a Soundcheck concern and is
-        // deliberately absent.
+        services.AddScoped<HoldSeatCommandHandler>();
+        services.AddScoped<SellSeatCommandHandler>();
+
+        // TODO: the per-client hold cap (DECISIONS 006) lands on top of this
+        // handler, and the expired-hold sweep (Phase 7) is still to come. The
+        // outbox dispatcher is a Soundcheck concern and is deliberately absent.
         return services;
     }
 }
