@@ -13,20 +13,31 @@ namespace Encore.Modules.Inventory.Application;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>The Redis locks are an optimisation and are treated like one.</b> Failing
-/// to acquire either is not an error and does not abort the attempt — the
-/// handler carries on to Postgres, where the concurrency token settles the race
-/// properly. Correctness therefore survives Redis being gone entirely; what is
-/// lost is the throughput saved by keeping the losers off the database, and the
-/// hold cap's reliability (see below).
-/// </para>
-/// <para>
 /// <b>Two locks, always in the same order: client+event, then seat.</b> The
 /// client lock has to span the cap count *and* the write, or the check-then-act
 /// gap it exists to close stays open. That forces it outside the seat lock. The
 /// order being fixed and identical on every path is what makes deadlock
 /// impossible — a cycle needs two callers disagreeing about it — so if a third
 /// use case ever takes both, it takes them this way round.
+/// </para>
+/// <para>
+/// <b>The two locks are not granted the same authority, and the difference is
+/// the whole design.</b> The seat lock is an optimisation: the row's concurrency
+/// token settles every race behind it, so a contended or unreachable seat lock
+/// changes nothing but throughput and the attempt proceeds. The client lock has
+/// nothing behind it — the cap spans four rows and no single row's token can
+/// carry it — so contention there is refused rather than waved through. Waving
+/// it through is not a smaller version of enforcing the cap; it is not enforcing
+/// it at all, because concurrent requests by one client are precisely when the
+/// lock is contended.
+/// </para>
+/// <para>
+/// A client lock that is <i>unavailable</i> rather than contended is a different
+/// matter, and the attempt proceeds. That is <c>DECISIONS.md</c> 006's asymmetry
+/// stated in code: a breached cap is a refund email, while refusing every hold
+/// in the system because Redis blinked is an outage. Correctness — no double
+/// sell — survives Redis being gone entirely either way, because it never
+/// depended on the lock.
 /// </para>
 /// <para>
 /// <b>A lost race is retried exactly once.</b> Losing means somebody else wrote
@@ -82,17 +93,25 @@ public sealed class HoldSeatCommandHandler(
         var seatResource = SeatResourceFor(command.SeatId);
 
         // Outer: serialises this client against themselves across the several
-        // seats the cap counts. Rarely contended, so rarely missed.
-        var clientToken = await _distributedLock
+        // seats the cap counts.
+        var clientLock = await _distributedLock
             .TryAcquireAsync(clientResource, LockTtl, cancellationToken)
             .ConfigureAwait(false);
 
+        // Contended means another request by this same client is mid-count for
+        // this event. Proceeding would count a world that is about to change and
+        // let both requests past a cap that only one of them fits under.
+        if (clientLock.Outcome is LockOutcome.HeldByAnother)
+        {
+            return HoldSeatResult.ConcurrentRequestInFlight;
+        }
+
         try
         {
-            // Inner: the hot one during a flash sale. A null token means somebody
-            // else has it, which is not a failure condition — proceed anyway and
-            // let optimistic concurrency decide.
-            var seatToken = await _distributedLock
+            // Inner: the hot one during a flash sale, and the one with a backstop.
+            // Neither contention nor an outage stops the attempt — optimistic
+            // concurrency decides.
+            var seatLock = await _distributedLock
                 .TryAcquireAsync(seatResource, LockTtl, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -106,12 +125,12 @@ public sealed class HoldSeatCommandHandler(
             }
             finally
             {
-                await ReleaseAsync(seatResource, seatToken, cancellationToken).ConfigureAwait(false);
+                await ReleaseAsync(seatResource, seatLock).ConfigureAwait(false);
             }
         }
         finally
         {
-            await ReleaseAsync(clientResource, clientToken, cancellationToken).ConfigureAwait(false);
+            await ReleaseAsync(clientResource, clientLock).ConfigureAwait(false);
         }
     }
 
@@ -177,11 +196,23 @@ public sealed class HoldSeatCommandHandler(
         // it to some catch-all response here would hide that until it mattered.
     }
 
-    private async Task ReleaseAsync(string resource, string? token, CancellationToken cancellationToken)
+    /// <summary>
+    /// Releases a lock this handler took, if it took one.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not passed the request's <c>CancellationToken</c>. This runs
+    /// from a <c>finally</c> after the write has already happened, so a client
+    /// that disconnected mid-request would otherwise cancel the release and
+    /// strand the lock — holding every other caller off the seat until the TTL
+    /// expires, on the one path where releasing promptly matters most.
+    /// </remarks>
+    private async Task ReleaseAsync(string resource, LockAcquisition acquisition)
     {
-        if (token is not null)
+        if (acquisition.Token is { } token)
         {
-            await _distributedLock.ReleaseAsync(resource, token, cancellationToken).ConfigureAwait(false);
+            await _distributedLock
+                .ReleaseAsync(resource, token, CancellationToken.None)
+                .ConfigureAwait(false);
         }
     }
 

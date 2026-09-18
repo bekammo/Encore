@@ -42,5 +42,19 @@ public enum HoldSeatOutcome
     /// policy rather than an invariant, and is enforced best-effort: with Redis
     /// unavailable a client can slip past it.
     /// </summary>
-    HoldCapReached = 5
+    HoldCapReached = 5,
+
+    /// <summary>
+    /// This client already has another hold request in flight for this event, so
+    /// the cap cannot be counted accurately right now. Retryable, and ordinarily
+    /// resolved within milliseconds.
+    /// </summary>
+    /// <remarks>
+    /// The only refusal here caused by the system rather than the seat. Holding
+    /// is refused rather than allowed through because nothing downstream
+    /// enforces the cap — unlike a contended seat, where the row's concurrency
+    /// token settles the race whatever the lock does. Better a retryable refusal
+    /// than a silently breached cap.
+    /// </remarks>
+    ConcurrentRequestInFlight = 6
 }

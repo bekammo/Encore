@@ -137,7 +137,7 @@ public class HoldSeatCommandHandlerTests
     public async Task Handle_WhenLockCannotBeAcquired_ShouldStillTakeTheHold()
     {
         var seats = new FakeSeatRepository(AvailableSeat());
-        var distributedLock = new FakeDistributedLock(acquires: false);
+        var distributedLock = new FakeDistributedLock(LockOutcome.Unavailable);
 
         var result = await HandlerFor(seats, distributedLock).HandleAsync(Command);
 
@@ -149,7 +149,7 @@ public class HoldSeatCommandHandlerTests
     public async Task Handle_WhenLockCannotBeAcquired_ShouldNotReleaseSomebodyElsesLock()
     {
         var seats = new FakeSeatRepository(AvailableSeat());
-        var distributedLock = new FakeDistributedLock(acquires: false);
+        var distributedLock = new FakeDistributedLock(LockOutcome.Unavailable);
 
         await HandlerFor(seats, distributedLock).HandleAsync(Command);
 
@@ -404,13 +404,93 @@ public class HoldSeatCommandHandlerTests
         var seats = new FakeSeatRepository(AvailableSeat())
             .WithLiveHolds(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent);
 
-        var result = await HandlerFor(seats, new FakeDistributedLock(acquires: false))
+        var result = await HandlerFor(seats, new FakeDistributedLock(LockOutcome.Unavailable))
             .HandleAsync(Command);
 
         // Uncontended, the count is still correct, so the cap still holds. What
         // the missing lock costs is the *race*, which this test cannot show and
         // ConcurrentHoldCapTests does.
         Assert.Equal(HoldSeatOutcome.HoldCapReached, result.Outcome);
+    }
+
+    // -- The two locks are granted different authority ---------------------
+
+    private const string ClientLockPrefix = "client:";
+    private const string SeatLockPrefix = "seat:";
+
+    /// <summary>
+    /// The seat lock has the row's concurrency token behind it, so losing it to
+    /// another caller changes nothing but throughput.
+    /// </summary>
+    [Fact]
+    public async Task Handle_WhenSeatLockHeldByAnother_ShouldStillTakeTheHold()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat());
+        var distributedLock = new FakeDistributedLock().With(SeatLockPrefix, LockOutcome.HeldByAnother);
+
+        var result = await HandlerFor(seats, distributedLock).HandleAsync(Command);
+
+        Assert.Equal(HoldSeatOutcome.Held, result.Outcome);
+        Assert.Equal(1, seats.SaveCalls);
+    }
+
+    /// <summary>
+    /// The client lock has nothing behind it. This is the test whose absence let
+    /// twelve concurrent holds past a cap of four: proceeding here is not a
+    /// weaker cap, it is no cap, because concurrent requests by one client are
+    /// exactly when this lock is contended.
+    /// </summary>
+    [Fact]
+    public async Task Handle_WhenClientLockHeldByAnother_ShouldRefuse()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat());
+        var distributedLock = new FakeDistributedLock().With(ClientLockPrefix, LockOutcome.HeldByAnother);
+
+        var result = await HandlerFor(seats, distributedLock).HandleAsync(Command);
+
+        Assert.Equal(HoldSeatOutcome.ConcurrentRequestInFlight, result.Outcome);
+    }
+
+    [Fact]
+    public async Task Handle_WhenClientLockHeldByAnother_ShouldNotTouchTheDatabase()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat());
+        var distributedLock = new FakeDistributedLock().With(ClientLockPrefix, LockOutcome.HeldByAnother);
+
+        await HandlerFor(seats, distributedLock).HandleAsync(Command);
+
+        Assert.Equal(0, seats.GetByIdCalls);
+        Assert.Equal(0, seats.SaveCalls);
+    }
+
+    [Fact]
+    public async Task Handle_WhenClientLockHeldByAnother_ShouldNotTakeTheSeatLock()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat());
+        var distributedLock = new FakeDistributedLock().With(ClientLockPrefix, LockOutcome.HeldByAnother);
+
+        await HandlerFor(seats, distributedLock).HandleAsync(Command);
+
+        Assert.Empty(distributedLock.Acquired);
+        Assert.Equal(0, distributedLock.ReleaseCalls);
+    }
+
+    /// <summary>
+    /// The other half of DECISIONS 006's asymmetry. Unreachable is not contended:
+    /// refusing every hold in the system because Redis blinked would be an
+    /// outage, where a breached cap is a refund email. So this proceeds, and the
+    /// cap becomes best-effort exactly as 006 says it is.
+    /// </summary>
+    [Fact]
+    public async Task Handle_WhenClientLockUnavailable_ShouldProceedAnyway()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat());
+        var distributedLock = new FakeDistributedLock().With(ClientLockPrefix, LockOutcome.Unavailable);
+
+        var result = await HandlerFor(seats, distributedLock).HandleAsync(Command);
+
+        Assert.Equal(HoldSeatOutcome.Held, result.Outcome);
+        Assert.Equal(1, seats.SaveCalls);
     }
 
     // -- The event id is checked, not trusted -----------------------------
@@ -497,8 +577,15 @@ public class HoldSeatCommandHandlerTests
         }
     }
 
-    private sealed class FakeDistributedLock(bool acquires = true) : IDistributedLock
+    /// <summary>
+    /// A lock whose answer can be set globally or per resource prefix, so a test
+    /// can make the client lock contended while the seat lock is granted — which
+    /// is the only way to exercise the two locks' different policies.
+    /// </summary>
+    private sealed class FakeDistributedLock(LockOutcome outcome = LockOutcome.Acquired) : IDistributedLock
     {
+        private readonly Dictionary<string, LockOutcome> _byPrefix = [];
+
         /// <summary>Resources locked, in acquisition order.</summary>
         public List<string> Acquired { get; } = [];
 
@@ -507,24 +594,37 @@ public class HoldSeatCommandHandlerTests
 
         public int ReleaseCalls => Released.Count;
 
-        public string? LastResource => Acquired.Count is 0 ? null : Acquired[^1];
-
         public TimeSpan LastTtl { get; private set; }
 
-        public Task<string?> TryAcquireAsync(
+        /// <summary>Overrides the answer for resources starting with <paramref name="prefix"/>.</summary>
+        public FakeDistributedLock With(string prefix, LockOutcome result)
+        {
+            _byPrefix[prefix] = result;
+            return this;
+        }
+
+        public Task<LockAcquisition> TryAcquireAsync(
             string resource,
             TimeSpan ttl,
             CancellationToken cancellationToken = default)
         {
             LastTtl = ttl;
 
-            if (!acquires)
+            var result = _byPrefix
+                .FirstOrDefault(entry => resource.StartsWith(entry.Key, StringComparison.Ordinal))
+                is { Key: not null } match
+                    ? match.Value
+                    : outcome;
+
+            if (result is not LockOutcome.Acquired)
             {
-                return Task.FromResult<string?>(null);
+                return Task.FromResult(result is LockOutcome.HeldByAnother
+                    ? LockAcquisition.HeldByAnother
+                    : LockAcquisition.Unavailable);
             }
 
             Acquired.Add(resource);
-            return Task.FromResult<string?>("token");
+            return Task.FromResult(LockAcquisition.Acquired("token"));
         }
 
         public Task<bool> ReleaseAsync(

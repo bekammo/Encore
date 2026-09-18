@@ -80,9 +80,11 @@ public sealed class ConcurrentHoldCapTests : IAsyncLifetime
 
     /// <summary>
     /// Fires one hold per seat simultaneously, each on its own context and
-    /// handler, and returns how many succeeded.
+    /// handler, and returns every result.
     /// </summary>
-    private async Task<int> RaceForSeatsAsync(List<Guid> seatIds, IDistributedLock distributedLock)
+    private async Task<IReadOnlyList<HoldSeatResult>> RaceForSeatsAsync(
+        List<Guid> seatIds,
+        IDistributedLock distributedLock)
     {
         var contexts = new List<InventoryDbContext>(seatIds.Count);
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -111,9 +113,7 @@ public sealed class ConcurrentHoldCapTests : IAsyncLifetime
             }
 
             gate.SetResult();
-            var results = await Task.WhenAll(attempts);
-
-            return results.Count(result => result.Outcome is HoldSeatOutcome.Held);
+            return await Task.WhenAll(attempts);
         }
         finally
         {
@@ -139,17 +139,87 @@ public sealed class ConcurrentHoldCapTests : IAsyncLifetime
     /// The rule 006 states: with the lock available, one client racing themselves
     /// across a dozen seats ends up holding at most the cap.
     /// </summary>
+    /// <remarks>
+    /// Before the lock port could distinguish contention from an outage, this
+    /// produced 12 holds against a cap of 4 — no enforcement whatever. Every
+    /// attempt that does not win the client lock is refused outright, so the
+    /// count here is a floor of 1 rather than exactly the cap; see
+    /// <see cref="Hold_WhenOneClientRetriesOnContention_ShouldReachExactlyTheCap"/>
+    /// for the number a real client converges on.
+    /// </remarks>
     [Fact]
     public async Task Hold_WhenOneClientRacesThemselves_ShouldNotExceedTheCap()
     {
         var seatIds = await SeedAvailableSeatsAsync(ConcurrentAttempts);
 
-        var held = await RaceForSeatsAsync(seatIds, new RedisDistributedLock(_connection));
+        var results = await RaceForSeatsAsync(seatIds, new RedisDistributedLock(_connection));
+        var held = results.Count(result => result.Outcome is HoldSeatOutcome.Held);
 
         Assert.True(
             held <= HoldSeatCommandHandler.MaxHoldsPerClientPerEvent,
-            $"Client held {held} seats; the cap is {HoldSeatCommandHandler.MaxHoldsPerClientPerEvent}.");
+            $"Client held {held} seats; the cap is {HoldSeatCommandHandler.MaxHoldsPerClientPerEvent}. "
+            + $"Outcomes: {Describe(results)}");
+
+        // Nothing is refused for a reason that would indicate a real fault.
+        Assert.All(results, result => Assert.Contains(result.Outcome, new[]
+        {
+            HoldSeatOutcome.Held,
+            HoldSeatOutcome.HoldCapReached,
+            HoldSeatOutcome.ConcurrentRequestInFlight
+        }));
 
         Assert.Equal(held, await CountPersistedHoldsAsync());
     }
+
+    /// <summary>
+    /// What a real client experiences. Losing the client lock is a retryable
+    /// refusal, not a verdict, so a caller that retries converges on exactly the
+    /// cap — and stops there.
+    /// </summary>
+    /// <remarks>
+    /// This is the test that pins the number 4. The burst test above can only
+    /// prove "no more than 4", which a broken implementation granting one hold
+    /// would also satisfy.
+    /// </remarks>
+    [Fact]
+    public async Task Hold_WhenOneClientRetriesOnContention_ShouldReachExactlyTheCap()
+    {
+        var seatIds = await SeedAvailableSeatsAsync(ConcurrentAttempts);
+        var distributedLock = new RedisDistributedLock(_connection);
+
+        await using var context = new InventoryDbContext(_options);
+        var handler = new HoldSeatCommandHandler(
+            new EfSeatRepository(context), distributedLock, TimeProvider.System);
+
+        var held = 0;
+
+        foreach (var seatId in seatIds)
+        {
+            // Sequential, with a bounded retry — exactly what a client hitting
+            // ConcurrentRequestInFlight would do.
+            for (var attempt = 0; attempt < 5; attempt++)
+            {
+                var result = await handler.HandleAsync(new HoldSeatCommand(_eventId, seatId, _clientA));
+
+                if (result.Outcome is HoldSeatOutcome.Held)
+                {
+                    held++;
+                    break;
+                }
+
+                if (result.Outcome is HoldSeatOutcome.HoldCapReached)
+                {
+                    break;
+                }
+            }
+        }
+
+        Assert.Equal(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent, held);
+        Assert.Equal(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent, await CountPersistedHoldsAsync());
+    }
+
+    private static string Describe(IReadOnlyList<HoldSeatResult> results) =>
+        string.Join(", ", results
+            .GroupBy(result => result.Outcome)
+            .Select(group => $"{group.Key}={group.Count()}"));
 }

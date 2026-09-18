@@ -56,9 +56,12 @@ public sealed class SellSeatCommandHandler(
     {
         var resource = ResourceFor(command.SeatId);
 
-        // As with holding: a null token means somebody else has the lock, which
-        // is not a failure. Proceed and let the concurrency token decide.
-        var token = await _distributedLock
+        // One lock, and it is purely an optimisation. Contended or unreachable,
+        // the attempt proceeds either way: this is a single-row write, so the
+        // concurrency token settles the race and Sold is terminal in the
+        // aggregate. Unlike holding, there is no cap here for a missed lock to
+        // undermine, so there is nothing to refuse for.
+        var seatLock = await _distributedLock
             .TryAcquireAsync(resource, LockTtl, cancellationToken)
             .ConfigureAwait(false);
 
@@ -72,10 +75,13 @@ public sealed class SellSeatCommandHandler(
         }
         finally
         {
-            if (token is not null)
+            if (seatLock.Token is { } token)
             {
+                // CancellationToken.None on purpose: the sale has already
+                // happened by now, and a client that hung up must not be able to
+                // cancel the release and strand the lock on a sold seat.
                 await _distributedLock
-                    .ReleaseAsync(resource, token, cancellationToken)
+                    .ReleaseAsync(resource, token, CancellationToken.None)
                     .ConfigureAwait(false);
             }
         }

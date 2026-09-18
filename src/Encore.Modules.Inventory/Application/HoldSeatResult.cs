@@ -34,4 +34,11 @@ public sealed record HoldSeatResult(HoldSeatOutcome Outcome, DateTime? HoldExpir
 
     /// <summary>The client is already at their hold cap for this event.</summary>
     public static HoldSeatResult HoldCapReached { get; } = new(HoldSeatOutcome.HoldCapReached);
+
+    /// <summary>
+    /// This client has another hold request in flight for the same event. The
+    /// caller should try again shortly.
+    /// </summary>
+    public static HoldSeatResult ConcurrentRequestInFlight { get; } =
+        new(HoldSeatOutcome.ConcurrentRequestInFlight);
 }

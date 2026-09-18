@@ -197,7 +197,7 @@ public class SellSeatCommandHandlerTests
     public async Task Handle_WhenLockCannotBeAcquired_ShouldStillCompleteTheSale()
     {
         var seats = new FakeSeatRepository(SeatHeldBy(ClientA));
-        var distributedLock = new FakeDistributedLock(acquires: false);
+        var distributedLock = new FakeDistributedLock(LockOutcome.Unavailable);
 
         var result = await HandlerFor(seats, distributedLock).HandleAsync(Command);
 
@@ -209,7 +209,7 @@ public class SellSeatCommandHandlerTests
     public async Task Handle_WhenLockCannotBeAcquired_ShouldNotReleaseSomebodyElsesLock()
     {
         var seats = new FakeSeatRepository(SeatHeldBy(ClientA));
-        var distributedLock = new FakeDistributedLock(acquires: false);
+        var distributedLock = new FakeDistributedLock(LockOutcome.Unavailable);
 
         await HandlerFor(seats, distributedLock).HandleAsync(Command);
 
@@ -353,19 +353,25 @@ public class SellSeatCommandHandlerTests
             throw new InvalidOperationException("Selling does not consult the hold cap.");
     }
 
-    private sealed class FakeDistributedLock(bool acquires = true) : IDistributedLock
+    private sealed class FakeDistributedLock(LockOutcome outcome = LockOutcome.Acquired) : IDistributedLock
     {
         public int ReleaseCalls { get; private set; }
 
         public string? LastResource { get; private set; }
 
-        public Task<string?> TryAcquireAsync(
+        public Task<LockAcquisition> TryAcquireAsync(
             string resource,
             TimeSpan ttl,
             CancellationToken cancellationToken = default)
         {
             LastResource = resource;
-            return Task.FromResult(acquires ? "token" : null);
+
+            return Task.FromResult(outcome switch
+            {
+                LockOutcome.Acquired => LockAcquisition.Acquired("token"),
+                LockOutcome.HeldByAnother => LockAcquisition.HeldByAnother,
+                _ => LockAcquisition.Unavailable
+            });
         }
 
         public Task<bool> ReleaseAsync(

@@ -28,9 +28,25 @@ public static class InventoryModule
         // database. The names are the seam: extracting Inventory later means
         // repointing a connection string, not editing code.
         services.AddSingleton<IConnectionMultiplexer>(_ =>
-            ConnectionMultiplexer.Connect(
+        {
+            var options = ConfigurationOptions.Parse(
                 configuration.GetConnectionString("Redis")
-                ?? throw new InvalidOperationException("Missing connection string 'Redis'.")));
+                ?? throw new InvalidOperationException("Missing connection string 'Redis'."));
+
+            // Without this, Connect() throws when Redis is down — and it throws
+            // from inside this factory, while DI is building the lock adapter.
+            // No amount of exception translation in RedisDistributedLock can
+            // catch that, because the adapter never gets constructed. The lock
+            // is an optimisation, so a Redis that is absent must not stop the
+            // host starting or a request being served: this makes Connect()
+            // return a multiplexer that retries in the background, so individual
+            // commands fail with a translatable exception instead.
+            options.AbortOnConnectFail = false;
+            options.ConnectTimeout = 1_000;
+            options.ConnectRetry = 3;
+
+            return ConnectionMultiplexer.Connect(options);
+        });
 
         services.AddScoped<ISeatRepository, EfSeatRepository>();
         services.AddSingleton<IDistributedLock, RedisDistributedLock>();
