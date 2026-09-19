@@ -930,3 +930,199 @@ because drifting is the thing it must not do.
 
 <!-- Expand later: whether Confirmed splits into Paid/AwaitingPayment when Payments
      arrives, and whether Failed deserves a stored reason rather than only a log line. -->
+
+---
+
+## 022 — Orders' HTTP surface, and the service that has no port
+
+Four routes under `/orders`, all carrying `X-Client-Id`: `POST /` opens a checkout,
+`GET /{id}` reads one back, `POST /{id}/confirm` and `POST /{id}/cancel` end it.
+
+**Confirm and cancel are actions, not a status a client may PATCH.** 014 made the same
+call for seats and the reason carries further here: the set of endings is closed, and the
+rules for reaching each one are not the client's to apply. A writable status field would
+invite a client to declare an order `confirmed` without a single seat having been sold,
+and the endpoint would have no principled way to refuse.
+
+**Orders sends the holds.** A checkout prices the event, takes a hold on every seat, and
+only then writes a row. The alternative — the client holds seats itself and hands the ids
+to a checkout that trusts them — moves the composition into the browser and leaves this
+module unable to tell a hold it caused from one it did not. It also makes
+`SeatReservationLimits` pointless, since the thing sizing the request would no longer be
+the thing that can read the limit.
+
+**The checks are ordered by what they cost.** Everything knowable from the request alone
+comes first, then Catalog, then the open-checkout read, and holds last. Holds are writes
+against the hottest rows in the system; taking four of them before discovering the event
+does not exist would be paying the worst price in the system for a typo.
+
+**`CheckoutService` takes `OrdersDbContext` concretely, and there is no
+`IOrderRepository`.** This is 001 applied honestly rather than selectively. A port earns
+its place where it buys substitution, and nothing here will ever be substituted. The two
+dependencies that *are* interfaces — `IEventPricing` and `ISeatReservations` — are
+interfaces because they cross a module boundary and will one day cross a process one,
+which is a different argument that this module does not get to borrow for its own
+storage.
+
+The bill arrives in the tests, and it is the right bill to pay. `CheckoutService` cannot
+be unit tested without a database, so its tests run against real Postgres in
+`Orders.IntegrationTests` while `Orders.UnitTests` holds only the HTTP mapping. That is
+the visible cost of declining the port, and it is smaller than the cost of an abstraction
+with one implementation forever. `EntityFrameworkCore.InMemory` was considered and
+rejected: it does not enforce a partial unique index, so it would fake away the single
+most load-bearing line in this module's schema.
+
+**The service sits at the module root, not in an `Application/` folder.** Orders is flat
+and has exactly one service. Catalog already set the precedent — its one adapter lives in
+`Data/` rather than in a fourth folder built to hold a single query.
+
+<!-- Expand later: whether the checkout should take a payment intent at the same time
+     once Payments is real, and whether GET /orders wants a list endpoint before
+     anything needs to browse. -->
+
+---
+
+## 023 — A partial checkout writes nothing, releases nothing, and tells you everything
+
+Four seats are asked for and the third is gone. The seats that were held stay held, no
+order row is created, and the response names every seat that failed with Inventory's own
+reason for each.
+
+The customer can then buy the rest or pick a replacement, and either one is just another
+`POST /orders`. Re-holding the seats they already hold is free and safe:
+`ISeatReservations` promises that holding a seat this client already holds succeeds
+without moving the expiry.
+
+**The alternative was to create the partial order and let it be amended**, and it loses on
+three counts. `orders.orders` allows one `Pending` order per client per event, so a second
+checkout would be refused and "choose another seat" would need a new route that mutates an
+existing order. That route would make `Order.Total` — documented as snapshotted at
+checkout — false, and would raise a question nothing has answered: does adding a line
+re-read the price? If it does, one order can hold two prices for the same event, which is
+the drift `OrderLine` exists to prevent. If it does not, the order pins a price read at an
+arbitrarily earlier moment. And a mutable order gives confirm and cancel a third operation
+to race.
+
+**The holds are not compensated, and that is the part worth defending.** Releasing the
+seats that succeeded would be tidier, and would cost the customer the two good seats they
+just got, during a flash sale, because a third seat they can trivially swap was taken. 020
+already made this argument in the other direction: four writes and four compensating
+releases to learn something is not a price worth paying when the alternative is telling
+the caller the truth.
+
+Nothing is left behind. The partial selection lives in the client, and holds the customer
+abandons lapse in five minutes through the lazy expiry Inventory already does on every
+read and write path. There is not even a stale `Pending` row to sweep.
+
+The cost, stated plainly: a client has to remember what it holds between attempts. That is
+a client keeping its own basket, which is a thing clients do.
+
+If this is ever reversed, reversing it is additive — an amend route can be added and this
+behaviour kept for the no-order case. The other direction would mean deleting a route
+clients had started using.
+
+<!-- Expand later: whether the response should suggest alternative seats rather than only
+     naming the unavailable ones, once anything knows the shape of a seat map. -->
+
+---
+
+## 024 — The client id filter is copied into Orders, not shared
+
+`ClientIdEndpointFilter` now exists twice, once in Inventory and once in Orders, with
+about forty lines duplicated between them. Promoting it to a shared home was the obvious
+move and is the wrong one.
+
+**`Encore.Shared` holds zero `PackageReference` items, and that is load-bearing.**
+`Inventory.Domain` references Shared and is required to stay free of infrastructure; an
+`IEndpointFilter` would pull `Microsoft.AspNetCore.App` into Shared and therefore into the
+domain's transitive reach. The `ENCORE001` guard would not catch it, because it inspects
+direct package references and this would arrive through a project reference — which is
+exactly the known gap, and a poor thing to go walking into deliberately.
+
+**019 already ruled on what Shared is for**: contracts every module agrees on, not a
+drawer for whatever two modules happen to have in common. A third home — an `Encore.Web`
+or similar — would be a new project carrying one class, which is the ceremony 001 exists
+to refuse.
+
+So it is copied, and the duplication is the cheapest of the three options. What makes it
+safe is that the two copies are not really one thing: each module decides for itself which
+of its routes claim an identity, and the day Inventory is extracted its copy leaves with
+it rather than becoming a dependency the monolith still has to serve.
+
+**The item keys differ, and that is not incidental.** Inventory stores under
+`Encore.Inventory.ClientId` and Orders under `Encore.Orders.ClientId`. Both filters run in
+one host against one `HttpContext`; a shared key would work perfectly right up until a
+route carried both filters, and then it would work by accident.
+
+<!-- Expand later: whether this collapses into one real authentication filter when
+     Identity arrives, which is the event that would make the duplication genuinely
+     wasteful rather than merely repeated. -->
+
+---
+
+## 025 — A repeated seat id is refused, not de-duplicated
+
+`POST /orders` with `[A, A, B]` is `400 duplicate_seat`. An empty list is `400 no_seats`.
+
+De-duplicating was the alternative and it is dishonest in two directions. It makes the cap
+check wrong: five ids naming one seat is a request for one seat, and counting before
+collapsing would refuse it for being too large, while counting after means the number the
+client sent and the number that was judged are different numbers. And it returns an order
+with fewer lines than the request had ids, with nothing saying why — the kind of quiet
+mismatch that surfaces weeks later as "I asked for three seats and got two".
+
+`OrderLine` already settles the underlying fact: one line per seat and no quantity,
+because a seat is a thing you can buy exactly one of. So the only question was whether a
+duplicate is the client's mistake or ours to absorb, and 018 already answered the general
+form of it — an instant with no timezone is refused rather than guessed, because guessing
+is how you stop finding out. A repeated id is a client bug, and failing at the boundary is
+how it gets fixed.
+
+Duplicates are judged **before** the cap, so the response names the real problem rather
+than a consequence of it.
+
+400 rather than 409 because this is knowable from the request alone, without asking
+Catalog or Inventory anything. That is the same line the `too_many_seats` /
+`hold_cap_reached` split is drawn on: contradicting a published number is a malformed
+request, while being told you already hold four seats is a fact about the world. Both can
+happen on one checkout, and they are not the same mistake.
+
+<!-- Expand later: whether the same treatment should apply to a seat id that is
+     syntactically fine but belongs to another event, which Inventory currently answers as
+     seat_not_found. -->
+
+---
+
+## 026 — The on-sale gate, and why sales stay open after the show starts
+
+Orders refuses a checkout before an event's `OnSaleAt`. Catalog states the window and does
+not enforce it, because Catalog has no idea what a checkout is; this is where the
+statement becomes a rule.
+
+**It is a lower bound only.** Nothing refuses a checkout because `StartsAt` has passed.
+Walk-up sales are real, a show that is half over still has seats worth selling, and an
+upper bound would be inventing a rule nobody asked for in order to make the field
+symmetrical. `StartsAt` is carried on `EventPricingResponse` so a caller can tell a
+customer what they are buying into, and for nothing else.
+
+**A null `OnSaleAt` means on sale now**, not a gate that opened in the year 1. That
+distinction is already made in `Event`, and this is the code that depends on it.
+
+`not_on_sale` is `409` rather than `400`: the request is well formed and it is the world
+that is not ready, which is 018's rule. It is also the only refusal in this module that is
+**retriable** in the honest sense — every other one either needs a different request or
+needs something to have changed that the client cannot wait for, whereas this one stops
+being true at an instant that is already public.
+
+**The gate is judged against Orders' clock, and that is safe in a way the expiry rule is
+not.** 021 forbids Orders judging hold expiry, because two clocks disagreeing there means
+telling a customer their seat is gone while it is still theirs. The on-sale gate is the
+opposite shape: a few seconds of clock skew opens or closes a sale marginally early or
+late, nothing has been lost either way, and there is no second authority to disagree with
+— Catalog states the instant and does not enforce it. Enforcing it in Inventory instead
+would mean Inventory learning what an event costs and when it sells, which is the coupling
+`IEventPricing` exists to avoid.
+
+<!-- Expand later: whether a presale window for a subset of clients belongs here or in
+     Identity, and whether the refusal should carry the on-sale instant so a client can
+     show a countdown rather than re-reading the catalogue. -->

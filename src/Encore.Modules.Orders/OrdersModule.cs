@@ -27,6 +27,12 @@ public static class OrdersModule
         // registration would otherwise win silently.
         services.TryAddSingleton(TimeProvider.System);
 
+        // The module's only service. Scoped because it holds a DbContext, and
+        // concrete because nothing will ever substitute it — the two interfaces
+        // it depends on are registered by the modules that own them, which is
+        // the seam that survives either of them becoming remote.
+        services.AddScoped<CheckoutService>();
+
         // Off unless asked for, exactly as the other modules. See DECISIONS 013.
         if (configuration.GetValue<bool>("Orders:MigrateOnStartup"))
         {

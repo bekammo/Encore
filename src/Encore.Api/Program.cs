@@ -15,10 +15,10 @@ builder.Services.AddProblemDetails();
 
 // One registration call per module, and the host is not allowed to know
 // anything else about them. Inventory's body registers a DbContext, a Redis
-// multiplexer, its ports and its use cases; the other three are still empty.
-// Either way the host cannot tell, which is the point. When a module is
-// extracted into its own service later, this is the line that gets deleted —
-// nothing else.
+// multiplexer, its ports and its use cases; Catalog and Orders register a
+// DbContext and a service apiece; Payments is still empty. The host cannot
+// tell which is which, and that is the point. When a module is extracted into
+// its own service later, this is the line that gets deleted — nothing else.
 builder.Services
     .AddCatalogModule(builder.Configuration)
     .AddOrdersModule(builder.Configuration)

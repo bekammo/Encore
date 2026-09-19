@@ -25,16 +25,21 @@ expect to be challenged, is in [DECISIONS.md](DECISIONS.md).
 ```
 Encore.sln
 ├── src/
-│   ├── Encore.Api                        ASP.NET Core minimal API host
-│   ├── Encore.Shared                     cross-cutting contracts, zero packages
-│   ├── Encore.Modules.Catalog            flat CRUD
-│   ├── Encore.Modules.Orders             flat CRUD
-│   ├── Encore.Modules.Payments           flat CRUD + simulated gateway
-│   ├── Encore.Modules.Inventory.Domain   the hexagon's interior — no packages
-│   └── Encore.Modules.Inventory          ports, adapters, use cases
+│   ├── Encore.Api                          ASP.NET Core minimal API host
+│   ├── Encore.Shared                       cross-cutting contracts, zero packages
+│   ├── Encore.Modules.Catalog              flat CRUD
+│   ├── Encore.Modules.Catalog.Contracts    its public face — zero packages, zero refs
+│   ├── Encore.Modules.Orders               flat CRUD + the checkout
+│   ├── Encore.Modules.Payments             flat CRUD + simulated gateway
+│   ├── Encore.Modules.Inventory.Domain     the hexagon's interior — no packages
+│   ├── Encore.Modules.Inventory            ports, adapters, use cases
+│   └── Encore.Modules.Inventory.Contracts  its public face — zero packages, zero refs
 └── tests/
     ├── Encore.Modules.Inventory.UnitTests         domain + handlers, in memory
-    └── Encore.Modules.Inventory.IntegrationTests  adapters, via Testcontainers
+    ├── Encore.Modules.Inventory.IntegrationTests  adapters, via Testcontainers
+    ├── Encore.Modules.Catalog.IntegrationTests    schema + pricing projection
+    ├── Encore.Modules.Orders.UnitTests            the HTTP mapping, no database
+    └── Encore.Modules.Orders.IntegrationTests     checkout, against real Postgres
 ```
 
 `Encore.Modules.Inventory.Domain` has no `PackageReference` items at all, and

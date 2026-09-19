@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The outcome-to-HTTP mapping, and nothing else.
+
+       Orders declined a repository port on purpose (DECISIONS 001 and 022), so
+       CheckoutService needs a real database and its tests live next door in the
+       integration suite. What is left here is the part that needs no database at
+       all and is the most expensive to get wrong: roughly twenty responses that
+       decide what every client sees, where a wrong one is invisible until
+       somebody hits it.
+
+       Deliberately no EntityFrameworkCore.InMemory. A fake database that does
+       not enforce the partial unique index would let these tests pass while the
+       thing the schema exists for went untested. -->
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Encore.Modules.Orders\Encore.Modules.Orders.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>
