@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using StackExchange.Redis;
 
 namespace Encore.Modules.Inventory;
@@ -60,7 +61,12 @@ public static class InventoryModule
         // The BCL clock. The domain never touches this — it takes the current
         // instant as a parameter — so this exists for the Application layer and
         // the expiry sweep only.
-        services.AddSingleton(TimeProvider.System);
+        //
+        // TryAdd rather than Add: more than one module wants a clock now, and
+        // three identical registrations of the same singleton are harmless right
+        // up until a test replaces one, at which point last-registration-wins
+        // silently decides which module got the fake.
+        services.TryAddSingleton(TimeProvider.System);
 
         services.AddScoped<HoldSeatCommandHandler>();
         services.AddScoped<SellSeatCommandHandler>();

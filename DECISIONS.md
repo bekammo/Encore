@@ -643,3 +643,82 @@ assembly. The container is what makes a *complete* run possible.
 <!-- Expand later: whether CI should run this same image rather than a bespoke
      workflow, and whether the Api image should share the restore layer once there
      is something to deploy. -->
+
+---
+
+## 016 — Money is a decimal and a currency code, not a value object
+
+`Event.Price` is a `decimal`, `Event.Currency` is a three-character string, and there is
+no `Money` type. Postgres stores the amount as `numeric(19,4)`.
+
+A value object earns its keep by *preventing* something — adding dollars to euros,
+losing a currency on the way through a calculation, rounding at the wrong step. Nothing
+in Catalog or Orders does arithmetic on money beyond summing an order's lines, and both
+operands of that sum are the same currency by construction, because an order is for one
+event and an event has one price. So `Money` would prevent nothing while costing an EF
+owned-type mapping and a JSON-shape decision on every DTO that carries a price. That is
+the ceremony 001 argues against, and the same reasoning that keeps these modules flat.
+
+When money arithmetic gets hard — tax, fees, discounts, more than one currency in a
+basket — `Money` arrives then, in whichever module owns the arithmetic. Not before, and
+not on speculation.
+
+**The column type is not a detail.** Never a floating-point type: it cannot represent
+most decimal fractions exactly, so a summed total drifts from what the customer was
+shown, and it drifts silently. Never the Postgres `money` type either — its scale is a
+database-wide setting and its rendering is locale-dependent, so the same column means
+different things on two servers. `numeric(19,4)` rather than `(19,2)` leaves room for
+prices that are not whole cents without reopening the question later.
+
+**Currency is per event, deliberately, and there is no system-wide default.** No
+currency for this system is written down anywhere, and picking one silently would be
+inventing a rule. Carrying it per event also makes the no-conversion property structural
+rather than assumed: one event per order means one currency per order, so nothing in
+this system ever converts, and no mixed-currency order is representable.
+
+<!-- Expand later: whether a price of zero should be legal for a free event, and
+     whether the currency code is worth validating against a real ISO 4217 list
+     rather than a length check. -->
+
+---
+
+## 017 — One migrator per module, not one step in the host
+
+This answers 013's open question — "whether Catalog/Orders/Payments get their own
+migrators or one shared host-level step" — with **one each**. `CatalogMigrator` is a
+copy of `InventoryMigrator` with the nouns changed, registered inside
+`AddCatalogModule` behind `Catalog:MigrateOnStartup`, and Orders gets its own.
+
+The obvious objection is right: this is roughly sixty near-identical lines per module,
+and the instinct is to factor it into a generic `ModuleMigrator<TContext>`. Three
+reasons not to.
+
+**A host-level step would cost `Encore.Api` its zero-package property.** It would have
+to name every module's `DbContext`, which means the host takes a reference on EF Core
+and, having taken it, learns that modules have databases at all. 014 refused OpenAPI
+over that same property; it would be strange to keep the host pure against Swashbuckle
+and then hand it Entity Framework.
+
+**It saves no coordination.** Each module already owns its own `__EFMigrationsHistory`
+in its own schema (013), so there is nothing to sequence between them. A shared step
+would still enumerate one context per module; it would only move that list somewhere it
+does not belong.
+
+**A module carries its migrator with it.** The day Inventory becomes its own service,
+its migrator goes too, and nothing in the monolith needs unpicking — the same reason 013
+moved the history table out of `public` in the first place. A host-level step is
+precisely the thing that would need unpicking.
+
+The shared-helper version was considered and rejected twice over. Putting
+`ModuleMigrator<TContext>` in `Encore.Shared` would put EF Core into the assembly
+`Inventory.Domain` references, which is the purity rule broken through the back door —
+and `ENCORE001` would not catch it, because it only inspects `PackageReference` items.
+A separate `Encore.Modules.Shared.Persistence` project would avoid that, but it is a new
+project to save a hundred-odd lines, and it couples three modules' bootstrapping
+together, which is the opposite of a seam.
+
+Duplication is the price of the seam here, and it is cheap because the duplicated code
+is inert: it has no rules in it, and a bug in one copy cannot be a bug in another.
+
+<!-- Expand later: whether the run profiles should keep three separate
+     MigrateOnStartup flags or one, once there are three modules setting them. -->

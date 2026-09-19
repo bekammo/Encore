@@ -1,3 +1,4 @@
+using Encore.Modules.Catalog.Data;
 using Encore.Modules.Catalog.Endpoints;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
@@ -11,12 +12,27 @@ namespace Encore.Modules.Catalog;
 /// </summary>
 public static class CatalogModule
 {
-    /// <summary>Registers the module's services. Empty until there are any.</summary>
+    /// <summary>Registers the module's services.</summary>
     public static IServiceCollection AddCatalogModule(
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        // TODO: AddDbContext<CatalogDbContext>(...) against the "Catalog" connection string.
+        services.AddDbContext<CatalogDbContext>(options =>
+            options.UseCatalogNpgsql(
+                configuration.GetConnectionString("Catalog")
+                ?? throw new InvalidOperationException("Missing connection string 'Catalog'.")));
+
+        // Off unless asked for, exactly as Inventory's is. The run profiles set
+        // it so a developer with a fresh `docker compose up` gets a schema from
+        // `dotnet run`; anything deployed applies migrations as its own
+        // deliberate step. Read as configuration rather than from
+        // IHostEnvironment because which environment this is happens to be the
+        // host's business, not Catalog's.
+        if (configuration.GetValue<bool>("Catalog:MigrateOnStartup"))
+        {
+            services.AddHostedService<CatalogMigrator>();
+        }
+
         return services;
     }
 
