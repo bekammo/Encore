@@ -28,8 +28,7 @@ namespace Encore.Modules.Payments.Data.Migrations
                     IdempotencyKey = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
                     GatewayReference = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
                     AttemptedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
-                    ResolvedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
-                    xmin = table.Column<uint>(type: "xid", rowVersion: true, nullable: false)
+                    ResolvedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: true)
                 },
                 constraints: table =>
                 {

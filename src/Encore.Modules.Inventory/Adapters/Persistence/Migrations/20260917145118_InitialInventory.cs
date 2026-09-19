@@ -23,8 +23,7 @@ namespace Encore.Modules.Inventory.Adapters.Persistence.Migrations
                     EventId = table.Column<Guid>(type: "uuid", nullable: false),
                     Status = table.Column<int>(type: "integer", nullable: false),
                     HeldByClientId = table.Column<Guid>(type: "uuid", nullable: true),
-                    HoldExpiresAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
-                    xmin = table.Column<uint>(type: "xid", rowVersion: true, nullable: false)
+                    HoldExpiresAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: true)
                 },
                 constraints: table =>
                 {

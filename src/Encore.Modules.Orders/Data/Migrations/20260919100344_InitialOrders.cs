@@ -27,8 +27,7 @@ namespace Encore.Modules.Orders.Data.Migrations
                     HoldsExpireAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
                     ClosedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
                     Total = table.Column<decimal>(type: "numeric(19,4)", nullable: false),
-                    Currency = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: false),
-                    xmin = table.Column<uint>(type: "xid", rowVersion: true, nullable: false)
+                    Currency = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: false)
                 },
                 constraints: table =>
                 {
