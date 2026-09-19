@@ -12,8 +12,11 @@ namespace Encore.Modules.Payments.Endpoints;
 /// <c>Encore.Shared</c> holds zero packages on purpose, because
 /// <c>Inventory.Domain</c> references it and must stay free of infrastructure; an
 /// <see cref="IEndpointFilter"/> would drag <c>Microsoft.AspNetCore.App</c> in
-/// through that door, and <c>ENCORE001</c> would not catch it because it only
-/// inspects <c>PackageReference</c> items. See <c>DECISIONS.md</c> 024.
+/// through that door. Since 036 the build refuses it outright — <c>ENCORE002</c>
+/// on <c>Encore.Shared</c> for the framework reference, and <c>ENCORE003</c> on
+/// <c>Inventory.Domain</c> for what it drags along — which makes 024's argument
+/// something the compiler now agrees with rather than something this comment has
+/// to be trusted about. See <c>DECISIONS.md</c> 024 and 036.
 /// </para>
 /// <para>
 /// A third copy is worth naming as a cost rather than shrugged at: forty lines is

@@ -1536,3 +1536,329 @@ the previous mode did not need to make.
 
 <!-- Expand later: whether the inline flag is actually being read at the moment it is
      written, or only when something has already gone wrong. -->
+
+---
+
+## 036 — Load-In's last gap: the purity guard becomes three rules in one file
+
+`ENCORE001` has been carrying a hole since 002 wrote it, documented in `CLAUDE.md` as a
+"known gap" and named again in 017, 024 and 033: it inspects `@(PackageReference)`, which
+contains only the items its own csproj declares. Infrastructure arriving transitively
+through a `ProjectReference` passed it cleanly. This entry closes that, and two other holes
+found while closing it.
+
+**The gap was worse than recorded, in two ways.** First, `FrameworkReference` was never
+checked at all — one `<FrameworkReference Include="Microsoft.AspNetCore.App" />` puts the
+entire ASP.NET Core surface on the compile surface with no package to show for it. Second,
+and this is the one that mattered: **`Encore.Shared` had no guard whatsoever.** Its own
+comment called its zero-package state "load-bearing" and named the exact failure mode —
+"that dependency would reach the whole solution through the back door" — while nothing
+enforced it. Since `Encore.Shared` is the Domain's only `ProjectReference`, it was the
+single highest-leverage unguarded file in the repository. The three `.Contracts` csprojs
+made the same unenforced claim in prose.
+
+**Three rules, three codes.** `ENCORE001` no direct `PackageReference`; `ENCORE002` no
+`FrameworkReference` but the implicit BCL one; `ENCORE003` nothing outside the BCL in the
+resolved reference closure. `ENCORE001` keeps its exact text, because the code is quoted in
+`CLAUDE.md`, `README.md`, four entries of this log and a source comment — retargeting it to
+mean something broader would retroactively falsify all of them.
+
+**Shared, not copied, and this is where 017 cuts the other way.** 017 accepted sixty
+duplicated lines of migrator per module because that code is inert: "a bug in one copy
+cannot be a bug in another". A build guard is the exact opposite — it *is* the rule, and a
+copy that drifts is a project that has quietly stopped being guarded. By 017's own criterion
+this one belongs in `Directory.Build.targets`.
+
+**Opt-in by property, not selected by name.** A project sets `EncoreZeroDependency` and the
+shared file says what that declaration costs. Name-based selection
+(`EndsWith('.Contracts')`) would make enforcement invisible from the csproj and would let a
+rename silently change what the build checks. The declaration sits directly under the
+comment in each file that already claimed the property, which is the point: four comments
+became four checked facts.
+
+**How `ENCORE003` tells the BCL from everything else**, verified against the SDK with
+`dotnet build -t:ResolveReferences -getItem:ReferencePath` rather than assumed. BCL
+assemblies carry `NuGetPackageId = Microsoft.NETCore.App.Ref`; ASP.NET Core carries
+`Microsoft.AspNetCore.App.Ref`; every real package carries its own id; an assembly resolved
+from a `ProjectReference` carries none. So "has a `NuGetPackageId` that is not the base
+targeting pack" is precisely "came from outside the BCL and outside this repo". It reads
+what the compiler is about to be handed rather than what the csproj declares, which is why
+one check covers the direct, the transitive and the framework-reference cases at once.
+
+**Rejected: an allowlist over `@(ProjectReference)`.** Cheap, but it sees one hop — a
+zero-package project referencing a package-carrying project would still pass — and an
+allowlist of names goes stale. **Rejected: parsing `project.assets.json`**, which means
+regex over JSON in MSBuild to re-derive what `ResolvePackageAssets` already computed and
+handed over as items.
+
+**`Encore.Api` gets `ENCORE001` alone**, via a second property. 014 refused OpenAPI and 017
+refused a host-level migrator partly to keep the host free of packages of its own, and
+nothing checked it. It cannot take the other two rules: the Web SDK adds ASP.NET Core and
+composing four modules brings EF Core in transitively, which is what a host is for.
+
+**Proven by making it fail, not by reading it.** Adding `StackExchange.Redis` to
+`Encore.Shared` produces `ENCORE003` on `Encore.Modules.Inventory.Domain`, naming Redis and
+its four transitive dependencies — the documented gap, reproduced and caught. A
+`FrameworkReference` on `Encore.Shared` produces `ENCORE002` there and `ENCORE003` on the
+Domain. This is the scenario 024 declined to create when it refused to promote the shared
+endpoint filter into `Encore.Shared`; that argument was never only about the guard, so 024
+and 033 stand exactly as written and their triggers are unchanged.
+
+**What it costs.** A build failure now depends on SDK item metadata rather than only on
+csproj text, so a future SDK that stopped populating `NuGetPackageId` would break these
+builds. That is the right direction to fail in — loudly, on the first build, never silently
+passing — and the repo pins one SDK through the test container.
+
+<!-- Expand later: whether the guard should also refuse an InternalsVisibleTo out of a
+     zero-dependency project, and whether ENCORE003 wants an allowlist mechanism the day a
+     genuine BCL-adjacent package is argued for. -->
+
+---
+
+## 037 — The architecture test, and why it has no architecture-test library
+
+002 left an open note asking how the assembly-boundary approach compares to a NetArchTest
+one, and the Domain csproj carried a comment saying an architecture test "can later assert
+the same rule at the namespace level". `tests/Encore.ArchitectureTests` is that test, and
+the comparison now has an answer: the library was not needed.
+
+**No NetArchTest, no ArchUnitNET.** This repo has no third-party test package beyond xunit —
+no mocking library, no fluent assertions, hand-rolled fakes and raw `Assert` throughout.
+Nearly every assertion here is an assembly-reference question that
+`Assembly.GetReferencedAssemblies()` answers in a line, and the one namespace-level
+assertion is three lines of LINQ over `GetTypes()`. A fluent DSL for that would be the
+pattern the problem does not justify. The cost, stated plainly: failure messages are only as
+good as the ones written by hand, so each assertion pays for a line of message-building.
+
+**The test cannot see what it asserts about.** Every `ProjectReference` carries
+`ReferenceOutputAssembly="false"` — build-order edges only, so the outputs never reach this
+project's compile surface. A test proving `Encore.Api` has no consumers while itself
+consuming `Encore.Api` would be its own counterexample. Assemblies are named as strings and
+loaded from disk, located through `AssemblyMetadataAttribute` values injected at build time
+rather than by walking up from the test binary looking for a solution file.
+
+**Two mechanisms, because they answer two questions.** `GetReferencedAssemblies()` reports
+only what the compiler actually emitted a reference to, so a *declared but unused*
+`ProjectReference` is invisible to it — and that is exactly the latent violation someone
+will later find and use. So `ProjectGraphTests` parses the csprojs and asserts the declared
+graph, while `AssemblyReferenceTests` reads compiled metadata and asserts the real reach
+including transitive. Neither subsumes the other.
+
+**One trap worth recording.** Module-boundary assertions compare assembly names exactly,
+never by prefix: `Encore.Modules.Inventory.Contracts` starts with
+`Encore.Modules.Inventory`, so a prefix test would ban the very seam the rule exists to
+permit.
+
+**What it costs.** A twentieth project in the solution, and a suite that fails on a
+legitimate architectural change until someone updates it — which is the point, but it does
+mean the next module costs a few lines here too.
+
+<!-- Expand later: whether this suite should also assert that no module registers another
+     module's services, and whether it is the right home for the endpoint-route conventions
+     018 settled in prose. -->
+
+---
+
+## 038 — `Seat.Create` rejects an empty id
+
+Answers the open half of 005's note; 012 answered the other half by settling bulk creation
+with generated ids. `Seat.Create` now throws `ArgumentException` if either `id` or `eventId`
+is `Guid.Empty`.
+
+**Why it is a real hole and not pedantry.** 005's whole case for the factory is that a seat
+cannot be conjured into a state no rule approved. A seat with `Id == Guid.Empty` cannot be
+addressed and collides on the primary key with the next one; a seat with
+`EventId == Guid.Empty` belongs to no event. Both are exactly such states, reachable through
+the one door 005 built to prevent them. The rest of the system already agrees an empty Guid
+is not an identity — all three copies of `ClientIdEndpointFilter` refuse one at the edge —
+so the factory accepting it was the inconsistency.
+
+**`ArgumentException`, not `SeatTransitionException`.** The transition exception carries a
+closed reason enum that `SeatResults` switches over exhaustively with no default arm (014);
+adding a member would force an HTTP mapping for a case no HTTP request can produce. 012 set
+the precedent: a nonsense seat count "is a malformed request rather than a refusal, so it
+throws rather than returning a result the caller would have to branch on".
+
+**The endpoint guard that had to come with it.** `CreateSeatMapCommandHandler` passes the
+route's event id straight through, so `POST /events/00000000-.../seats` would have turned
+from a bound request into a 500. `SeatEndpoints.CreateSeatMapAsync` now refuses an empty
+event id with a 400 in the same shape as its seat-count check, one screen above. The
+aggregate's throw stays as the belt behind that brace: the endpoint answers the caller, the
+factory answers everybody else.
+
+**What it costs.** Nothing in production can reach it — `CreateSeatMapCommandHandler`
+generates the ids. The value is entirely in the seed script, the fixture and the bulk import
+that do not exist yet, which is 005's own "tired teammate" argument and the reason a factory
+is worth having at all.
+
+<!-- Expand later: whether the same guard belongs on the command records themselves, once
+     there is a validation story that is not one hand-written check per endpoint. -->
+
+---
+
+## 039 — `utcNow` must be UTC, and the aggregate is where that is checked
+
+**Chosen rather than found.** `CLAUDE.md` requires `DateTime` with `Kind == Utc` everywhere
+and says time enters the system at exactly one place, but nothing checked it anywhere. A
+caller passing `DateTime.Now` failed at the Npgsql boundary, several layers from the
+mistake, with a provider error about a `timestamptz`. `Seat.Hold`, `Release` and `Sell` now
+guard their `utcNow` parameter and throw `ArgumentException` naming it.
+
+**In the aggregate, not at the handler boundary.** The three handlers get their instant from
+`TimeProvider.GetUtcNow().UtcDateTime`, which cannot return anything but UTC — a check there
+would be tautological where it sits, and would protect nothing from the aggregate's other
+callers: the unit tests, a future bulk operation, the sweep when Phase 7 brings it. The
+domain receives the clock as a parameter, which makes "this is UTC" a precondition of those
+three methods, and a precondition belongs with the method whose contract it is. This is not
+a second place where time enters the system; it is the first place that checks what arrived.
+
+**`Unspecified` is refused alongside `Local`.** A wall clock with no zone is a different
+instant in London and in Los Angeles, so reading it as UTC would be a guess wearing the
+costume of a conversion. 018 refuses an unzoned instant at the HTTP edge for the same
+reason; this is that rule at a second edge, not a second rule.
+
+**What it buys.** Every `IDomainEvent.OccurredAt` is now UTC by construction rather than by
+convention, because the events are built from this parameter and `HoldExpiresAt` is derived
+from it. Nothing downstream needs a check of its own.
+
+**One guard method, not three inline copies** — 017's criterion again, the same way 036
+argues it.
+
+<!-- Expand later: whether Payments' own transition methods want the same guard, given that
+     `Payment` takes `utcNow` the same way and is protected today only by every caller
+     happening to be a handler. -->
+
+---
+
+## 040 — The expiry boundary, the reclaim edge, and what a no-op release leaves behind
+
+Three behaviours the code has always had and nothing asserted. Writing the tests settled the
+first half of 007's open note as a side effect, which is this entry's real subject.
+
+**The boundary is exclusive, and now tested on both sides.** `EffectiveStatusAt` reads
+`HoldExpiresAt <= utcNow`, so a hold at exactly its expiry instant is over. 007 said so in
+prose; nothing tested it, and every test in `SeatTests` sat a full minute away from the
+boundary on either side. Flipping that comparison to `<` would have changed behaviour at
+exactly one instant and broken nothing in the suite. There are now four tests one tick
+apart.
+
+**A client re-holding after their *own* hold lapsed reclaims the seat.** 007 left this open,
+calling neither reading settled — reclaim, or refuse as squatting. Reclaim is right, and the
+reason is that by the time the question arises the hold has already lapsed, so the seat was
+genuinely available to anyone who asked. Refusing only the previous holder would punish one
+client for the single outcome the design treats as entirely normal, and would do it using a
+rule — "you had it last" — that exists nowhere else in the aggregate. The test now asserts
+the event pair by type and order (`SeatReleased(Expired)` then `SeatHeld`) rather than
+counting two events, which is what makes the behaviour pinned rather than merely observed: a
+count of two is satisfied by any pair at all.
+
+**A no-op release leaves the stale row exactly as it was.** `Release` on a lapsed hold
+returns early and deliberately does *not* tidy the columns — the row still reads `Held` by
+the old client with an expiry in the past, and the next `Hold` reclaims it lazily. The
+obvious guess is the opposite, so this is now a test of its own. Tidying there would give the
+release path an opinion about expiry, which is precisely how the background sweep acquires
+authority the design says it must never have.
+
+**`Outcome.Refused` in the concurrency test was unreachable, and the assertion accepted it
+anyway.** All fifty sessions load before the start gate, so every loser collides on the
+write; the refusal arm could never fire, while the assertion read `LostRace or Refused` and
+would have gone on passing if the loading strategy silently changed. It now asserts
+`LostRace == 49` and `Refused == 0`, and a second test loads *after* the seat is taken so
+that refusal is the only legal answer. The pair says one thing: **when you lose depends on
+when you read.**
+
+**Not done, and why.** That second test is the tenth copy of the same `PostgreSqlBuilder`
+and doubles this class's container startups, because xunit constructs an instance per test.
+Sharing containers through `ICollectionFixture` is a change across nine test classes, and
+adding one test to one of them is not the trigger. The trigger is a second class needing the
+*same* container.
+
+<!-- Expand later: whether the boundary deserves the same treatment in the handler tests,
+     where HoldExpiresAt is compared against a TimeProvider rather than a literal. -->
+
+---
+
+## 041 — Correcting 007: `Sell` already tells a non-holder the truth
+
+007's open note says `Sell` "currently says `HoldExpired`, which is untrue for them" when a
+caller who never held the seat tries to buy it after someone else's hold lapsed. **That is
+no longer true, and has not been for some time.** `Seat.Sell` switches on both the status and
+whether the holder is the caller, and answers `NotTheHolder`; the behaviour is pinned by
+`SeatTests.Sell_WhenAnotherClientsHoldHasLapsed_ShouldSayNotTheHolder`.
+
+This gets its own entry rather than a line inside 040 for one reason: the log is append-only
+and its value depends entirely on a reader being able to trust that an open note is actually
+open. A stale one is worse than no note, because it sends somebody to fix something that is
+already fixed. 007 stands as written, as every entry does; this is the entry that says its
+note has been overtaken.
+
+<!-- Expand later: whether open notes want a convention for being marked answered from the
+     entry that answers them, now that this has happened twice. -->
+
+---
+
+## 042 — `xmin` leaves the three migrations
+
+`CLAUDE.md` states flatly that `xmin` is a system column and "must never appear in a
+migration's `CREATE TABLE`". It appeared in the C# `CreateTable` of all three initial
+migrations — Inventory, Orders and Payments — as
+`xmin = table.Column<uint>(type: "xid", rowVersion: true, nullable: false)`. The lines are
+gone.
+
+**Why obey the rule rather than amend it.** The line is inert today only because *this*
+provider strips it from the emitted SQL. A provider change, a hand-written DDL script, or a
+reader copying the migration into psql each turn it into
+`ERROR: column name "xmin" conflicts with a system column name`. The rule costs three
+deleted lines to obey, and a written rule is settled — contradicting one is a proposal, and
+not one worth making when the alternative is this cheap.
+
+**What actually decided it.** `ConcurrentHoldTests` tells its reader that migrating "proves
+the generated migration applies against real Postgres, including that it does not try to
+create the xmin system column" — while the migration's C# literally did. A false comment
+standing next to the most-defended mechanism in the project is worse than either the line or
+the rule.
+
+**Why editing an applied migration is safe here specifically.** The general warning is about
+edits that make the migration and the model snapshot describe different schemas. They never
+disagreed: the snapshots and Designer files carry `RowVersion`/`xmin` as a *model property*,
+not as a `CreateTable` column, and `dotnet ef migrations add` diffs the current model against
+the snapshot. Editing only the `Up()` body touches neither side. Nothing is deployed, the dev
+databases are one `docker compose down -v` away, and the integration suite migrates from
+scratch against a throwaway container on every run — so a wrong edit fails loudly inside one
+test run rather than quietly in six weeks.
+
+**The part that makes it stick.** Regenerating any of these migrations would put the line
+straight back and nothing would notice, so
+`MigrationConventionTests.NoMigrationShouldCreateTheXminSystemColumn` reads every migration
+source and refuses the `CreateTable` form. Deliberately narrow: `SeatConfiguration`'s
+`HasColumnName("xmin")` is the mapping, which is correct and is the whole mechanism, and the
+snapshots' property entries are untouched.
+
+<!-- Expand later: whether the same source test should assert the reverse — that every table
+     carrying a concurrency token maps it to xmin rather than to a real column. -->
+
+---
+
+## 043 — Load-In is closed
+
+The phase's three outcomes were modular monolith, DDD tactical patterns, TDD foundation.
+What "closed" means here is narrower and more useful than "finished": **every claim the
+phase makes is now enforced by the build or by a test rather than by prose.**
+
+Before 036–042, four of the five zero-dependency projects were guarded only by a comment,
+the one guard that existed was blind to the case it was most likely to meet, module
+boundaries were enforced by nobody, two domain preconditions went unchecked, the exclusive
+expiry boundary was stated and never tested, and the flagship concurrency test contained an
+assertion that accepted an outcome it could not produce. None of that was visible from the
+outside, which is the point — a claim nothing checks reads exactly like a claim that holds.
+
+**Explicitly left to later phases, and not for want of noticing:** the outbox and its
+dispatcher, and with them the reconciliation path 031 needs and the domain events 029
+declined for `Payment` (Soundcheck); the expired-hold sweep, load testing and chaos
+(Showtime); CI, deployment, observability and the write-up (On Tour). Notifications and
+Identity do not exist, so `X-Client-Id` remains a claimed identity. Container sharing across
+the integration suite and the fourth `ClientIdEndpointFilter` both have triggers recorded,
+and neither has been met.
+
+<!-- Expand later: whether a phase should end with an entry like this at all, or whether the
+     roadmap table in CLAUDE.md is the better home for the claim. -->

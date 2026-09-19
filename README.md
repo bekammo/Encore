@@ -42,12 +42,19 @@ Encore.sln
     ├── Encore.Modules.Orders.UnitTests            the HTTP mapping, no database
     ├── Encore.Modules.Orders.IntegrationTests     checkout, against real Postgres
     ├── Encore.Modules.Payments.UnitTests          the state machine + the gateway
-    └── Encore.Modules.Payments.IntegrationTests   the one-live-attempt index
+    ├── Encore.Modules.Payments.IntegrationTests   the one-live-attempt index
+    └── Encore.ArchitectureTests                   the boundaries, over metadata and csprojs
 ```
 
 `Encore.Modules.Inventory.Domain` has no `PackageReference` items at all, and
-its csproj fails the build (`ENCORE001`) if one is added. EF Core, Redis and
-ASP.NET Core exist only on the far side of the ports.
+neither do `Encore.Shared` or the three `.Contracts` assemblies. That is checked
+rather than asserted: all five opt into three build rules in
+`Directory.Build.targets` — `ENCORE001` for a direct package, `ENCORE002` for a
+framework reference, `ENCORE003` for anything outside the BCL reaching the
+resolved reference closure, which is the transitive case the first rule cannot
+see. `tests/Encore.ArchitectureTests` asserts the same boundaries again over
+compiled metadata and the declared project graph. EF Core, Redis and ASP.NET Core
+exist only on the far side of the ports.
 
 ## What Inventory actually does
 
@@ -129,7 +136,7 @@ dotnet build
 dotnet run --project src/Encore.Api
 ```
 
-The run profiles set `Catalog__`, `Inventory__` and `Orders__MigrateOnStartup`,
+The run profiles set `Catalog__`, `Inventory__`, `Orders__` and `Payments__MigrateOnStartup`,
 so a fresh `docker compose up` gets its schema from `dotnet run`. Nothing
 deployed does that — applying migrations is a deliberate step
 (`dotnet ef database update`), for the reasons in `DECISIONS.md` 013.
@@ -140,7 +147,7 @@ deployed does that — applying migrations is a deliberate step
 docker compose run --rm tests
 ```
 
-305 tests: 212 unit, 93 integration against real Postgres and Redis via
+353 tests: 259 unit and architecture, 94 integration against real Postgres and
 Testcontainers.
 
 The suite runs in a container rather than on the host, and that is a host problem
@@ -162,7 +169,7 @@ docker compose run --rm tests --filter "FullyQualifiedName~SeatTests"
 
 ## Status
 
-**Mid Load-In.** Inventory is complete and proven end to end — aggregate, ports,
+**End of Load-In.** Inventory is complete and proven end to end — aggregate, ports,
 adapters, four use cases, HTTP surface, migrations, and a concurrency test that
 passes. It is the deep module and it is done.
 
@@ -188,6 +195,14 @@ needs the outbox, which is the next phase (`DECISIONS.md` 031).
 Deliberately absent, by roadmap phase rather than oversight: the outbox and the
 expired-hold sweep, MediatR, MassTransit, SignalR, observability and any
 deployment story.
+
+Nothing is open inside the phase itself any more. The last gap — `ENCORE001` inspecting
+only direct `PackageReference` items, so infrastructure arriving transitively through a
+`ProjectReference` sailed past it — is closed, along with three others found while
+closing it: framework references went unchecked, and `Encore.Shared` and the contracts
+assemblies had no guard at all despite being where a back-door dependency would actually
+arrive. Everything else on the list above belongs to a later phase, and Payments arriving
+during Load-In rather than at Soundcheck means some of the next one is already banked.
 
 | Phase | Weeks | Focus |
 |---|---|---|
