@@ -1498,3 +1498,41 @@ the contended-inventory problem, and this is the entry to argue with if that is 
 <!-- Expand later: whether a cancelled order should be re-openable, and whether the release
      should be best-effort-in-the-background once the outbox exists rather than inline on
      the cancel path. -->
+
+---
+
+## 035 — The working agreement changes: build first, explain after
+
+**Effective 2026-09-19.** The first entry here about how the work is done rather than
+about what was built. It exists because this log is append-only and this is a change to
+a rule every earlier entry was produced under. Rewriting the working agreement without
+recording that it changed would leave 001–034 looking as though they came from the same
+process, which is the specific kind of quiet history-editing the log's own preamble
+forbids.
+
+**What changed.** The old agreement was propose-then-implement: anything touching a rule
+or an API shape meant presenting options with trade-offs and confidence levels, then
+waiting for explicit confirmation. The new one is build-by-default. Design and
+implementation arrive together; a short recap of the decision and the alternative it beat
+follows delivery rather than preceding it; comprehension checks and withholding code
+pending my own design attempt are gone.
+
+**What stayed, deliberately.** Three things. Decisions are still recorded here, numbered
+and append-only. A pattern the problem does not justify still gets pushed back on, and
+that push-back is now the *only* thing that ends in a question rather than in code. And
+rules already written down stay settled — building faster is licence to decide what is
+undecided, not to reverse what is decided.
+
+**Why.** The confirmation gate was priced for a risk this project does not carry. The
+expensive mistakes here are structural — flattening Inventory, layering Catalog — and
+those are caught by the asymmetry rule, which survives untouched. What the gate actually
+blocked was ordinary work, at the cost of a round trip each time.
+
+**What it costs.** Wrong turns now get discovered in review rather than in conversation,
+so the cheapest moment to catch them has been given up. The mitigation is that
+consequential calls are flagged inline as they are made rather than after the fact, and
+that this log carries the reasoning — which makes 035 a bet on the log's quality that
+the previous mode did not need to make.
+
+<!-- Expand later: whether the inline flag is actually being read at the moment it is
+     written, or only when something has already gone wrong. -->
