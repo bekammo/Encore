@@ -1,3 +1,4 @@
+using Encore.Modules.Inventory.Contracts;
 using Encore.Modules.Inventory.Domain.Exceptions;
 using Encore.Modules.Inventory.Ports;
 
@@ -59,12 +60,21 @@ public sealed class HoldSeatCommandHandler(
     /// (<c>DECISIONS.md</c> 006).
     /// </summary>
     /// <remarks>
-    /// A constant rather than configuration, deliberately. Per-event caps — a
-    /// small venue wanting a tighter limit — would be a different rule with a
+    /// <para>
+    /// Fixed rather than configuration, deliberately. Per-event caps — a small
+    /// venue wanting a tighter limit — would be a different rule with a
     /// different home, and leaving this settable invites it being changed
     /// without anyone arguing for the new number.
+    /// </para>
+    /// <para>
+    /// The value itself now lives on <see cref="SeatReservationLimits"/>, so a
+    /// caller outside this module can size a request before sending it instead
+    /// of learning the limit by being refused. This stays as the name the
+    /// handler and its tests already use; it is a forwarder, not a second copy.
+    /// </para>
     /// </remarks>
-    public const int MaxHoldsPerClientPerEvent = 4;
+    public static readonly int MaxHoldsPerClientPerEvent =
+        SeatReservationLimits.MaxHoldsPerClientPerEvent;
 
     /// <summary>
     /// How long a lock survives if it is never released. Sized to one write

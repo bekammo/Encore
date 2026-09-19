@@ -820,3 +820,37 @@ catalogue to land on it; a name that describes the need does not.
 
 <!-- Expand later: whether Orders should cache a price for the life of a checkout
      rather than reading it once, if the in-process call ever becomes a remote one. -->
+
+---
+
+## 020 — The contracts assembly may carry one number
+
+`Encore.Modules.Inventory.Contracts` now holds `SeatReservationLimits.MaxHoldsPerClientPerEvent`,
+and `HoldSeatCommandHandler` forwards to it. That is the first value, rather than a
+shape, to appear in a contracts assembly, so it is worth saying why it is allowed and
+what would not be.
+
+Orders composes multi-seat checkouts, and the cap is four. Without a published limit its
+only options are to hard-code 4 — a second copy of a rule, wrong the moment the number
+changes — or to send five holds, be refused on the fifth, and compensate the four that
+succeeded. That is four writes and four compensating releases, during a flash sale, to
+learn a number that was never a secret. The README states it and every
+`hold_cap_reached` response already ships it as `limit`.
+
+So this publishes nothing; it deletes a duplicate. That is the test for anything else
+that wants to live here: **a value belongs on the contract when a caller must know it
+*before* acting, and when it is already observable afterwards.** A value that a caller
+could only use to re-derive a decision Inventory owns does not belong here — the cap
+itself is still judged by Inventory, against Inventory's clock and its own count of live
+holds, so a caller reading this can size a request but cannot conclude it will succeed.
+Seats held from another tab still count.
+
+**It is a `static readonly` field, not a `const`.** A `const` is copied into the
+consumer's assembly at compile time, so an Orders built against 4 would keep sending 4
+after Inventory moved to 6, with nothing to notice. That is a curiosity while both live
+in one process and a real bug the day `ISeatReservations` is served over HTTP — which is
+the scenario this assembly exists for. The handler keeps the old name as a forwarder so
+`SeatResults` and the existing tests do not churn.
+
+<!-- Expand later: whether the hold duration should be published the same way once
+     something outside Inventory needs to show a countdown. -->
