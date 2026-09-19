@@ -70,6 +70,19 @@ public static class SeatEndpoints
         HttpContext context,
         CancellationToken cancellationToken)
     {
+        // Refused here so it stays a 400. Seat.Create rejects an empty event id
+        // too (DECISIONS 038), but that throw is the belt behind this brace: a
+        // route id is a request the caller got wrong, and letting the aggregate
+        // answer it would turn a malformed request into a 500.
+        if (eventId == Guid.Empty)
+        {
+            return TypedResults.Problem(
+                detail: "An event id must not be empty.",
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Invalid event id",
+                instance: context.Request.Path);
+        }
+
         if (request.Count < 1 || request.Count > CreateSeatMapCommandHandler.MaxSeatsPerRequest)
         {
             return TypedResults.Problem(

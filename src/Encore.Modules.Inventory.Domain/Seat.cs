@@ -72,7 +72,33 @@ public sealed class Seat
     /// </remarks>
     /// <param name="id">Identity for the new seat, assigned by the caller.</param>
     /// <param name="eventId">The concert this seat belongs to.</param>
-    public static Seat Create(Guid id, Guid eventId) => new(id, eventId);
+    /// <exception cref="ArgumentException">Either id is empty.</exception>
+    public static Seat Create(Guid id, Guid eventId)
+    {
+        // DECISIONS 038, answering the open half of 005's note. An empty Guid is
+        // not an identity: a seat with one cannot be addressed and collides on
+        // the primary key with the next one, and a seat belonging to event
+        // Guid.Empty belongs to no event. Both are states no rule approved, which
+        // is the hole this factory exists to close. The rest of the system
+        // already agrees — every ClientIdEndpointFilter refuses an empty client
+        // id at the edge.
+        //
+        // ArgumentException rather than SeatTransitionException: that exception
+        // carries a closed reason enum which SeatResults switches over
+        // exhaustively, and a malformed construction has no HTTP request that can
+        // produce it. 012 set the precedent with a nonsense seat count.
+        if (id == Guid.Empty)
+        {
+            throw new ArgumentException("A seat's id must not be empty.", nameof(id));
+        }
+
+        if (eventId == Guid.Empty)
+        {
+            throw new ArgumentException("A seat must belong to an event.", nameof(eventId));
+        }
+
+        return new Seat(id, eventId);
+    }
 
     /// <summary>Identity of this seat. Stable for the life of the event.</summary>
     public Guid Id { get; private set; }
@@ -119,6 +145,7 @@ public sealed class Seat
     /// <exception cref="SeatTransitionException">The seat is sold, or held by someone else.</exception>
     public void Hold(Guid clientId, DateTime utcNow)
     {
+        GuardUtc(utcNow);
         GuardNotSold();
 
         if (EffectiveStatusAt(utcNow) is SeatStatus.Held)
@@ -165,6 +192,7 @@ public sealed class Seat
     /// <exception cref="SeatTransitionException">The seat is sold, or held by someone else.</exception>
     public void Release(Guid clientId, DateTime utcNow)
     {
+        GuardUtc(utcNow);
         GuardNotSold();
 
         if (EffectiveStatusAt(utcNow) is SeatStatus.Available)
@@ -197,6 +225,7 @@ public sealed class Seat
     /// <exception cref="SeatTransitionException">No live hold, or not this client's.</exception>
     public void Sell(Guid clientId, DateTime utcNow)
     {
+        GuardUtc(utcNow);
         GuardNotSold();
 
         if (EffectiveStatusAt(utcNow) is SeatStatus.Available)
@@ -244,6 +273,50 @@ public sealed class Seat
         => Status is SeatStatus.Held && HoldExpiresAt <= utcNow
             ? SeatStatus.Available
             : Status;
+
+    /// <summary>
+    /// Every transition takes the current instant as a parameter, and that
+    /// instant must be UTC. This is where that contract is checked rather than
+    /// assumed. See <c>DECISIONS.md</c> 039.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Here rather than at the handler boundary.</b> The three handlers get
+    /// their instant from <c>TimeProvider.GetUtcNow().UtcDateTime</c>, which
+    /// cannot return anything else, so a check there would be tautological where
+    /// it sits and would protect nothing from the aggregate's other callers —
+    /// tests, a future bulk import, the sweep when it arrives. The mistake this
+    /// guards against arrives at the aggregate, so the precondition belongs on
+    /// the methods whose contract it is.
+    /// </para>
+    /// <para>
+    /// <b><see cref="DateTimeKind.Unspecified"/> is refused alongside
+    /// <see cref="DateTimeKind.Local"/>.</b> A wall clock with no zone is a
+    /// different instant in London and in Los Angeles, so quietly reading it as
+    /// UTC would be a guess wearing the costume of a conversion.
+    /// </para>
+    /// <para>
+    /// This is what makes every <c>IDomainEvent.OccurredAt</c> UTC by
+    /// construction: the events are built from this parameter, and
+    /// <see cref="HoldExpiresAt"/> is derived from it, so nothing downstream
+    /// needs a check of its own.
+    /// </para>
+    /// <para>
+    /// <see cref="ArgumentException"/>, not <see cref="SeatTransitionException"/>:
+    /// a non-UTC instant is a bug in the caller, not a refusal about the state of
+    /// the world, and the reason enum is a closed set with an HTTP mapping behind
+    /// every member.
+    /// </para>
+    /// </remarks>
+    private static void GuardUtc(DateTime utcNow)
+    {
+        if (utcNow.Kind is not DateTimeKind.Utc)
+        {
+            throw new ArgumentException(
+                $"utcNow must be a UTC instant; its Kind was {utcNow.Kind}. Time enters this system once, through TimeProvider.GetUtcNow().UtcDateTime.",
+                nameof(utcNow));
+        }
+    }
 
     private void GuardNotSold()
     {
