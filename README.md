@@ -91,15 +91,22 @@ All three seat actions are idempotent, which is what makes retrying a POST safe.
 | `POST /events/{eventId}/seats/{seatId}/hold` | Holds the seat for five minutes. Returns `holdExpiresAt`. |
 | `POST /events/{eventId}/seats/{seatId}/release` | Gives a held seat back. |
 | `POST /events/{eventId}/seats/{seatId}/purchase` | Converts this client's live hold into a sale. |
+| `POST /orders` | Opens a checkout: prices the event, holds every seat, returns `201` and the order. |
+| `GET /orders/{orderId}` | Reads one of the calling client's orders. |
+| `POST /orders/{orderId}/confirm` | Converts the order's holds into sales. |
+| `POST /orders/{orderId}/cancel` | Ends the order because the customer said so. |
 
-The three seat actions require an `X-Client-Id` header carrying a GUID. **It is a
-claimed identity, not authentication** — anyone can change it and reset their own
-cap. It is a deliberate stand-in for the Identity module that does not exist yet,
-so the seat flow can be exercised end to end without first inventing an auth
-story. That is also why no route returns `401` or `403`.
+The three seat actions and every `/orders` route require an `X-Client-Id` header
+carrying a GUID. **It is a claimed identity, not authentication** — anyone can
+change it and reset their own cap. It is a deliberate stand-in for the Identity
+module that does not exist yet, so the flow can be exercised end to end without
+first inventing an auth story. That is also why no route returns `401` or `403`.
 
 Refusals are `409` with a machine-readable `reason` and a `retriable` flag; only
-"no such seat" is `404`. Clients branch on `reason`, not on status code:
+an addressed thing that is not there — a seat, an order — is `404`. A request
+that is wrong on its own terms, such as more seats than the published cap, is
+`400`, and carries a `reason` too. Clients branch on `reason`, not on status
+code:
 
 ```json
 {
@@ -118,9 +125,9 @@ dotnet build
 dotnet run --project src/Encore.Api
 ```
 
-The run profiles set `Inventory__MigrateOnStartup`, so a fresh
-`docker compose up` gets its schema from `dotnet run`. Nothing deployed does
-that — applying migrations is a deliberate step
+The run profiles set `Catalog__`, `Inventory__` and `Orders__MigrateOnStartup`,
+so a fresh `docker compose up` gets its schema from `dotnet run`. Nothing
+deployed does that — applying migrations is a deliberate step
 (`dotnet ef database update`), for the reasons in `DECISIONS.md` 013.
 
 ## Running the tests
@@ -129,7 +136,8 @@ that — applying migrations is a deliberate step
 docker compose run --rm tests
 ```
 
-134 tests: 123 unit, 11 integration against real Postgres via Testcontainers.
+205 tests: 152 unit, 53 integration against real Postgres and Redis via
+Testcontainers.
 
 The suite runs in a container rather than on the host, and that is a host problem
 rather than a design one. Windows Smart App Control is a Code Integrity policy in
@@ -155,9 +163,15 @@ adapters, four use cases, HTTP surface, migrations, and a concurrency test that
 passes. It is the deep module and it is done.
 
 Catalog is implemented and flat: entities, schema, migration and CRUD routes, with
-no layering ceremony anywhere in it. Orders is next and stays flat too. Payments is
-still scaffolding, and stays that way until Soundcheck extracts it. Notifications and
-Identity do not exist.
+no layering ceremony anywhere in it. Orders is implemented and flat too — schema,
+checkout, confirm and cancel — and it is the module that proves the point of the
+two `.Contracts` assemblies, since it prices through Catalog and holds through
+Inventory without referencing either one.
+
+Payments is still scaffolding. It becomes real during Load-In rather than at
+Soundcheck, because Strangler Fig needs something to strangle and a module with
+no behaviour cannot be extracted (`DECISIONS.md` 004). Notifications and Identity
+do not exist.
 
 Deliberately absent, by roadmap phase rather than oversight: the outbox and the
 expired-hold sweep, MediatR, MassTransit, SignalR, observability and any

@@ -42,7 +42,7 @@ public class SeatResultsTests
     {
         var result = SeatResults.ForHold(SeatId, HoldSeatResult.Held(Expiry), Path);
 
-        var ok = Assert.IsType<Ok<HoldSeatResponse>>(result);
+        var ok = Assert.IsType<Ok<HeldSeatResponse>>(result);
         Assert.Equal(StatusCodes.Status200OK, StatusOf(result));
         Assert.Equal(SeatId, ok.Value!.SeatId);
         Assert.Equal(Expiry, ok.Value.HoldExpiresAt);

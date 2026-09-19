@@ -36,7 +36,7 @@ internal static class SeatResults
         result.Outcome switch
         {
             HoldSeatOutcome.Held =>
-                TypedResults.Ok(new HoldSeatResponse(seatId, result.HoldExpiresAt!.Value)),
+                TypedResults.Ok(new HeldSeatResponse(seatId, result.HoldExpiresAt!.Value)),
 
             HoldSeatOutcome.SeatNotFound => NotFound(path),
 

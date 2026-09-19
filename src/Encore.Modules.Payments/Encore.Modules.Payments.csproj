@@ -12,9 +12,14 @@
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
   </ItemGroup>
 
+  <!-- Only what is actually used. EF Core is here because PaymentsDbContext
+       derives from DbContext; Npgsql is not, because nothing in this module
+       calls UseNpgsql yet. Carrying a provider no code reaches is the exact
+       ambiguity DECISIONS 004 names as the problem with this module — a stub
+       wearing a working module's clothes. Npgsql, the Design package and a
+       connection string all arrive together when the module becomes real. -->
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
-    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
 </Project>
