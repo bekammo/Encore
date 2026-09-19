@@ -1,18 +1,326 @@
+using Encore.Modules.Catalog.Data;
+using Encore.Modules.Catalog.Models;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Catalog.Endpoints;
 
 /// <summary>
-/// Minimal API endpoints for browsing events and venues. Straight CRUD against
-/// <see cref="Data.CatalogDbContext"/> — no handler indirection, because there
-/// is no behaviour here worth indirecting.
+/// Minimal API endpoints for browsing and populating the catalogue. Straight
+/// CRUD against <see cref="CatalogDbContext"/> — no handler indirection,
+/// because there is no behaviour here worth indirecting.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <b>No client identity on any route.</b> A catalogue is public, and creating
+/// venues and events is operator-facing — the same footing as
+/// <c>POST /events/{eventId}/seats</c>, which also has no filter. When Identity
+/// exists, the write routes are the ones that grow an authorisation check; the
+/// reads stay open.
+/// </para>
+/// <para>
+/// <b>Ids are generated here, not supplied.</b> Venues and events have no
+/// natural key, and a caller that has just created one needs something to hold
+/// — the same call 012 made for seat maps.
+/// </para>
+/// <para>
+/// Reads are <c>AsNoTracking</c>: nothing in this module mutates what it reads
+/// back, and a change tracker that will never be consulted is pure cost on the
+/// path this module spends most of its life on.
+/// </para>
+/// </remarks>
 public static class CatalogEndpoints
 {
-    /// <summary>Maps the /catalog route group. No routes defined yet.</summary>
+    /// <summary>Longest name this module will store.</summary>
+    private const int MaxNameLength = 200;
+
+    /// <summary>Longest address this module will store.</summary>
+    private const int MaxAddressLength = 500;
+
+    /// <summary>Maps the /catalog route group.</summary>
     public static IEndpointRouteBuilder MapCatalogEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        // TODO: group = endpoints.MapGroup("/catalog"); GET /events, GET /events/{id}, ...
+        var catalog = endpoints.MapGroup("/catalog");
+
+        catalog.MapPost("/venues", CreateVenueAsync)
+            .WithName("CreateVenue")
+            .WithSummary("Creates a venue and returns it.");
+
+        catalog.MapGet("/venues", ListVenuesAsync)
+            .WithName("ListVenues")
+            .WithSummary("Lists every venue.");
+
+        catalog.MapGet("/venues/{venueId:guid}", GetVenueAsync)
+            .WithName("GetVenue")
+            .WithSummary("Reads one venue.");
+
+        catalog.MapPost("/events", CreateEventAsync)
+            .WithName("CreateEvent")
+            .WithSummary("Creates an event at an existing venue and returns it.");
+
+        catalog.MapGet("/events", ListEventsAsync)
+            .WithName("ListEvents")
+            .WithSummary("Lists every event, soonest first.");
+
+        catalog.MapGet("/events/{eventId:guid}", GetEventAsync)
+            .WithName("GetEvent")
+            .WithSummary("Reads one event.");
+
         return endpoints;
     }
+
+    private static async Task<IResult> CreateVenueAsync(
+        CreateVenueRequest request,
+        CatalogDbContext catalog,
+        HttpContext context,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > MaxNameLength)
+        {
+            return CatalogResults.Invalid(
+                context.Request.Path,
+                "Invalid venue",
+                $"Name is required and must be at most {MaxNameLength} characters.",
+                "invalid_name");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Address) || request.Address.Length > MaxAddressLength)
+        {
+            return CatalogResults.Invalid(
+                context.Request.Path,
+                "Invalid venue",
+                $"Address is required and must be at most {MaxAddressLength} characters.",
+                "invalid_address");
+        }
+
+        if (request.Capacity < 1)
+        {
+            return CatalogResults.Invalid(
+                context.Request.Path,
+                "Invalid venue",
+                "Capacity must be at least 1.",
+                "invalid_capacity");
+        }
+
+        var venue = new Venue
+        {
+            Id = Guid.NewGuid(),
+            Name = request.Name,
+            Address = request.Address,
+            Capacity = request.Capacity
+        };
+
+        catalog.Venues.Add(venue);
+        await catalog.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        return TypedResults.Created($"/catalog/venues/{venue.Id}", ToResponse(venue));
+    }
+
+    private static async Task<IResult> ListVenuesAsync(
+        CatalogDbContext catalog,
+        CancellationToken cancellationToken)
+    {
+        var venues = await catalog.Venues
+            .AsNoTracking()
+            .OrderBy(venue => venue.Name)
+            .Select(venue => new VenueResponse(venue.Id, venue.Name, venue.Address, venue.Capacity))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return TypedResults.Ok(venues);
+    }
+
+    private static async Task<IResult> GetVenueAsync(
+        Guid venueId,
+        CatalogDbContext catalog,
+        HttpContext context,
+        CancellationToken cancellationToken)
+    {
+        var venue = await catalog.Venues
+            .AsNoTracking()
+            .SingleOrDefaultAsync(candidate => candidate.Id == venueId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return venue is null
+            ? CatalogResults.NotFound(
+                context.Request.Path, "Venue not found", "No such venue.", "venue_not_found")
+            : TypedResults.Ok(ToResponse(venue));
+    }
+
+    private static async Task<IResult> CreateEventAsync(
+        CreateEventRequest request,
+        CatalogDbContext catalog,
+        HttpContext context,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > MaxNameLength)
+        {
+            return CatalogResults.Invalid(
+                context.Request.Path,
+                "Invalid event",
+                $"Name is required and must be at most {MaxNameLength} characters.",
+                "invalid_name");
+        }
+
+        if (!TryToUtc(request.StartsAt, out var startsAt))
+        {
+            return AmbiguousTimestamp(context.Request.Path, nameof(request.StartsAt));
+        }
+
+        DateTime? onSaleAt = null;
+
+        if (request.OnSaleAt is { } requestedOnSaleAt)
+        {
+            if (!TryToUtc(requestedOnSaleAt, out var normalised))
+            {
+                return AmbiguousTimestamp(context.Request.Path, nameof(request.OnSaleAt));
+            }
+
+            onSaleAt = normalised;
+        }
+
+        if (request.Price < 0)
+        {
+            return CatalogResults.Invalid(
+                context.Request.Path, "Invalid event", "Price cannot be negative.", "invalid_price");
+        }
+
+        if (!IsCurrencyCode(request.Currency))
+        {
+            return CatalogResults.Invalid(
+                context.Request.Path,
+                "Invalid event",
+                "Currency must be a three-letter ISO 4217 code.",
+                "invalid_currency");
+        }
+
+        // Checked rather than constrained: a foreign key would be a second
+        // enforcement point for a rule with exactly one writer, and it would
+        // surface as a provider exception rather than as an answer a client can
+        // read. See EventConfiguration.
+        var venueExists = await catalog.Venues
+            .AsNoTracking()
+            .AnyAsync(venue => venue.Id == request.VenueId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!venueExists)
+        {
+            // 409, not 404: /catalog/events exists and was addressed correctly.
+            // It is the venue the body names that does not.
+            return CatalogResults.Conflict(
+                context.Request.Path,
+                "venue_not_found",
+                "No venue with that id. Create the venue before the event.",
+                retriable: false);
+        }
+
+        var show = new Event
+        {
+            Id = Guid.NewGuid(),
+            VenueId = request.VenueId,
+            Name = request.Name,
+            StartsAt = startsAt,
+            OnSaleAt = onSaleAt,
+            Price = request.Price,
+            Currency = request.Currency.ToUpperInvariant()
+        };
+
+        catalog.Events.Add(show);
+        await catalog.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        return TypedResults.Created($"/catalog/events/{show.Id}", ToResponse(show));
+    }
+
+    private static async Task<IResult> ListEventsAsync(
+        CatalogDbContext catalog,
+        CancellationToken cancellationToken)
+    {
+        var events = await catalog.Events
+            .AsNoTracking()
+            .OrderBy(show => show.StartsAt)
+            .Select(show => new EventResponse(
+                show.Id,
+                show.VenueId,
+                show.Name,
+                show.StartsAt,
+                show.OnSaleAt,
+                show.Price,
+                show.Currency))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return TypedResults.Ok(events);
+    }
+
+    private static async Task<IResult> GetEventAsync(
+        Guid eventId,
+        CatalogDbContext catalog,
+        HttpContext context,
+        CancellationToken cancellationToken)
+    {
+        var show = await catalog.Events
+            .AsNoTracking()
+            .SingleOrDefaultAsync(candidate => candidate.Id == eventId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return show is null
+            ? CatalogResults.NotFound(
+                context.Request.Path, "Event not found", "No such event.", "event_not_found")
+            : TypedResults.Ok(ToResponse(show));
+    }
+
+    /// <summary>
+    /// Normalises an incoming instant to UTC, refusing one that does not say
+    /// which timezone it meant.
+    /// </summary>
+    /// <remarks>
+    /// System.Text.Json yields <see cref="DateTimeKind.Utc"/> for a trailing
+    /// Z, <see cref="DateTimeKind.Local"/> for an explicit offset, and
+    /// <see cref="DateTimeKind.Unspecified"/> for neither. Npgsql rejects a
+    /// non-UTC value for <c>timestamptz</c>, so left alone the third case
+    /// surfaces as a 500 from inside the provider. Guessing on the caller's
+    /// behalf would be worse: a wall-clock time with no zone is a different
+    /// instant in London and in Los Angeles, and a show that goes on sale at
+    /// the wrong one is wrong in a way nobody notices until the day.
+    /// </remarks>
+    private static bool TryToUtc(DateTime value, out DateTime utc)
+    {
+        utc = value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => default
+        };
+
+        return value.Kind is not DateTimeKind.Unspecified;
+    }
+
+    private static IResult AmbiguousTimestamp(PathString path, string field) =>
+        CatalogResults.Invalid(
+            path,
+            "Ambiguous timestamp",
+            $"{field} must carry a timezone: end it with Z for UTC, or give an offset.",
+            "ambiguous_timestamp");
+
+    /// <summary>
+    /// Three ASCII letters. A length-and-shape check catches the typo that
+    /// matters without this module pretending to own a copy of ISO 4217.
+    /// </summary>
+    private static bool IsCurrencyCode(string? currency) =>
+        currency is { Length: 3 } && currency.All(char.IsAsciiLetter);
+
+    private static VenueResponse ToResponse(Venue venue) =>
+        new(venue.Id, venue.Name, venue.Address, venue.Capacity);
+
+    private static EventResponse ToResponse(Event show) =>
+        new(
+            show.Id,
+            show.VenueId,
+            show.Name,
+            show.StartsAt,
+            show.OnSaleAt,
+            show.Price,
+            show.Currency);
 }

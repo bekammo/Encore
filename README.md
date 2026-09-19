@@ -78,6 +78,10 @@ All three seat actions are idempotent, which is what makes retrying a POST safe.
 | Route | Purpose |
 |---|---|
 | `GET /health` | Liveness. |
+| `POST /catalog/venues` | Creates a venue. Returns `201` and the new venue. |
+| `GET /catalog/venues` · `GET /catalog/venues/{venueId}` | Browses venues. |
+| `POST /catalog/events` | Creates an event at an existing venue, with its price. Returns `201`. |
+| `GET /catalog/events` · `GET /catalog/events/{eventId}` | Browses events, soonest first. |
 | `POST /events/{eventId}/seats` | Creates an event's seats. Body `{ "count": 100 }`, returns `201` with the new seat ids. |
 | `POST /events/{eventId}/seats/{seatId}/hold` | Holds the seat for five minutes. Returns `holdExpiresAt`. |
 | `POST /events/{eventId}/seats/{seatId}/release` | Gives a held seat back. |
@@ -145,9 +149,10 @@ docker compose run --rm tests --filter "FullyQualifiedName~SeatTests"
 adapters, four use cases, HTTP surface, migrations, and a concurrency test that
 passes. It is the deep module and it is done.
 
-Catalog, Orders and Payments are scaffolded but not implemented: real project
-structure, no entities and no routes yet. They are next, and they stay flat when
-they arrive. Notifications and Identity do not exist.
+Catalog is implemented and flat: entities, schema, migration and CRUD routes, with
+no layering ceremony anywhere in it. Orders is next and stays flat too. Payments is
+still scaffolding, and stays that way until Soundcheck extracts it. Notifications and
+Identity do not exist.
 
 Deliberately absent, by roadmap phase rather than oversight: the outbox and the
 expired-hold sweep, MediatR, MassTransit, SignalR, observability and any

@@ -722,3 +722,54 @@ is inert: it has no rules in it, and a bug in one copy cannot be a bug in anothe
 
 <!-- Expand later: whether the run profiles should keep three separate
      MigrateOnStartup flags or one, once there are three modules setting them. -->
+
+---
+
+## 018 — Catalog's HTTP surface, and two rules it settles for everyone
+
+Catalog gets CRUD, because that is what it is: `POST` and `GET` for venues and events,
+under `/catalog`. No client identity on any route — a catalogue is public to read, and
+creating a venue is operator-facing, the same footing as `POST /events/{eventId}/seats`,
+which also carries no filter. When Identity exists, the write routes are the ones that
+grow an authorisation check.
+
+**The prefix is `/catalog`, even though Inventory already owns `/events/{eventId}`.**
+The same event id therefore appears in two URL shapes: `/catalog/events/{id}` describes
+the show, `/events/{id}/seats/...` acts on its seats. That is genuinely a little odd,
+and the alternative — Catalog serving `/events` directly — is worse in a way that lasts
+longer: two modules writing into one route namespace, so extracting either means
+redesigning URLs rather than moving a routing rule. A prefix keeps the seam visible at
+the URL, which is where a reader looks first.
+
+Two rules settled here apply to every module that follows.
+
+**A body naming something that does not exist is 409, not 404.** Posting an event whose
+`venueId` matches no venue is refused `409 venue_not_found`. 404 is an answer about the
+resource that was *addressed*, and `/catalog/events` was addressed perfectly well; it is
+the world the body describes that is not there. Reserving 404 for the URL keeps it
+meaning one thing. This is 014's status rule applied to a case 014 did not have: a
+refusal about the state of the world is a conflict.
+
+**An instant with no timezone is refused, not guessed.** `System.Text.Json` yields
+`Unspecified` for a timestamp with neither a `Z` nor an offset, and Npgsql rejects a
+non-UTC value for `timestamptz`, so left alone this arrives as a 500 from inside the
+provider. The fix is not to assume UTC. A wall-clock time with no zone is a different
+instant in London and in Los Angeles, and a show that goes on sale at the wrong one is
+wrong in a way nobody notices until the day. `400 ambiguous_timestamp` says exactly what
+is missing. This is what `CLAUDE.md`'s "time enters the system at exactly one place and
+is converted once" looks like at the edge.
+
+400s carry a `reason` too, which 014 did not explicitly say. The principle it stated —
+the status names the class of failure, the reason names which one — is as useful for a
+malformed request as for a refused one, and a client that already switches on `reason`
+should not need a second mechanism for the 400 case.
+
+`CatalogResults` is deliberately **not** the twin of `SeatResults`. That class exists to
+switch exhaustively over closed outcome enums; Catalog has no use-case layer and no
+enums, so there is nothing to switch on. What is left is worth centralising anyway — the
+`reason` / `retriable` / `instance` shape — and the file says so, so nobody completes it
+into a mapper that has nothing to map.
+
+<!-- Expand later: whether the list endpoints need paging before anything real
+     depends on them, and whether currency should be validated against an actual
+     ISO 4217 list rather than a three-letter shape check. -->
