@@ -1126,3 +1126,375 @@ would mean Inventory learning what an event costs and when it sells, which is th
 <!-- Expand later: whether a presale window for a subset of clients belongs here or in
      Identity, and whether the refusal should carry the on-sale instant so a client can
      show a countdown rather than re-reading the catalogue. -->
+
+---
+
+## 027 — Payments arrives, and what that changes about everything else
+
+This entry is the index for the batch that follows. Payments was four stub files and an
+`AddPaymentsModule` that returned `services` untouched — the exact ambiguity 004 named as
+the problem with this module, a stub wearing a working module's clothes. Three earlier
+entries queued it: 004 said it has to exist as working in-process code before Soundcheck
+can extract it, 021 asked whether `Confirmed` splits when it arrives, and 022 asked whether
+a checkout should take a payment intent.
+
+The answers are 028 through 034. The one that supersedes something previously settled is
+this one.
+
+### `Confirmed` splits, and 021's closed set of endings is no longer closed
+
+021 said an order is `Pending` and then `Confirmed`, `Cancelled`, `Expired` or `Failed`,
+and that those four are terminal. `OrderStatus.AwaitingCapture` is now a fifth member and a
+second non-terminal one: the seats are sold, the funds are held, and the capture has not
+gone through. This entry supersedes that half of 021 rather than rewriting it, which is
+what the log is for.
+
+**Why not reuse `Failed`.** 021 defines `Failed` as the status that means a person has to
+look, and this qualifies. But an operator looking at `AwaitingCapture` should retry a
+capture, and an operator looking at `Failed` should apologise — those are different jobs,
+and 021's own argument for keeping `Expired` apart from `Cancelled` applies with full
+force: history cannot be backfilled once the distinction has been thrown away.
+
+**Why no background job.** `AwaitingCapture` is resolved by the next touch — a retried
+`POST /orders/{id}/confirm` retries the capture and nothing else, because the seats are
+already sold and asking Inventory again would be round trips against the hottest rows in
+the system for an answer nobody needs. A capture-retry sweep would be the pattern 007
+forbids: if a test could not pass with it disabled it would have become load-bearing. 021
+already settled the same shape for stale `Pending` rows — untidy, not incorrect, resolved
+the moment anybody touches the order.
+
+**Appended as 5, never inserted.** `Pending` is pinned to zero because
+`ux_orders_client_event_pending` filters on the literal `"Status" = 0`, which no compiler
+checks. That index deliberately still filters on `Pending` alone: an `AwaitingCapture`
+order's seats are sold, so it should no more hold the one-open-checkout slot than a
+`Confirmed` one does.
+
+**No migration.** `Status` is a plain `integer` column with no check constraint, so a new
+enum member needs no schema change. Worth stating because the absence of a migration in
+this commit looks like an omission and is not.
+
+The cost is real: an order can sit in `AwaitingCapture` indefinitely if nobody touches it,
+which is money we are entitled to and have not taken. That is bounded by how often confirms
+get retried, and it is the honest price of refusing to build a sweep before Phase 7.
+
+<!-- Expand later: whether AwaitingCapture should carry the capture's failure count, and
+     whether the Phase 7 reconciliation job — the one 031 needs anyway — should also sweep
+     this. -->
+
+---
+
+## 028 — Authorise, sell, capture — and void when the sale does not complete
+
+A confirm now secures the money, then sells the seats, then takes the money. A sale that
+does not complete releases the authorisation.
+
+**The argument is about which resource cannot be recovered.** A sold seat is terminal (007)
+and there is no un-sell; money is the one of the two that can be given back. So any design
+that sells before the money is secured risks permanent, unrecoverable inventory loss, and
+any design that secures money before selling risks — at worst — a refund. The unrecoverable
+step goes in the middle, between two that can be undone.
+
+### What was rejected
+
+**Sell first, then charge.** Cheapest, and wrong in the one direction this project cannot
+afford. Seats sold to somebody who then fails to pay are gone, and nothing in the system
+can bring them back.
+
+**A single charge before selling.** Same ordering, one gateway round trip instead of two,
+statuses `Succeeded`/`Declined`/`TimedOut`, and a refund when the sale falls over. Simpler
+by a real margin, and plenty of production ticketing runs exactly this. It loses on two
+points. The soft one: a customer whose seats vanish sees a charge and a refund on their
+statement rather than a hold that quietly lapses. The one that decides it: **a lost
+authorisation self-heals and a lost charge does not.** When the gateway times out we do not
+know what happened at the other end — an uncaptured authorisation expires by itself, a
+stray charge sits there until somebody reconciles it, and there is no reconciliation job
+(see 031).
+
+**Payment as a separate step after confirm.** The order reaches something like
+`AwaitingPayment` with its seats already sold. Strictly worse than selling-then-charging:
+the same exposure, more round trips, and a state in which a customer holds sold seats
+having paid nothing.
+
+### What it costs
+
+Two gateway round trips on the hot path instead of one, plus a void path and a
+capture-retry path that would not otherwise exist. The gateway is deliberately slow, so
+confirm gets slower by one simulated latency. It also adds one order status and three
+payment statuses of vocabulary to a system that had none.
+
+**What would make me reconsider.** If the gateway were real and capture-after-authorisation
+turned out never to fail, `AwaitingCapture` would be dead weight and single-charge-plus-
+refund would be the honest simplification. If confirm latency became the bottleneck under
+load testing, the authorisation moves earlier — to checkout, alongside the holds — and
+confirm becomes capture-only.
+
+**Where the opposite case is legitimate.** This is the biggest call in the batch and the
+case for a single charge is real. I am picking two-phase because this project's subject is
+that the seat is the scarce unrecoverable thing, so the payment design should be shaped
+around protecting it — but that is a judgement about what the project is for, not a fact
+about payments.
+
+### The partial case, which 021 left open
+
+`OrderStatus.Failed` carried the note: "Whether the customer is charged for a partial order
+or refunded is a Payments question that does not exist yet." It exists now, and the answer
+is **charged nothing**. Every path that does not end in every seat sold voids the
+authorisation, including the mixed one. A person still has to look at a `Failed` order —
+some seats really did sell and cannot be un-sold — but they are looking at a customer who
+has not been charged, which is the better side to fail on.
+
+### A decline does not end the order
+
+Neither does a gateway timeout. The order stays `Pending` with its holds live, because
+losing four seats over a typo'd expiry date is not a reasonable thing for this system to
+do. Both come back `409` with `retriable: true`, and this is the one place in Orders where
+that flag means "try again with something different" rather than "send the identical
+request again" — worth knowing, and worth not smoothing over.
+
+<!-- Expand later: whether the authorisation should move to checkout once load testing has
+     an opinion about confirm latency, and whether a declined confirm should count against
+     anything. -->
+
+---
+
+## 029 — `Payment` has a state machine, and stays in a flat module
+
+`Payment` is constructed through `Payment.Create` and moves only through methods that check
+its current state — the shape `Seat` has. It lives in `Encore.Modules.Payments/Models/`
+with no `Ports/`, no `Adapters/` and no separate domain assembly.
+
+**005 and 001/002 are separate arguments, and only the second is Inventory-specific.** 005
+says aggregates are constructed by factory so that invariants are unbypassable. 001 and 002
+say Inventory gets ports, adapters and its own assembly because it has a hard problem whose
+mechanism will change and whose rules need testing against a fake clock. Taking the first
+without the second is the consistent reading of both, not a compromise between them.
+
+**Why `Payment` is not `Event`, `Venue` or `Order`.** Those have public setters because
+they have no local invariants. Every rule about an order spans its row and Inventory's,
+which is why `Order.cs` says public setters are its honest shape. A payment's rules are
+decidable from one row: only an authorised payment may be captured, captured is terminal,
+and the amount never moves after the gateway was asked. `new Payment { Status = Captured }`
+would be a hole straight through all three.
+
+**What this costs.** No compiler enforcement. `Payment` sits in the same assembly as
+`PaymentsDbContext` and could name an EF Core type; that is precisely what 002 exists to
+prevent, and here it is convention only. Acceptable because the real guard is not the C#:
+the partial unique index in 030 is what stops a double charge, `xmin` is what stops a
+confirm and a cancel disagreeing, and this class is the readable expression of rules the
+database enforces. Same division as `Seat` and `xmin`, and as Orders and its one-open-
+checkout index.
+
+**No domain events.** `Seat` raises them because hold history has to be reconstructable
+(007) and because the outbox will one day carry `SeatSold` out of the module. Nothing
+subscribes to a payment — Orders reads the row directly, in process. Events with no
+consumer would be the ceremony 001 argues against, and they cost nothing to add the day the
+outbox arrives.
+
+**`xmin` here too, for 021's reason.** Payments looked like another module over uncontended
+tables, and it is, with the one exception Orders has: a confirm and a cancel arriving
+together race this row *towards different answers*. Without a token the loser writes
+`Voided` over money that was taken, and the record then says nobody was charged. The guard
+in `Void` cannot catch it — both writers loaded the row while it still read `Authorized` —
+so only the database can.
+
+<!-- Expand later: whether Payment's transitions want their own test-only assembly boundary
+     the day a second flat module grows a state machine, and whether the no-domain-events
+     call should be revisited as part of the outbox work rather than after it. -->
+
+---
+
+## 030 — One live attempt per order, and what "live" means
+
+`ux_payments_order_live` is a partial unique index on `order_id`, filtered to
+`"Status" IN (0, 1, 2, 4)` — pending, authorised, captured, timed out. It is the real guard
+against charging a customer twice, and the read in `InProcessOrderPayments` is a courtesy
+that turns the common case into a readable answer instead of a constraint violation. Two
+requests can both pass a check; the database has to be the one that says no.
+
+The same shape as `ux_orders_client_event_pending`, deliberately. It is also the same trap:
+the filter is a SQL literal that no compiler checks against `PaymentStatus`, so a wrong
+value produces a silently different index rather than a build error. `Payment.LiveStatuses`
+is the one C# definition, `PaymentTests.IsLive_ShouldMatchTheIndexFilter` pins the pair
+together, and `PaymentsSchemaTests` proves the index behaves for all six statuses.
+
+**What is deliberately outside the filter.** `Declined` and `Voided`. Both definitively
+moved no money and never will, so neither should stop a customer trying again — with a
+different card, which is a genuinely new attempt with a new key and a new row.
+
+**What is deliberately inside it, and is the interesting one.** `TimedOut`. The honest
+reading of "the gateway never answered" is "possibly holding funds", so a timed-out attempt
+keeps the order's one slot. That is what makes 031 possible.
+
+**The row is written before every gateway call.** A crash between the two leaves a
+`Pending` row holding the slot, and the next attempt finds it and asks the same question
+under the same key. Calling first and writing afterwards would leave nothing behind, so the
+retry would invent a new key — and a new key against a gateway that did receive the first
+call is a second authorisation.
+
+<!-- Expand later: whether the idempotency-key index should be partial too, and what
+     happens to this filter if a refund status ever arrives. -->
+
+---
+
+## 031 — A timed-out gateway call is recorded, not resolved
+
+When the gateway does not answer an authorisation, the attempt is marked `TimedOut`, keeps
+its idempotency key, and keeps the order's one live slot. The order stays `Pending`. A
+retry calls `Payment.Retry`, which moves the same row back to `Pending` — same key, same
+amount — so the gateway is asked the same question rather than a second one.
+
+**Rejected: treat a timeout as a decline.** Cheap and wrong. It tells a customer their card
+was refused when the funds may be held.
+
+**Rejected: reconcile immediately by asking the gateway what happened.** That is the
+reconciliation path, and it belongs with the outbox in Phase 7. Building half of it now
+means a second authority over payment state with no dispatcher behind it.
+
+**Rejected: a new row per attempt, keyed on `(orderId, attemptNumber)`.** This was the
+original plan and it is worse. A second row needs a second key, and the index would have to
+exclude `TimedOut` to allow it — which reopens exactly the double-authorisation this is
+trying to prevent. Reusing the row is what makes reusing the key structural instead of
+remembered.
+
+**That also dissolves the question I expected to be arguing about.** Whether the key should
+be derived or random only matters if a retry has to reconstruct it. It does not: the row
+carries it. The key is `order-{orderId}-{paymentId}` because that is legible in a gateway's
+logs when somebody has to chase a payment by hand, not because anything depends on the
+derivation.
+
+**What this leaves open, stated plainly.** Without reconciliation, a timed-out
+authorisation that actually succeeded leaves funds held until the gateway expires them. The
+idempotency key makes the retry safe; it does not resolve the original ambiguity. This is
+the same shape as the missing expiry sweep — recorded, bounded, and closed by machinery
+that arrives in a later phase rather than left open indefinitely. It is also the strongest
+argument for 028's two-phase design: an authorisation nobody captures costs the customer
+nothing, which is not true of a charge.
+
+**A capture that times out is a different thing and is treated differently.** It leaves the
+payment `Authorized`, because that is still exactly what is true — funds held, nothing
+taken — and writing `TimedOut` there would throw away the gateway reference and make the
+retry impossible. Only an authorisation can reach `TimedOut`.
+
+<!-- Expand later: the reconciliation job, when the outbox exists — including whether it
+     belongs in Payments or is the first real consumer of the dispatcher. -->
+
+---
+
+## 032 — The simulated gateway, and one simplification worth admitting
+
+`SimulatedPaymentGateway` declines or hangs at configured rates after a configured delay.
+Three calls: authorise, capture, void.
+
+**Two rates, not three.** The stub asked for success, failure and timeout rates — a trio
+that has to sum to one, and therefore a validation rule and an error message for when it
+does not. `DeclineRate` and `TimeoutRate` only; success is the remainder, which cannot be
+set wrong and needs nothing to check it.
+
+**It honours an idempotency key within a process.** A repeated authorisation under a key it
+has already answered gets the same answer back. Without that, the retry path in 031 would
+pass tests it should fail. The memory dies with the process, which is honest — a real
+gateway remembers for days, and nothing here should come to depend on a guarantee this one
+cannot make. A timeout is deliberately *not* remembered: the whole point of that outcome is
+that the other end's state is unknown, so a retry has to be free to land somewhere
+different.
+
+**Seeded randomness is locked; unseeded is not.** `Random.Shared` is already thread-safe; a
+seeded `Random` is not, and an unsynchronised one under concurrent load returns garbage
+rather than a reproducible sequence — which would quietly defeat the only reason to set a
+seed.
+
+**The simplification: a capture or a void is never declined.** A real gateway can refuse
+one — an authorisation that lapsed or was revoked — but modelling that honestly needs a
+real gateway's error taxonomy, and inventing one for a simulator would be guessing at a
+vocabulary the way 021 refused to guess at payment statuses. An authorisation granted is
+treated here as a commitment that will be honoured or not answered. This is a known gap
+rather than a claim about payments, and it is the thing to fix first if a real provider
+ever goes behind this interface.
+
+<!-- Expand later: whether the gateway should simulate an authorisation expiring, which is
+     the failure mode this design leans on hardest and currently never exercises. -->
+
+---
+
+## 033 — Payments' HTTP surface is read-only
+
+Two routes: `GET /payments/{id}` and `GET /payments?orderId=`, both carrying `X-Client-Id`
+and both scoped to it. The stub proposed a `POST /` and it is gone on purpose.
+
+**A client that can charge itself has walked around the order flow entirely.** It could
+authorise money against an order it does not own, or against no order at all, and this
+module would have no principled way to refuse because it does not know what a checkout is.
+Orders drives payment because Orders is the thing that knows what is owed. That is 022's
+"confirm and cancel are actions, not a status a client may PATCH", pointed at the other end
+of the same flow.
+
+**The cost is real and worth stating.** This module has no HTTP path that exercises its
+write side, so its integration tests carry that weight rather than a request in a scratch
+file. That is the right place for it — the write side's interesting behaviour is a partial
+unique index and a concurrency token, neither of which a hand-sent request would exercise
+usefully — but it does mean the module cannot be poked at by hand the way Catalog can.
+
+**Identity, unlike Catalog.** 018 gave Catalog no client filter because a catalogue is
+public. A payment is the opposite of public, so every route here carries the header and
+filters on it, and a payment belonging to somebody else is `404` rather than `403` — 011's
+argument about seat-id enumeration, pointed at money.
+
+**`ClientIdEndpointFilter` is now copied three times.** 024's argument still holds:
+`Encore.Shared` holds zero packages because `Inventory.Domain` references it, an
+`IEndpointFilter` would drag `Microsoft.AspNetCore.App` in through that door, and
+`ENCORE001` would not catch it because it only inspects `PackageReference` items. But forty
+lines is cheap and a hundred and twenty is where somebody starts wondering, so: if there is
+ever a fourth, the exit is a small web-only shared assembly that `Inventory.Domain` does not
+reference — not a drawer in `Shared`.
+
+<!-- Expand later: whether a read of another client's payment should be 404 or simply
+     absent from a list, and whether GET /payments wants paging before anything browses. -->
+
+---
+
+## 034 — Cancelling releases the seats
+
+`CheckoutService.CancelAsync` now releases every seat on the order with
+`SeatReleaseReason.Cancelled`, and voids any authorisation first. This reverses what a test
+in `CheckoutServiceTests` used to pin, and closes an open question the method's own doc
+comment has been carrying.
+
+**Why this does not contradict 021.** 021 forbids Orders releasing seats *because a hold
+lapsed*. That prohibition is about expiry specifically: a release on those grounds would be
+a second authority over a rule Inventory owns, fired against Orders' clock, and it can tell
+a customer their seat is gone while it is still theirs. A customer deliberately cancelling
+is not a clock judgement. Nothing is being decided here that Inventory also decides.
+
+**The evidence it was always meant to work this way.** `SeatReleaseReason.Cancelled` has
+existed since 007 and has had no producer at all — a domain enum member nothing ever
+raised. 007 split it from `Expired` precisely because "your hold ran out" and "you changed
+your mind" are different things to tell a customer, and until now the system could only ever
+say the first.
+
+**Why it matters for the thing this project is about.** During a flash sale, leaving up to
+four seats to lapse on their own after every cancellation strands the scarcest resource in
+the system for five minutes at a time. The whole argument for Inventory's shape is that
+contended seats are the hard problem; deliberately holding them longer than anybody wants
+them is the opposite of taking that seriously.
+
+**What it costs.** Releases are writes against the hottest rows in the system, bounded at
+four per cancellation. Nothing checks whether one succeeded: a refusal means the hold was
+already gone, which is the state being asked for, and Inventory reclaims lapsed holds
+lazily on every path regardless.
+
+**The money goes back first, and can refuse the cancellation.** If the void answers
+`AlreadyCaptured`, a confirm won the race and the customer has been charged; cancelling
+would write an ending that contradicts a completed sale. That returns `LostRace` rather
+than `NotPending`, because the order row still reads `Pending` in memory and reporting a
+status this method has not read would be a guess. The retry finds the order as it actually
+stands.
+
+**Where I am least certain.** This is a product call as much as a technical one. A shop
+might reasonably want a cancelled order's seats held briefly in case the customer changes
+their mind back, or want cancellation to be undoable — neither of which survives releasing
+immediately. Nothing written down says either way, so I have taken the reading that serves
+the contended-inventory problem, and this is the entry to argue with if that is wrong.
+
+<!-- Expand later: whether a cancelled order should be re-openable, and whether the release
+     should be best-effort-in-the-background once the outbox exists rather than inline on
+     the cancel path. -->

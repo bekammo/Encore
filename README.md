@@ -12,7 +12,7 @@ plain, and one is deliberately not:
 |---|---|---|
 | **Catalog** | Flat: `Endpoints` / `Data` / `Models` | Read-mostly CRUD. No contention, no invariants. |
 | **Orders** | Flat: `Endpoints` / `Data` / `Models` | A record of what was bought. The hard parts live elsewhere. |
-| **Payments** | Flat, plus `Simulation/` | A fake gateway that fails and hangs on demand, so the rest of the system has to cope with an unreliable dependency. |
+| **Payments** | Flat, plus `Simulation/` | A fake gateway that declines and hangs on demand, so the rest of the system has to cope with an unreliable dependency. `Payment` owns a guarded state machine — a factory and no public setters — without any of the layering: `DECISIONS.md` 029. |
 | **Inventory** | Hexagonal: `Domain` / `Ports` / `Adapters` / `Application` | Seat contention under flash-sale load — the one genuinely hard problem. |
 
 That asymmetry is the argument, not an accident. Architecture is a cost you pay
@@ -30,7 +30,8 @@ Encore.sln
 │   ├── Encore.Modules.Catalog              flat CRUD
 │   ├── Encore.Modules.Catalog.Contracts    its public face — zero packages, zero refs
 │   ├── Encore.Modules.Orders               flat CRUD + the checkout
-│   ├── Encore.Modules.Payments             flat CRUD + simulated gateway
+│   ├── Encore.Modules.Payments             flat, + a state machine and a fake gateway
+│   ├── Encore.Modules.Payments.Contracts   its public face — zero packages, zero refs
 │   ├── Encore.Modules.Inventory.Domain     the hexagon's interior — no packages
 │   ├── Encore.Modules.Inventory            ports, adapters, use cases
 │   └── Encore.Modules.Inventory.Contracts  its public face — zero packages, zero refs
@@ -39,7 +40,9 @@ Encore.sln
     ├── Encore.Modules.Inventory.IntegrationTests  adapters, via Testcontainers
     ├── Encore.Modules.Catalog.IntegrationTests    schema + pricing projection
     ├── Encore.Modules.Orders.UnitTests            the HTTP mapping, no database
-    └── Encore.Modules.Orders.IntegrationTests     checkout, against real Postgres
+    ├── Encore.Modules.Orders.IntegrationTests     checkout, against real Postgres
+    ├── Encore.Modules.Payments.UnitTests          the state machine + the gateway
+    └── Encore.Modules.Payments.IntegrationTests   the one-live-attempt index
 ```
 
 `Encore.Modules.Inventory.Domain` has no `PackageReference` items at all, and
@@ -93,8 +96,9 @@ All three seat actions are idempotent, which is what makes retrying a POST safe.
 | `POST /events/{eventId}/seats/{seatId}/purchase` | Converts this client's live hold into a sale. |
 | `POST /orders` | Opens a checkout: prices the event, holds every seat, returns `201` and the order. |
 | `GET /orders/{orderId}` | Reads one of the calling client's orders. |
-| `POST /orders/{orderId}/confirm` | Converts the order's holds into sales. |
-| `POST /orders/{orderId}/cancel` | Ends the order because the customer said so. |
+| `POST /orders/{orderId}/confirm` | Authorises the total, converts the order's holds into sales, then captures. |
+| `POST /orders/{orderId}/cancel` | Ends the order because the customer said so, releasing the seats and the money. |
+| `GET /payments/{paymentId}` · `GET /payments?orderId=` | Reads back what happened to a payment. Read-only on purpose: Orders drives payment, because Orders is the thing that knows what is owed (`DECISIONS.md` 033). |
 
 The three seat actions and every `/orders` route require an `X-Client-Id` header
 carrying a GUID. **It is a claimed identity, not authentication** — anyone can
@@ -136,7 +140,7 @@ deployed does that — applying migrations is a deliberate step
 docker compose run --rm tests
 ```
 
-205 tests: 152 unit, 53 integration against real Postgres and Redis via
+305 tests: 212 unit, 93 integration against real Postgres and Redis via
 Testcontainers.
 
 The suite runs in a container rather than on the host, and that is a host problem
@@ -163,15 +167,23 @@ adapters, four use cases, HTTP surface, migrations, and a concurrency test that
 passes. It is the deep module and it is done.
 
 Catalog is implemented and flat: entities, schema, migration and CRUD routes, with
-no layering ceremony anywhere in it. Orders is implemented and flat too — schema,
-checkout, confirm and cancel — and it is the module that proves the point of the
-two `.Contracts` assemblies, since it prices through Catalog and holds through
-Inventory without referencing either one.
+no layering ceremony anywhere in it. Orders is implemented and flat too, and it is
+the module that proves the point of the three `.Contracts` assemblies — it prices
+through Catalog, holds through Inventory and charges through Payments without
+referencing any of them.
 
-Payments is still scaffolding. It becomes real during Load-In rather than at
-Soundcheck, because Strangler Fig needs something to strangle and a module with
-no behaviour cannot be extracted (`DECISIONS.md` 004). Notifications and Identity
-do not exist.
+Payments is real. It became real during Load-In rather than at Soundcheck, because
+Strangler Fig needs something to strangle and a module with no behaviour cannot be
+extracted (`DECISIONS.md` 004). A confirm now authorises the order total, sells the
+seats and then captures — in that order, because a sold seat is terminal and money
+is the one of the two that can be given back. A sale that does not complete releases
+the authorisation, so a customer is never charged for an order they did not get.
+Notifications and Identity do not exist.
+
+The honest gap: a gateway call that times out is recorded, not resolved. The attempt
+keeps its idempotency key so a retry asks the same question rather than a second one,
+but nothing yet reconciles an authorisation that may or may not have landed. That
+needs the outbox, which is the next phase (`DECISIONS.md` 031).
 
 Deliberately absent, by roadmap phase rather than oversight: the outbox and the
 expired-hold sweep, MediatR, MassTransit, SignalR, observability and any
