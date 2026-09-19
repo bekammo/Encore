@@ -19,6 +19,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Inventory.Domain\Encore.Modules.Inventory.Domain.csproj" />
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
+    <ProjectReference Include="..\Encore.Modules.Inventory.Contracts\Encore.Modules.Inventory.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>

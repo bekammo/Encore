@@ -14,9 +14,11 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddProblemDetails();
 
 // One registration call per module, and the host is not allowed to know
-// anything else about them. The method bodies are empty today; the seam
-// existing today is the point. When a module is extracted into its own
-// service later, this is the line that gets deleted — nothing else.
+// anything else about them. Inventory's body registers a DbContext, a Redis
+// multiplexer, its ports and its use cases; the other three are still empty.
+// Either way the host cannot tell, which is the point. When a module is
+// extracted into its own service later, this is the line that gets deleted —
+// nothing else.
 builder.Services
     .AddCatalogModule(builder.Configuration)
     .AddOrdersModule(builder.Configuration)

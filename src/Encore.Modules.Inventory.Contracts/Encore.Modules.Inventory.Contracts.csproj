@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Inventory's public face: the only thing another module is allowed to know
+       about this one. Requests, responses and an interface — no logic, no
+       infrastructure, and deliberately no reference to Inventory itself.
+
+       Zero PackageReference items, and zero ProjectReference items, both on
+       purpose. A consumer takes a dependency on this assembly and nothing
+       else, so referencing it cannot drag EF Core, Redis or Inventory's domain
+       into a module that has no business seeing them.
+
+       This is also what makes the extraction story in DECISIONS 001 concrete.
+       When Inventory becomes its own service, this assembly is what stays
+       behind in the monolith as the client contract: Orders keeps compiling
+       against the same interface and only the registered implementation
+       changes, from an in-process call to an HTTP one. -->
+
+</Project>

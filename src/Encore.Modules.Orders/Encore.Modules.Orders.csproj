@@ -10,6 +10,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
+
+    <!-- Inventory's public face, and the only thing Orders is allowed to know
+         about that module. Deliberately not a reference to
+         Encore.Modules.Inventory itself: this is the seam that lets Inventory
+         be extracted without Orders changing, and referencing the module would
+         quietly destroy it. -->
+    <ProjectReference Include="..\Encore.Modules.Inventory.Contracts\Encore.Modules.Inventory.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>

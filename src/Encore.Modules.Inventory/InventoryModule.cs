@@ -1,6 +1,8 @@
 using Encore.Modules.Inventory.Adapters.Caching;
+using Encore.Modules.Inventory.Adapters.InProcess;
 using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Application;
+using Encore.Modules.Inventory.Contracts;
 using Encore.Modules.Inventory.Endpoints;
 using Encore.Modules.Inventory.Ports;
 using Microsoft.AspNetCore.Routing;
@@ -64,6 +66,13 @@ public static class InventoryModule
         services.AddScoped<SellSeatCommandHandler>();
         services.AddScoped<ReleaseSeatCommandHandler>();
         services.AddScoped<CreateSeatMapCommandHandler>();
+
+        // The module's in-process front door, for callers that are other
+        // modules rather than HTTP clients. This registration is the whole of
+        // the extraction story: the day Inventory becomes its own service, this
+        // line points at an HTTP-backed implementation instead and no consumer
+        // is recompiled.
+        services.AddScoped<ISeatReservations, InProcessSeatReservations>();
 
         // Off unless asked for. The run profiles set it so that a developer with
         // a fresh `docker compose up` gets a schema from `dotnet run`; anything
