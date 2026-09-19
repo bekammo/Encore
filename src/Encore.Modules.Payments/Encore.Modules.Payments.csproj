@@ -1,8 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Flat CRUD module. Endpoints / Data / Models, no layering ceremony.
-       Infrastructure packages sit right next to the endpoints on purpose —
-       this module has no hard problem in it, so it gets no abstraction. -->
+  <!-- Flat CRUD module. Endpoints / Data / Models / Simulation, no layering
+       ceremony. Infrastructure packages sit right next to the endpoints on
+       purpose — this module has no contended table in it, so it gets no
+       abstraction. Payment does own a state machine, and that lives on the
+       entity itself rather than behind a port: DECISIONS 005's factory rule and
+       001's hexagon are separate arguments, and 029 takes the first without the
+       second. -->
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
@@ -10,16 +14,34 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
+
+    <!-- This module's own public face. Referenced rather than defined here so the
+         in-process adapter and the eventual out-of-process one implement exactly
+         the same interface, and so Orders can depend on the contract without
+         depending on the module. Same terms as Catalog.Contracts (019). -->
+    <ProjectReference Include="..\Encore.Modules.Payments.Contracts\Encore.Modules.Payments.Contracts.csproj" />
   </ItemGroup>
 
-  <!-- Only what is actually used. EF Core is here because PaymentsDbContext
-       derives from DbContext; Npgsql is not, because nothing in this module
-       calls UseNpgsql yet. Carrying a provider no code reaches is the exact
-       ambiguity DECISIONS 004 names as the problem with this module — a stub
-       wearing a working module's clothes. Npgsql, the Design package and a
-       connection string all arrive together when the module becomes real. -->
+  <!-- The gateway, the in-process adapter and the outcome-to-status mapping are
+       internal: they are implementation details of this module. The mapping and
+       the simulated gateway's determinism are also the parts most worth testing
+       directly. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Encore.Modules.Payments.UnitTests" />
+    <InternalsVisibleTo Include="Encore.Modules.Payments.IntegrationTests" />
+  </ItemGroup>
+
+  <!-- Npgsql and the Design package arrive here now that the module is real,
+       which is what DECISIONS 004 said would happen: it was a stub wearing a
+       working module's clothes, and carrying a provider no code reached was the
+       ambiguity worth removing. -->
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.4">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
 </Project>

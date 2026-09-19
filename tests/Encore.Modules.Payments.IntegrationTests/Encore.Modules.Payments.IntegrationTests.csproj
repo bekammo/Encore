@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Payments' one enforced rule — at most one live attempt per order — lives
+       in a partial unique index, and the adapter that relies on it catches a
+       constraint violation by name. Neither can be tested without real Postgres,
+       which is why this project exists alongside the unit tests rather than
+       instead of them: the state machine is in-memory and stays there.
+
+       No Redis: Payments never takes a lock. No EntityFrameworkCore.InMemory
+       either — it does not enforce a partial unique index, so it would fake away
+       the guard these tests are here for. -->
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.15.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Encore.Modules.Payments\Encore.Modules.Payments.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,35 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Design;
+
+namespace Encore.Modules.Payments.Data;
+
+/// <summary>
+/// Lets <c>dotnet ef</c> construct a <see cref="PaymentsDbContext"/> without
+/// booting the API host. Design-time only — nothing at runtime goes through here.
+/// </summary>
+/// <remarks>
+/// The alternative was to reference <c>Microsoft.EntityFrameworkCore.Design</c>
+/// from <c>Encore.Api</c>, which is what the EF tooling assumes by default. This
+/// way keeps the host at zero package references and keeps each module's
+/// migrations self-contained, so they travel with the module.
+/// </remarks>
+public sealed class PaymentsDbContextFactory : IDesignTimeDbContextFactory<PaymentsDbContext>
+{
+    /// <summary>Matches the Postgres service in docker-compose.yml.</summary>
+    private const string LocalDevelopmentConnection =
+        "Host=localhost;Port=5432;Database=encore;Username=encore;Password=encore";
+
+    /// <inheritdoc />
+    public PaymentsDbContext CreateDbContext(string[] args)
+    {
+        var connectionString =
+            Environment.GetEnvironmentVariable("ENCORE_PAYMENTS_CONNECTION")
+            ?? LocalDevelopmentConnection;
+
+        var options = new DbContextOptionsBuilder<PaymentsDbContext>()
+            .UsePaymentsNpgsql(connectionString)
+            .Options;
+
+        return new PaymentsDbContext(options);
+    }
+}

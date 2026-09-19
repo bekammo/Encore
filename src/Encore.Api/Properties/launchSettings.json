@@ -10,7 +10,8 @@
         "ASPNETCORE_ENVIRONMENT": "Development",
         "Catalog__MigrateOnStartup": "true",
         "Inventory__MigrateOnStartup": "true",
-        "Orders__MigrateOnStartup": "true"
+        "Orders__MigrateOnStartup": "true",
+        "Payments__MigrateOnStartup": "true"
       }
     },
     "https": {
@@ -22,7 +23,8 @@
         "ASPNETCORE_ENVIRONMENT": "Development",
         "Catalog__MigrateOnStartup": "true",
         "Inventory__MigrateOnStartup": "true",
-        "Orders__MigrateOnStartup": "true"
+        "Orders__MigrateOnStartup": "true",
+        "Payments__MigrateOnStartup": "true"
       }
     }
   }

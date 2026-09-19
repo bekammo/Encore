@@ -29,6 +29,7 @@ COPY src/Encore.Modules.Catalog/Encore.Modules.Catalog.csproj                  s
 COPY src/Encore.Modules.Orders/Encore.Modules.Orders.csproj                    src/Encore.Modules.Orders/
 COPY src/Encore.Modules.Payments/Encore.Modules.Payments.csproj                src/Encore.Modules.Payments/
 COPY src/Encore.Modules.Catalog.Contracts/Encore.Modules.Catalog.Contracts.csproj      src/Encore.Modules.Catalog.Contracts/
+COPY src/Encore.Modules.Payments.Contracts/Encore.Modules.Payments.Contracts.csproj    src/Encore.Modules.Payments.Contracts/
 COPY src/Encore.Modules.Inventory/Encore.Modules.Inventory.csproj              src/Encore.Modules.Inventory/
 COPY src/Encore.Modules.Inventory.Domain/Encore.Modules.Inventory.Domain.csproj src/Encore.Modules.Inventory.Domain/
 COPY src/Encore.Modules.Inventory.Contracts/Encore.Modules.Inventory.Contracts.csproj src/Encore.Modules.Inventory.Contracts/
@@ -37,6 +38,8 @@ COPY tests/Encore.Modules.Orders.IntegrationTests/Encore.Modules.Orders.Integrat
 COPY tests/Encore.Modules.Orders.UnitTests/Encore.Modules.Orders.UnitTests.csproj                 tests/Encore.Modules.Orders.UnitTests/
 COPY tests/Encore.Modules.Inventory.UnitTests/Encore.Modules.Inventory.UnitTests.csproj               tests/Encore.Modules.Inventory.UnitTests/
 COPY tests/Encore.Modules.Inventory.IntegrationTests/Encore.Modules.Inventory.IntegrationTests.csproj tests/Encore.Modules.Inventory.IntegrationTests/
+COPY tests/Encore.Modules.Payments.UnitTests/Encore.Modules.Payments.UnitTests.csproj                 tests/Encore.Modules.Payments.UnitTests/
+COPY tests/Encore.Modules.Payments.IntegrationTests/Encore.Modules.Payments.IntegrationTests.csproj   tests/Encore.Modules.Payments.IntegrationTests/
 
 RUN dotnet restore
 
