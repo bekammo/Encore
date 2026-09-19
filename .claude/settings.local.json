@@ -4,7 +4,18 @@
       "Bash(dotnet build *)",
       "Bash(dotnet test *)",
       "Bash(dotnet sln *)",
-      "Bash(dotnet list *)"
+      "Bash(dotnet list *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(docker compose *)",
+      "Bash(cd \"C:/Users/BEKA/source/repos/Encore\" && sed -n '1,12p' DECISIONS.md && echo \"...\" && sed -n '/^## 012/,/^## 013/p' DECISIONS.md)",
+      "Bash(perl -0777 -i -pe 's{\\(\\\\s*<ProjectReference Include=\"\\\\.\\\\.\\\\\\\\\\\\\\\\Encore\\\\.Shared\\\\\\\\\\\\\\\\Encore\\\\.Shared\\\\.csproj\" />\\)}{$1\\\\n\\\\n    <!-- Catalog\\\\x27s public face, and the assembly its own in-process adapter\\\\n         implements. Referencing it here is what lets CatalogModule register\\\\n         that adapter without any consumer learning the type. -->\\\\n    <ProjectReference Include=\"..\\\\\\\\Encore.Modules.Catalog.Contracts\\\\\\\\Encore.Modules.Catalog.Contracts.csproj\" />}' src/Encore.Modules.Catalog/Encore.Modules.Catalog.csproj)",
+      "Bash(sed -n '/ItemGroup/,/\\\\/ItemGroup/p' src/Encore.Modules.Catalog/Encore.Modules.Catalog.csproj)",
+      "Bash(perl -0777 -i -pe 's{\\(COPY src/Encore\\\\.Modules\\\\.Inventory/Encore\\\\.Modules\\\\.Inventory\\\\.csproj\\)}{COPY src/Encore.Modules.Catalog.Contracts/Encore.Modules.Catalog.Contracts.csproj      src/Encore.Modules.Catalog.Contracts/\\\\n$1}' tests/Dockerfile)",
+      "Bash(perl -0777 -i -pe 's{    /// <remarks>\\\\r?\\\\n    /// A constant rather than configuration, deliberately\\\\. Per-event caps — a\\\\r?\\\\n    /// small venue wanting a tighter limit — would be a different rule with a\\\\r?\\\\n    /// different home, and leaving this settable invites it being changed\\\\r?\\\\n    /// without anyone arguing for the new number\\\\.\\\\r?\\\\n    /// </remarks>\\\\r?\\\\n    public const int MaxHoldsPerClientPerEvent = 4;}{    /// <remarks>\\\\n    /// <para>\\\\n    /// Fixed rather than configuration, deliberately. Per-event caps — a small\\\\n    /// venue wanting a tighter limit — would be a different rule with a\\\\n    /// different home, and leaving this settable invites it being changed\\\\n    /// without anyone arguing for the new number.\\\\n    /// </para>\\\\n    /// <para>\\\\n    /// The value itself now lives on <see cref=\"SeatReservationLimits\"/>, so a\\\\n    /// caller outside this module can size a request before sending it instead\\\\n    /// of learning the limit by being refused. This stays as the name the\\\\n    /// handler and its tests already use; it is a forwarder, not a second copy.\\\\n    /// </para>\\\\n    /// </remarks>\\\\n    public static readonly int MaxHoldsPerClientPerEvent =\\\\n        SeatReservationLimits.MaxHoldsPerClientPerEvent;}' src/Encore.Modules.Inventory/Application/HoldSeatCommandHandler.cs)",
+      "Bash(perl -0777 -i -pe 's{using Encore\\\\.Modules\\\\.Inventory\\\\.Domain\\\\.Exceptions;\\(\\\\r?\\\\n\\)}{using Encore.Modules.Inventory.Contracts;$1using Encore.Modules.Inventory.Domain.Exceptions;$1}' src/Encore.Modules.Inventory/Application/HoldSeatCommandHandler.cs)",
+      "Bash(dotnet ef *)",
+      "Bash(perl -0777 -i -pe 's{\\(COPY tests/Encore\\\\.Modules\\\\.Inventory\\\\.UnitTests/\\)}{COPY tests/Encore.Modules.Orders.IntegrationTests/Encore.Modules.Orders.IntegrationTests.csproj   tests/Encore.Modules.Orders.IntegrationTests/\\\\n$1}' tests/Dockerfile)"
     ]
   }
 }
