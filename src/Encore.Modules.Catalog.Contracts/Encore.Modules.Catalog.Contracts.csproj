@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Catalog's public face: the only thing another module is allowed to know
+       about this one. A request, a response, a closed status enum and an
+       interface — no logic, no infrastructure, and deliberately no reference to
+       Catalog itself.
+
+       Zero PackageReference items and zero ProjectReference items, both on
+       purpose, exactly as Encore.Modules.Inventory.Contracts. A consumer takes
+       a dependency on this assembly and nothing else, so referencing it cannot
+       drag EF Core or Catalog's entities into a module that has no business
+       seeing them.
+
+       DECISIONS 019 argues why a read-mostly CRUD module gets a contracts
+       assembly at all, given that 001 spends its length arguing against
+       ceremony in exactly these modules. The short version: the substitution is
+       really performed, and the boundary really is an invariant. -->
+
+</Project>

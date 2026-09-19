@@ -1,3 +1,4 @@
+using Encore.Modules.Catalog.Contracts;
 using Encore.Modules.Catalog.Data;
 using Encore.Modules.Catalog.Endpoints;
 using Microsoft.AspNetCore.Routing;
@@ -21,6 +22,12 @@ public static class CatalogModule
             options.UseCatalogNpgsql(
                 configuration.GetConnectionString("Catalog")
                 ?? throw new InvalidOperationException("Missing connection string 'Catalog'.")));
+
+        // The module's in-process front door, for callers that are other
+        // modules rather than HTTP clients. This one line is the whole of the
+        // extraction story: point it at an HTTP-backed implementation and no
+        // consumer is recompiled.
+        services.AddScoped<IEventPricing, InProcessEventPricing>();
 
         // Off unless asked for, exactly as Inventory's is. The run profiles set
         // it so a developer with a fresh `docker compose up` gets a schema from

@@ -773,3 +773,50 @@ into a mapper that has nothing to map.
 <!-- Expand later: whether the list endpoints need paging before anything real
      depends on them, and whether currency should be validated against an actual
      ISO 4217 list rather than a three-letter shape check. -->
+
+---
+
+## 019 — Catalog gets a contracts assembly too, and why that is not ceremony
+
+Orders needs an event's price. It must not reference `Encore.Modules.Catalog` to get it,
+because that would put `CatalogDbContext` and `Catalog.Models.Event` on Orders' compile
+surface, and the first person who needed one more field would write a cross-schema join.
+So Catalog gets `Encore.Modules.Catalog.Contracts` — an interface, a request, a response
+and a closed status enum, zero packages, zero project references — plus an in-process
+adapter, exactly as Inventory has.
+
+The objection is fair and worth answering rather than waving away: 001 spends its whole
+length arguing that these modules should not pay for abstraction, and this is
+abstraction. But 001's objection is precise. It is against "three folders and an
+interface to express *save this row*, with no invariant being protected and no
+substitution ever actually performed". This fails all three clauses.
+
+**The substitution is really performed, twice.** In tests, a fake `IEventPricing` is what
+lets Orders' checkout tests run against one schema instead of two — without it every
+Orders test needs Catalog's tables migrated alongside its own. And at extraction, a
+read-mostly catalogue is the single easiest thing in this system to put behind a replica
+or its own service, which is the optionality 001 says to pay for only where it will be
+spent. Here it will be.
+
+**An invariant is protected: the module boundary itself.** That is not a rule about seats
+or prices, but it is the rule this repo is most about, and it is the only one with no
+other enforcement mechanism. A project reference is forever; a comment asking people not
+to use it is not.
+
+**It is smaller than the thing it copies.** Four files against Inventory.Contracts' ten,
+and the adapter is one projection.
+
+The deciding argument is consistency. The repo has already made this exact call, for this
+exact reason, one commit ago. Doing something different for the second inter-module call
+— a direct reference, or an interface parked in `Encore.Shared` — would cost a reader
+more in confusion than four files cost in ceremony. `Encore.Shared` in particular is the
+wrong home: it is for contracts every module agrees on, `Inventory.Domain` references it,
+and letting each module's public face accumulate there turns it into the back door 002
+exists to keep shut.
+
+The interface is named `IEventPricing` rather than `ICatalogQueries` so it can only grow
+in one direction. A name that describes the owner invites every future question about the
+catalogue to land on it; a name that describes the need does not.
+
+<!-- Expand later: whether Orders should cache a price for the life of a checkout
+     rather than reading it once, if the in-process call ever becomes a remote one. -->
