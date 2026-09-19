@@ -154,7 +154,20 @@ public sealed class ConcurrentHoldTests : IAsyncLifetime
             $"Attempts failed in unsanctioned ways: {string.Join(" | ", unexpected.Select(e => e.GetType().Name + ": " + e.Message))}");
 
         Assert.Equal(1, outcomes.Count(o => o == Outcome.Won));
-        Assert.Equal(ConcurrentAttempts - 1, outcomes.Count(o => o is Outcome.LostRace or Outcome.Refused));
+
+        // Every loser must lose on the WRITE, not on the read. All 50 loaded
+        // before the gate, so all 50 hold the same row version and none of them
+        // can see the winner's state — Refused is unreachable here, and asserting
+        // that it is zero is what proves the arrangement described in the remarks
+        // above actually held. The previous "LostRace or Refused" accepted either
+        // and would have gone on passing if the loading strategy ever changed,
+        // quietly turning this into a much weaker test.
+        //
+        // Hold_WhenClientsLoadAfterTheSeatIsTaken_ShouldAllBeRefusedByTheAggregate
+        // is the other half of the pair, and the one where Refused is the only
+        // legal answer.
+        Assert.Equal(ConcurrentAttempts - 1, outcomes.Count(o => o == Outcome.LostRace));
+        Assert.Equal(0, outcomes.Count(o => o == Outcome.Refused));
 
         // And the row itself agrees: held by exactly one client, with a live hold.
         await using var verification = new InventoryDbContext(_options);
@@ -166,5 +179,115 @@ public sealed class ConcurrentHoldTests : IAsyncLifetime
 
         var winner = sessions.Single(s => s.Seat.Status == SeatStatus.Held && s.Seat.HeldByClientId == persisted.HeldByClientId);
         Assert.Equal(winner.ClientId, persisted.HeldByClientId);
+    }
+
+    /// <summary>
+    /// The other half of the pair: the same fifty clients, but they load the seat
+    /// <em>after</em> it has been taken. Every one of them is refused by the
+    /// aggregate, and not one reaches the database.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Together these two tests say one thing: <b>when you lose depends on when
+    /// you read.</b> A client holding a stale row version loses on the write and
+    /// gets <see cref="Outcome.LostRace"/>; a client that read current state
+    /// never gets as far as the write. Both are correct, and the sibling test's
+    /// assertion that <see cref="Outcome.Refused"/> is zero only means something
+    /// because this test shows it is reachable at all.
+    /// </para>
+    /// <para>
+    /// It also exercises something nothing else does at this level: that
+    /// <c>GetByIdAsync</c> hands the aggregate the current row, so the refusal is
+    /// judged against real state rather than a cached one.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Hold_WhenClientsLoadAfterTheSeatIsTaken_ShouldAllBeRefusedByTheAggregate()
+    {
+        // Arrange — one client takes the seat and commits, before anybody reads.
+        var now = new DateTime(DateTime.UtcNow.Ticks / 10 * 10, DateTimeKind.Utc);
+        var winnerClientId = Guid.NewGuid();
+
+        await using (var winnerContext = new InventoryDbContext(_options))
+        {
+            var winnerRepository = new EfSeatRepository(winnerContext);
+            var winnerSeat = await winnerRepository.GetByIdAsync(_seatId);
+
+            winnerSeat!.Hold(winnerClientId, now);
+            await winnerRepository.SaveAsync(winnerSeat);
+        }
+
+        var contexts = new List<InventoryDbContext>(ConcurrentAttempts);
+        var sessions = new List<(EfSeatRepository Repository, Seat Seat, Guid ClientId)>(ConcurrentAttempts);
+
+        for (var i = 0; i < ConcurrentAttempts; i++)
+        {
+            var context = new InventoryDbContext(_options);
+            contexts.Add(context);
+
+            var repository = new EfSeatRepository(context);
+            var seat = await repository.GetByIdAsync(_seatId);
+
+            sessions.Add((repository, seat!, Guid.NewGuid()));
+        }
+
+        var unexpected = new List<Exception>();
+        var startGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var attempts = sessions.Select(async session =>
+        {
+            await startGate.Task;
+
+            try
+            {
+                session.Seat.Hold(session.ClientId, now);
+                await session.Repository.SaveAsync(session.Seat);
+                return Outcome.Won;
+            }
+            catch (ConcurrentSeatModificationException)
+            {
+                return Outcome.LostRace;
+            }
+            catch (SeatTransitionException ex) when (ex.Reason == SeatTransitionReason.SeatAlreadyHeld)
+            {
+                return Outcome.Refused;
+            }
+            catch (Exception ex)
+            {
+                lock (unexpected)
+                {
+                    unexpected.Add(ex);
+                }
+
+                return Outcome.Unexpected;
+            }
+        }).ToArray();
+
+        // Act
+        startGate.SetResult();
+        var outcomes = await Task.WhenAll(attempts);
+
+        foreach (var context in contexts)
+        {
+            await context.DisposeAsync();
+        }
+
+        // Assert
+        Assert.True(
+            unexpected.Count == 0,
+            $"Attempts failed in unsanctioned ways: {string.Join(" | ", unexpected.Select(e => e.GetType().Name + ": " + e.Message))}");
+
+        Assert.Equal(ConcurrentAttempts, outcomes.Count(o => o == Outcome.Refused));
+        Assert.Equal(0, outcomes.Count(o => o == Outcome.Won));
+        Assert.Equal(0, outcomes.Count(o => o == Outcome.LostRace));
+
+        // The winner's hold is exactly as they left it: fifty refusals moved
+        // nothing, which is the part a refusal-shaped bug would get wrong.
+        await using var verification = new InventoryDbContext(_options);
+        var persisted = await verification.Seats.SingleAsync(seat => seat.Id == _seatId);
+
+        Assert.Equal(SeatStatus.Held, persisted.Status);
+        Assert.Equal(winnerClientId, persisted.HeldByClientId);
+        Assert.Equal(now.AddMinutes(5), persisted.HoldExpiresAt);
     }
 }
