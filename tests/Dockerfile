@@ -22,7 +22,7 @@ WORKDIR /src
 # Project files first, restored as their own layer. Editing source then rebuilds
 # without re-resolving the package graph, which is the difference between a
 # ten-second loop and a two-minute one.
-COPY Directory.Build.props Encore.sln ./
+COPY Directory.Build.props Directory.Build.targets Encore.sln ./
 COPY src/Encore.Api/Encore.Api.csproj                                          src/Encore.Api/
 COPY src/Encore.Shared/Encore.Shared.csproj                                    src/Encore.Shared/
 COPY src/Encore.Modules.Catalog/Encore.Modules.Catalog.csproj                  src/Encore.Modules.Catalog/

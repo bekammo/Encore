@@ -17,4 +17,10 @@
        actually be spent, and Orders' checkout tests need a gateway that declines
        on demand — substitution really performed, not hypothetical. -->
 
+  <!-- The line that turns the paragraph above into something the build checks.
+       See Directory.Build.targets: ENCORE001, ENCORE002, ENCORE003. -->
+  <PropertyGroup>
+    <EncoreZeroDependency>true</EncoreZeroDependency>
+  </PropertyGroup>
+
 </Project>

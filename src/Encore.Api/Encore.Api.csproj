@@ -4,6 +4,16 @@
        the web server. Each module is reached through exactly one seam,
        its Add*Module() / Map*Module() extension pair. -->
 
+  <!-- ENCORE001 only, not the other two rules. DECISIONS 014 refused OpenAPI
+       and 017 refused a host-level migrator, both partly to keep this project
+       free of packages of its own, and until now nothing checked it. It cannot
+       take the full EncoreZeroDependency treatment: the Web SDK adds ASP.NET
+       Core, and composing four modules brings EF Core in transitively, both of
+       which are exactly what a host is for. See Directory.Build.targets. -->
+  <PropertyGroup>
+    <EncoreNoDirectPackages>true</EncoreNoDirectPackages>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Catalog\Encore.Modules.Catalog.csproj" />
     <ProjectReference Include="..\Encore.Modules.Inventory\Encore.Modules.Inventory.csproj" />

@@ -13,13 +13,23 @@
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
   </ItemGroup>
 
-  <!-- Belt and braces: fail the build the moment someone adds a package here.
-       An architecture test (NetArchTest / ArchUnitNET) can later assert the
-       same rule at the namespace level; this catches it a step earlier. -->
-  <Target Name="EnforceDomainPurity" BeforeTargets="CoreCompile">
-    <Error Condition="@(PackageReference->Count()) &gt; 0"
-           Code="ENCORE001"
-           Text="Encore.Modules.Inventory.Domain must have zero PackageReference items. The domain depends on Encore.Shared and the BCL, nothing else. Put the dependency behind a port in Encore.Modules.Inventory/Ports and implement it in Adapters." />
-  </Target>
+  <!-- Belt and braces. The rules themselves live in Directory.Build.targets,
+       which is what lets Encore.Shared and the three contracts assemblies have
+       them too — and Encore.Shared having them is what closed the hole this
+       file's own guard could never see, because a package there would have
+       arrived here through the one ProjectReference above.
+
+         ENCORE001  no PackageReference of our own.
+         ENCORE002  no FrameworkReference but the implicit BCL one.
+         ENCORE003  nothing outside the BCL in the resolved closure, which is
+                    the transitive case the first rule is blind to.
+
+       The architecture test this comment used to defer to now exists, in
+       tests/Encore.ArchitectureTests: it asserts the same rule over compiled
+       metadata and over the declared project graph, a step later than these
+       and for the questions a build cannot answer. DECISIONS 036 and 037. -->
+  <PropertyGroup>
+    <EncoreZeroDependency>true</EncoreZeroDependency>
+  </PropertyGroup>
 
 </Project>

@@ -15,4 +15,10 @@
        against the same interface and only the registered implementation
        changes, from an in-process call to an HTTP one. -->
 
+  <!-- The line that turns the paragraph above into something the build checks.
+       See Directory.Build.targets: ENCORE001, ENCORE002, ENCORE003. -->
+  <PropertyGroup>
+    <EncoreZeroDependency>true</EncoreZeroDependency>
+  </PropertyGroup>
+
 </Project>

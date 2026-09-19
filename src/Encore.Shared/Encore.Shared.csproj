@@ -8,4 +8,13 @@
        to stay free of infrastructure. If Shared picked up a dependency, that
        dependency would reach the whole solution through the back door. -->
 
+  <!-- And this is the line that stops that being a hope. Until it was added,
+       the paragraph above described the most dangerous hole in the solution:
+       Encore.Shared is the Domain's only ProjectReference, so a package here
+       would have reached the domain without tripping anything at all.
+       See Directory.Build.targets: ENCORE001, ENCORE002, ENCORE003. -->
+  <PropertyGroup>
+    <EncoreZeroDependency>true</EncoreZeroDependency>
+  </PropertyGroup>
+
 </Project>

@@ -16,4 +16,10 @@
        ceremony in exactly these modules. The short version: the substitution is
        really performed, and the boundary really is an invariant. -->
 
+  <!-- The line that turns the paragraph above into something the build checks.
+       See Directory.Build.targets: ENCORE001, ENCORE002, ENCORE003. -->
+  <PropertyGroup>
+    <EncoreZeroDependency>true</EncoreZeroDependency>
+  </PropertyGroup>
+
 </Project>
