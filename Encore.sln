@@ -41,6 +41,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Encore.Modules.Payments.Con
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Encore.Modules.Payments.IntegrationTests", "tests\Encore.Modules.Payments.IntegrationTests\Encore.Modules.Payments.IntegrationTests.csproj", "{EBB0695A-151E-41E1-8C77-B95FE754598C}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Encore.ArchitectureTests", "tests\Encore.ArchitectureTests\Encore.ArchitectureTests.csproj", "{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -255,6 +257,18 @@ Global
 		{EBB0695A-151E-41E1-8C77-B95FE754598C}.Release|x64.Build.0 = Release|Any CPU
 		{EBB0695A-151E-41E1-8C77-B95FE754598C}.Release|x86.ActiveCfg = Release|Any CPU
 		{EBB0695A-151E-41E1-8C77-B95FE754598C}.Release|x86.Build.0 = Release|Any CPU
+		{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A}.Debug|x64.Build.0 = Debug|Any CPU
+		{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A}.Debug|x86.Build.0 = Debug|Any CPU
+		{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A}.Release|x64.ActiveCfg = Release|Any CPU
+		{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A}.Release|x64.Build.0 = Release|Any CPU
+		{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A}.Release|x86.ActiveCfg = Release|Any CPU
+		{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -277,5 +291,6 @@ Global
 		{0B5DFFAA-4945-4BCC-9B1B-56C4BF99CF73} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{131C4E0F-CA45-4B89-A426-ADE7665C3585} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{EBB0695A-151E-41E1-8C77-B95FE754598C} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{EE5984FC-91C9-41AE-81C7-20C64FA2BB8A} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

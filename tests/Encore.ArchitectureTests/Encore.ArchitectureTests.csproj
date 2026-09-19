@@ -1,0 +1,66 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The rules the build guards cannot reach.
+
+       Directory.Build.targets stops a forbidden dependency arriving at the five
+       zero-dependency projects. It has nothing to say about the shape of the
+       rest of the graph: that Orders must not reference Inventory, that nothing
+       may reference the host, that every type in the Domain lives in the Domain's
+       own namespace. DECISIONS 002 anticipated this suite; 037 records why it
+       exists and why it has no architecture-test library in it. -->
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <!-- Build-order edges only. ReferenceOutputAssembly="false" means these
+       projects are built before this one and their output is NOT placed on this
+       project's compile surface.
+
+       That property is what makes this suite credible rather than circular. It
+       asserts things about assemblies it cannot see, names them as strings, and
+       loads them from disk. A test proving that nothing references Encore.Api,
+       from a project that references Encore.Api, would be its own counterexample. -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Encore.Api\Encore.Api.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Encore.Shared\Encore.Shared.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Encore.Modules.Catalog\Encore.Modules.Catalog.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Encore.Modules.Orders\Encore.Modules.Orders.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Encore.Modules.Payments\Encore.Modules.Payments.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Encore.Modules.Inventory\Encore.Modules.Inventory.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Encore.Modules.Inventory.Domain\Encore.Modules.Inventory.Domain.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Encore.Modules.Catalog.Contracts\Encore.Modules.Catalog.Contracts.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Encore.Modules.Inventory.Contracts\Encore.Modules.Inventory.Contracts.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Encore.Modules.Payments.Contracts\Encore.Modules.Payments.Contracts.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <!-- Where to find those outputs, injected at build time rather than discovered
+       at run time by walking up from the test binary looking for a .sln. Exact on
+       the host and inside the test container alike, because each builds its own. -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>EncoreRepositoryRoot</_Parameter1>
+      <_Parameter2>$(MSBuildThisFileDirectory)..\..\</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>EncoreConfiguration</_Parameter1>
+      <_Parameter2>$(Configuration)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>EncoreTargetFramework</_Parameter1>
+      <_Parameter2>$(TargetFramework)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

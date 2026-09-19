@@ -40,6 +40,7 @@ COPY tests/Encore.Modules.Inventory.UnitTests/Encore.Modules.Inventory.UnitTests
 COPY tests/Encore.Modules.Inventory.IntegrationTests/Encore.Modules.Inventory.IntegrationTests.csproj tests/Encore.Modules.Inventory.IntegrationTests/
 COPY tests/Encore.Modules.Payments.UnitTests/Encore.Modules.Payments.UnitTests.csproj                 tests/Encore.Modules.Payments.UnitTests/
 COPY tests/Encore.Modules.Payments.IntegrationTests/Encore.Modules.Payments.IntegrationTests.csproj   tests/Encore.Modules.Payments.IntegrationTests/
+COPY tests/Encore.ArchitectureTests/Encore.ArchitectureTests.csproj                                  tests/Encore.ArchitectureTests/
 
 RUN dotnet restore
 
