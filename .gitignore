@@ -18,6 +18,12 @@ Thumbs.db
 appsettings.Development.json
 appsettings.*.local.json
 
-## Docs — everything except the README stays local
-*.md
-!README.md
+## Docs — the decision log ships, working notes stay local.
+##
+## DECISIONS.md is the argument this project exists to make, so excluding it
+## published the conclusion and withheld the reasoning. Status audits are
+## point-in-time working notes with no value to a reader, and CLAUDE.md carries
+## machine-specific detail; both stay local. Delete the CLAUDE.md line to
+## publish it.
+STATUS_*.md
+CLAUDE.md
