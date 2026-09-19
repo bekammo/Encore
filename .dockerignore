@@ -1,0 +1,17 @@
+# The build context is source only. Host build output is the important
+# exclusion: bin/ and obj/ here are Windows artefacts, and letting them into a
+# Linux image gives the container a half-built tree that restores against the
+# wrong RID and fails in ways that look like code problems.
+**/bin/
+**/obj/
+**/TestResults/
+.git/
+.vs/
+.idea/
+.vscode/
+
+# Not source, and no reason to rebuild the image when they change.
+*.md
+docker-compose.yml
+.gitignore
+.gitattributes

@@ -33,5 +33,39 @@ services:
       timeout: 3s
       retries: 15
 
+  # The test suite, run on Linux rather than on the host. Behind a profile, so
+  # `docker compose up -d` still means "just the dependencies" and this never
+  # starts by accident; `docker compose run --rm tests` is the whole interface.
+  #
+  # Why it exists at all is a host problem, explained at the top of
+  # tests/Dockerfile: Smart App Control blocks freshly built unsigned assemblies
+  # on the development machine, has no exclusion mechanism, and cannot be worked
+  # around by rebuilding.
+  #
+  # It deliberately does not depend on the postgres and redis services above.
+  # Those are for `dotnet run`; the integration tests bring up their own
+  # throwaway instances, which is what keeps a test run from depending on — or
+  # quietly corrupting — the database a developer is using by hand.
+  tests:
+    profiles: ["tests"]
+    build:
+      context: .
+      dockerfile: tests/Dockerfile
+    volumes:
+      # The integration tests use Testcontainers, so they need a daemon. Handing
+      # them the host's socket makes the containers they start siblings of this
+      # one rather than children — no Docker-in-Docker, no nested storage driver,
+      # and the same daemon a developer already has running.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # Sibling containers publish their ports on the *host*, not on this
+      # container, so "localhost" here is wrong and the connection would be
+      # refused. This tells Testcontainers where the host actually is.
+      TESTCONTAINERS_HOST_OVERRIDE: host.docker.internal
+    extra_hosts:
+      # Docker Desktop provides this name already; declaring it keeps the same
+      # compose file working on plain Linux, where it does not.
+      - "host.docker.internal:host-gateway"
+
 volumes:
   encore-postgres-data:
