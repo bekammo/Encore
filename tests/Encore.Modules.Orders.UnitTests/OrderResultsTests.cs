@@ -272,6 +272,59 @@ public class OrderResultsTests
         Assert.Contains("cancelled", problem.ProblemDetails.Detail);
     }
 
+    /// <summary>
+    /// 200, not a conflict. The customer has every seat they asked for; the only
+    /// thing outstanding is ours to finish, and the status field says so for any
+    /// client that cares to look. See <c>DECISIONS.md</c> 027.
+    /// </summary>
+    [Fact]
+    public void ForConfirm_WhenAwaitingCapture_ShouldBe200WithTheStatusSaidPlainly()
+    {
+        var result = OrderResults.ForConfirm(
+            new OrderActionResult(OrderActionOutcome.Completed, AnOrder(OrderStatus.AwaitingCapture)),
+            Path);
+
+        var ok = Assert.IsType<Ok<OrderResponse>>(result);
+        Assert.Equal("awaiting_capture", ok.Value!.Status);
+    }
+
+    /// <summary>
+    /// Both are retriable, and this is the one place in the module where that
+    /// flag means "try again with something different" rather than "send the
+    /// identical request again" — the order is untouched and its holds are still
+    /// live, which is the whole reason a decline does not end it.
+    /// </summary>
+    [Theory]
+    [InlineData(OrderActionOutcome.PaymentDeclined, "payment_declined")]
+    [InlineData(OrderActionOutcome.PaymentTimedOut, "payment_timed_out")]
+    public void ForConfirm_WhenThePaymentDidNotGoThrough_ShouldBe409AndRetriable(
+        OrderActionOutcome outcome,
+        string expectedReason)
+    {
+        var result = OrderResults.ForConfirm(
+            new OrderActionResult(outcome, AnOrder(OrderStatus.Pending)), Path);
+
+        Assert.Equal(StatusCodes.Status409Conflict, StatusOf(result));
+        Assert.Equal(expectedReason, ReasonOf(result));
+        Assert.True(RetriableOf(result));
+    }
+
+    /// <summary>
+    /// The status in the sentence is spelled the way the body spells it. It only
+    /// started to matter when one of them became two words.
+    /// </summary>
+    [Fact]
+    public void ForCancel_WhenAwaitingCapture_ShouldSayTheStatusTheSameWayTheBodyDoes()
+    {
+        var result = OrderResults.ForCancel(
+            new OrderActionResult(OrderActionOutcome.NotPending, AnOrder(OrderStatus.AwaitingCapture)),
+            Path);
+
+        var problem = Assert.IsType<ProblemHttpResult>(result);
+        Assert.Equal(StatusCodes.Status409Conflict, StatusOf(result));
+        Assert.Contains("awaiting_capture", problem.ProblemDetails.Detail);
+    }
+
     [Fact]
     public void ForConfirm_WhenLostRace_ShouldBe409AndRetriable()
     {

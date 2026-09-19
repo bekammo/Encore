@@ -22,6 +22,13 @@
          needs an event's price and sale window, and must not learn Catalog's
          DbContext or entities to get them. -->
     <ProjectReference Include="..\Encore.Modules.Catalog.Contracts\Encore.Modules.Catalog.Contracts.csproj" />
+
+    <!-- Payments' public face, on the same terms. Orders is the thing that knows
+         what is owed, so Orders is the thing that asks for it to be held and
+         then taken — and it does that without learning Payments' gateway, its
+         entities or its schema. Payments is also the module 004 nominated for
+         extraction first, which makes this the seam most likely to be spent. -->
+    <ProjectReference Include="..\Encore.Modules.Payments.Contracts\Encore.Modules.Payments.Contracts.csproj" />
   </ItemGroup>
 
   <!-- The outcome-to-status mapping and the checkout it maps are internal: they

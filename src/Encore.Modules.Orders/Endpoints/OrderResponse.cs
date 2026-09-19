@@ -45,13 +45,24 @@ public sealed record OrderResponse(
         new(
             order.Id,
             order.EventId,
-            order.Status.ToString().ToLowerInvariant(),
+            SnakeCase(order.Status.ToString()),
             order.PlacedAt,
             order.HoldsExpireAt,
             order.ClosedAt,
             order.Total,
             order.Currency,
             [.. order.Lines.Select(line => new OrderLineResponse(line.SeatId, line.UnitPrice, line.Currency))]);
+
+    /// <summary>
+    /// <c>AwaitingCapture</c> to <c>awaiting_capture</c>. The four original
+    /// statuses are single words and come through this unchanged, so nothing a
+    /// client already matches on moves.
+    /// </summary>
+    private static string SnakeCase(string name) =>
+        string.Concat(name.Select((character, index) =>
+            char.IsUpper(character) && index > 0
+                ? "_" + char.ToLowerInvariant(character)
+                : char.ToLowerInvariant(character).ToString()));
 }
 
 /// <summary>One seat on an order, at the price it was bought for.</summary>

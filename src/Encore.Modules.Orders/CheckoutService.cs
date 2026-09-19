@@ -2,6 +2,7 @@ using Encore.Modules.Catalog.Contracts;
 using Encore.Modules.Inventory.Contracts;
 using Encore.Modules.Orders.Data;
 using Encore.Modules.Orders.Models;
+using Encore.Modules.Payments.Contracts;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -21,11 +22,18 @@ namespace Encore.Modules.Orders;
 /// <para>
 /// <b>It takes <see cref="OrdersDbContext"/> concretely.</b> There is no
 /// <c>IOrderRepository</c>, because a port earns its place by buying
-/// substitution and nothing here will ever be substituted. The two dependencies
-/// that <i>are</i> interfaces — <see cref="IEventPricing"/> and
-/// <see cref="ISeatReservations"/> — are interfaces because they cross a module
-/// boundary and will one day cross a process one, which is a different argument
-/// entirely.
+/// substitution and nothing here will ever be substituted. The three dependencies
+/// that <i>are</i> interfaces — <see cref="IEventPricing"/>,
+/// <see cref="ISeatReservations"/> and <see cref="IOrderPayments"/> — are
+/// interfaces because they cross a module boundary and will one day cross a
+/// process one, which is a different argument entirely.
+/// </para>
+/// <para>
+/// <b>Money is secured before a seat is sold, never after.</b> A sold seat is
+/// terminal (007) and there is no un-sell, so selling first and charging second
+/// risks permanent, unrecoverable inventory loss; money is the one of the two
+/// that can be given back. Authorise, sell, capture — and when the sale falls
+/// over, void, so the customer never sees a charge at all. See 028.
 /// </para>
 /// <para>
 /// <b>This module never judges expiry.</b> Nothing in this file compares
@@ -38,6 +46,7 @@ public sealed class CheckoutService(
     OrdersDbContext orders,
     IEventPricing pricing,
     ISeatReservations seats,
+    IOrderPayments payments,
     TimeProvider clock)
 {
     /// <summary>The unique index that is the real guard against a duplicate checkout.</summary>
@@ -46,6 +55,7 @@ public sealed class CheckoutService(
     private readonly OrdersDbContext _orders = orders;
     private readonly IEventPricing _pricing = pricing;
     private readonly ISeatReservations _seats = seats;
+    private readonly IOrderPayments _payments = payments;
     private readonly TimeProvider _clock = clock;
 
     /// <summary>
@@ -204,9 +214,18 @@ public sealed class CheckoutService(
     }
 
     /// <summary>
-    /// Converts an order's holds into sales, and records what Inventory decided.
+    /// Secures the money, converts the order's holds into sales, and then takes
+    /// the money.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// <b>The order of the three steps is the design.</b> A sold seat is terminal
+    /// (007), so selling before the funds are secured risks a seat that is gone
+    /// forever against money that never arrives. An authorisation is the reverse:
+    /// it can be released, and one nobody captures lapses at the gateway by
+    /// itself. So the unrecoverable thing goes second, between two things that can
+    /// be undone. See 028.
+    /// </para>
     /// <para>
     /// <b>This method never refuses because <see cref="Order.HoldsExpireAt"/> has
     /// passed.</b> It asks Inventory and lets
@@ -216,13 +235,20 @@ public sealed class CheckoutService(
     /// while the seat is still theirs.
     /// </para>
     /// <para>
-    /// The three endings follow 021 exactly. Every seat sold is
-    /// <see cref="OrderStatus.Confirmed"/>. Nothing sold and every refusal an
-    /// expiry is <see cref="OrderStatus.Expired"/>. Anything else — a mix, or a
-    /// refusal that was not expiry — is <see cref="OrderStatus.Failed"/>, the
-    /// status that means a person has to look. There is no automatic recovery
-    /// from it because there cannot be one: a sold seat is terminal, so nothing
-    /// can un-sell the half that worked.
+    /// The endings follow 021, with one addition. Every seat sold and the money
+    /// taken is <see cref="OrderStatus.Confirmed"/>; every seat sold and the
+    /// capture unanswered is <see cref="OrderStatus.AwaitingCapture"/>, which the
+    /// next confirm resolves (027). Nothing sold and every refusal an expiry is
+    /// <see cref="OrderStatus.Expired"/>. Anything else is
+    /// <see cref="OrderStatus.Failed"/>. Both of those last two release the
+    /// authorisation, so an order that did not complete costs the customer
+    /// nothing — including the partial case, which is the question
+    /// <see cref="OrderStatus.Failed"/> used to leave open.
+    /// </para>
+    /// <para>
+    /// A decline or a gateway timeout does <b>not</b> end the order. It stays
+    /// <see cref="OrderStatus.Pending"/> with its holds intact, because the most
+    /// ordinary payment failure there is should not cost a customer their seats.
     /// </para>
     /// </remarks>
     public async Task<OrderActionResult> ConfirmAsync(
@@ -244,9 +270,55 @@ public sealed class CheckoutService(
             return new OrderActionResult(OrderActionOutcome.Completed, order);
         }
 
+        // The seats are already sold and only the money is outstanding, so this
+        // retries the capture and nothing else. Selling again would be harmless —
+        // Inventory answers Sold to the client that already bought — but asking
+        // is four round trips against the hottest rows in the system for an answer
+        // nobody needs.
+        if (order.Status is OrderStatus.AwaitingCapture)
+        {
+            return await CaptureAsync(order, clientId, cancellationToken).ConfigureAwait(false);
+        }
+
         if (order.Status is not OrderStatus.Pending)
         {
             return new OrderActionResult(OrderActionOutcome.NotPending, order);
+        }
+
+        var authorized = await _payments
+            .AuthorizeAsync(
+                new AuthorizePaymentRequest(order.Id, clientId, order.Total, order.Currency),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        switch (authorized.Status)
+        {
+            // Funds held, or already held by an attempt this one is a retry of.
+            case AuthorizePaymentStatus.Authorized:
+                break;
+
+            // A previous confirm captured and then failed to record the order.
+            // Carrying on is what heals it: the sells are idempotent for the
+            // client that already bought, and the capture below answers Captured
+            // a second time.
+            case AuthorizePaymentStatus.AlreadyCaptured:
+                break;
+
+            // Neither of these touches the order. The holds stay live and the
+            // customer can try again — with a different card, or with the same
+            // question under the same key.
+            case AuthorizePaymentStatus.Declined:
+                return new OrderActionResult(OrderActionOutcome.PaymentDeclined, order);
+
+            case AuthorizePaymentStatus.TimedOut:
+                return new OrderActionResult(OrderActionOutcome.PaymentTimedOut, order);
+
+            case AuthorizePaymentStatus.ConcurrentAttemptInFlight:
+                return new OrderActionResult(OrderActionOutcome.LostRace, order);
+
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(order), authorized.Status, "Unmapped authorize status.");
         }
 
         var sold = 0;
@@ -290,21 +362,87 @@ public sealed class CheckoutService(
             _ => OrderStatus.Failed
         };
 
+        if (order.Status is not OrderStatus.Confirmed)
+        {
+            // The sale did not complete, so the money goes back before anything
+            // else happens. Nothing is checked about the answer: NoAuthorization
+            // means there was nothing to release, and a timeout means the hold
+            // lapses at the gateway on its own. Neither changes what this order is.
+            await _payments
+                .VoidAsync(new VoidPaymentRequest(order.Id, clientId), cancellationToken)
+                .ConfigureAwait(false);
+
+            return await CloseAsync(order, cancellationToken).ConfigureAwait(false);
+        }
+
+        return await CaptureAsync(order, clientId, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Takes the money for an order whose seats are sold, and records which of the
+    /// two endings that produced.
+    /// </summary>
+    /// <remarks>
+    /// Reached from two places — the end of a confirm, and a confirm retried
+    /// against an <see cref="OrderStatus.AwaitingCapture"/> order — because they
+    /// want exactly the same thing and a second copy of this mapping is a second
+    /// thing to keep correct.
+    /// </remarks>
+    private async Task<OrderActionResult> CaptureAsync(
+        Order order,
+        Guid clientId,
+        CancellationToken cancellationToken)
+    {
+        var captured = await _payments
+            .CaptureAsync(new CapturePaymentRequest(order.Id, clientId), cancellationToken)
+            .ConfigureAwait(false);
+
+        order.Status = captured.Status switch
+        {
+            CapturePaymentStatus.Captured => OrderStatus.Confirmed,
+
+            // The seats are sold and the funds are still held. Not an ending, and
+            // not a failure — the next confirm asks again (027).
+            CapturePaymentStatus.TimedOut => OrderStatus.AwaitingCapture,
+
+            // Seats sold and nothing held against them. Reachable only if the
+            // authorisation went away underneath this confirm, which is the shape
+            // of problem Failed exists to name.
+            CapturePaymentStatus.NoAuthorization => OrderStatus.Failed,
+
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(order), captured.Status, "Unmapped capture status.")
+        };
+
         return await CloseAsync(order, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Ends an order because the customer said so.
+    /// Ends an order because the customer said so, releasing both the money and
+    /// the seats.
     /// </summary>
     /// <remarks>
-    /// <b>This does not release the seats, and that is an open question rather
-    /// than a settled rule.</b> 021 forbids this module releasing seats
-    /// <i>because a hold lapsed</i>, which is a different thing from a customer
-    /// cancelling deliberately — and the domain's own
-    /// <c>SeatReleaseReason.Cancelled</c> has no other producer, which hints the
-    /// other way. Until that is decided, this does the null thing: the holds are
-    /// left to lapse on their own, which Inventory reclaims lazily on every read
-    /// and write path. Untidy for up to five minutes, never incorrect.
+    /// <para>
+    /// <b>This releases the seats, and that used to be an open question.</b> 021
+    /// forbids this module releasing seats <i>because a hold lapsed</i> — that
+    /// would be a second authority over expiry, judged against Orders' clock. A
+    /// customer saying "no thanks" is not a clock judgement, and until now
+    /// <c>SeatReleaseReason.Cancelled</c> had no producer at all: a domain enum
+    /// member nothing ever raised. During a flash sale, leaving up to four seats
+    /// to lapse on their own after every cancellation strands the scarcest thing
+    /// in the system for five minutes at a time. See 034.
+    /// </para>
+    /// <para>
+    /// <b>The money goes back first.</b> If it turns out the money has already
+    /// been taken, this order is not cancellable — a confirm won the race — and
+    /// the client is told to look again rather than being handed a cancellation
+    /// that contradicts a completed sale.
+    /// </para>
+    /// <para>
+    /// Nothing here checks whether a release succeeded. A refusal means the hold
+    /// was already gone, which is the state this was asking for; Inventory
+    /// reclaims lapsed holds lazily on every path regardless.
+    /// </para>
     /// </remarks>
     public async Task<OrderActionResult> CancelAsync(
         Guid clientId,
@@ -328,6 +466,28 @@ public sealed class CheckoutService(
             return new OrderActionResult(OrderActionOutcome.NotPending, order);
         }
 
+        var released = await _payments
+            .VoidAsync(new VoidPaymentRequest(order.Id, clientId), cancellationToken)
+            .ConfigureAwait(false);
+
+        if (released.Status is VoidPaymentStatus.AlreadyCaptured)
+        {
+            // A confirm got there first and the customer has been charged. The
+            // order row still reads Pending in memory, so saying NotPending would
+            // be this method reporting a status it has not read; LostRace is the
+            // truth, and the retry finds the settled order.
+            return new OrderActionResult(OrderActionOutcome.LostRace, order);
+        }
+
+        foreach (var line in order.Lines)
+        {
+            await _seats
+                .ReleaseAsync(
+                    new ReleaseSeatRequest(order.EventId, line.SeatId, clientId),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         order.Status = OrderStatus.Cancelled;
 
         return await CloseAsync(order, cancellationToken).ConfigureAwait(false);
@@ -344,16 +504,30 @@ public sealed class CheckoutService(
                 cancellationToken);
 
     /// <summary>
-    /// Stamps the ending on an order whose status has just been decided, and saves.
+    /// Stamps the outcome on an order whose status has just been decided, and
+    /// saves.
     /// </summary>
     /// <remarks>
-    /// <see cref="Order.HoldsExpireAt"/> is cleared because it describes an order
-    /// that can still be completed, and this one no longer can. Leaving it would
-    /// let a client render a countdown against an order that has already ended.
+    /// <para>
+    /// <see cref="Order.HoldsExpireAt"/> is always cleared, because it describes
+    /// an order that is still waiting on holds and none of these are: the seats
+    /// have either been sold, released or lost. Leaving it would let a client
+    /// render a countdown against an order that has nothing to count down to.
+    /// </para>
+    /// <para>
+    /// <see cref="Order.ClosedAt"/> is stamped only for an ending.
+    /// <see cref="OrderStatus.AwaitingCapture"/> is not one — the order is still
+    /// going somewhere — and dating it as closed would make every report of
+    /// completed orders quietly wrong.
+    /// </para>
     /// </remarks>
     private async Task<OrderActionResult> CloseAsync(Order order, CancellationToken cancellationToken)
     {
-        order.ClosedAt = _clock.GetUtcNow().UtcDateTime;
+        if (order.Status is not OrderStatus.AwaitingCapture)
+        {
+            order.ClosedAt = _clock.GetUtcNow().UtcDateTime;
+        }
+
         order.HoldsExpireAt = null;
 
         try

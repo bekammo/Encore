@@ -2,6 +2,7 @@ using Encore.Modules.Catalog.Contracts;
 using Encore.Modules.Inventory.Contracts;
 using Encore.Modules.Orders.Data;
 using Encore.Modules.Orders.Models;
+using Encore.Modules.Payments.Contracts;
 using Microsoft.EntityFrameworkCore;
 using Testcontainers.PostgreSql;
 
@@ -15,10 +16,10 @@ namespace Encore.Modules.Orders.IntegrationTests;
 /// <para>
 /// <b>Postgres is real and the neighbours are not, which is the point.</b> The
 /// database is here because this module declined a repository port and the
-/// partial unique index is load-bearing; Catalog and Inventory are faked because
-/// they are reached through published contracts, and a test that needed all
-/// three schemas migrated to check one refusal would be evidence those contracts
-/// were not doing their job.
+/// partial unique index is load-bearing; Catalog, Inventory and Payments are
+/// faked because they are reached through published contracts, and a test that
+/// needed all four schemas migrated to check one refusal would be evidence those
+/// contracts were not doing their job.
 /// </para>
 /// <para>
 /// Every test uses fresh client and event ids. The container is per-class and
@@ -510,30 +511,278 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Equal(OrderActionOutcome.OrderNotFound, result.Outcome);
     }
 
-    // -- Cancel -----------------------------------------------------------
+    // -- Confirm: the money -----------------------------------------------
 
     /// <summary>
-    /// Cancelling ends the order. It deliberately does not release the seats —
-    /// see the remarks on <c>CheckoutService.CancelAsync</c>; that is an open
-    /// question rather than a settled rule, and this test pins the current
-    /// answer so changing it is a decision rather than a drift.
+    /// The ordering that the whole of 028 rests on. A sold seat is terminal and
+    /// cannot be given back, so no seat is sold until the money is secured — and
+    /// when it is not secured, not one sell request goes out.
     /// </summary>
-    [Fact]
-    public async Task Cancel_ShouldEndTheOrderAndNotReleaseTheSeats()
+    [Theory]
+    [InlineData(AuthorizePaymentStatus.Declined, OrderActionOutcome.PaymentDeclined)]
+    [InlineData(AuthorizePaymentStatus.TimedOut, OrderActionOutcome.PaymentTimedOut)]
+    [InlineData(AuthorizePaymentStatus.ConcurrentAttemptInFlight, OrderActionOutcome.LostRace)]
+    public async Task Confirm_WhenTheMoneyCannotBeSecured_ShouldSellNothingAndLeaveTheOrderPending(
+        AuthorizePaymentStatus refusal,
+        OrderActionOutcome expected)
     {
         var clientId = Guid.NewGuid();
         var order = await AnOpenOrderAsync(clientId, seatCount: 2);
 
         var seats = new FakeSeatReservations();
+        var payments = new FakeOrderPayments { AuthorizeWith = refusal };
 
         await using var context = new OrdersDbContext(_options);
-        var result = await ServiceFor(context, seats).CancelAsync(clientId, order.Id);
+        var result = await ServiceFor(context, seats, payments: payments)
+            .ConfirmAsync(clientId, order.Id);
+
+        Assert.Equal(expected, result.Outcome);
+        Assert.Empty(seats.Sells);
+        Assert.Empty(payments.Captures);
+
+        // The holds are still live and the order is still completable, which is
+        // the entire reason a decline does not end it.
+        await using var reader = new OrdersDbContext(_options);
+        var stored = await reader.Orders.SingleAsync(candidate => candidate.Id == order.Id);
+        Assert.Equal(OrderStatus.Pending, stored.Status);
+        Assert.NotNull(stored.HoldsExpireAt);
+        Assert.Null(stored.ClosedAt);
+    }
+
+    [Fact]
+    public async Task Confirm_ShouldAuthorizeExactlyWhatTheOrderSaysIsOwed()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 2);
+
+        var payments = new FakeOrderPayments();
+
+        await using var context = new OrdersDbContext(_options);
+        await ServiceFor(context, new FakeSeatReservations(), payments: payments)
+            .ConfirmAsync(clientId, order.Id);
+
+        var authorized = Assert.Single(payments.Authorizations);
+        Assert.Equal(order.Id, authorized.OrderId);
+        Assert.Equal(clientId, authorized.ClientId);
+        Assert.Equal(UnitPrice * 2, authorized.Amount);
+        Assert.Equal(Currency, authorized.Currency);
+    }
+
+    /// <summary>
+    /// The benign failure the whole two-phase arrangement buys. The sale did not
+    /// complete, so the hold on the customer's money is released and they never
+    /// see a charge — not a charge followed by a refund.
+    /// </summary>
+    [Theory]
+    [InlineData(SellSeatStatus.HoldExpired, OrderStatus.Expired)]
+    [InlineData(SellSeatStatus.AlreadySold, OrderStatus.Failed)]
+    public async Task Confirm_WhenTheSaleDoesNotComplete_ShouldReleaseTheMoneyAndTakeNone(
+        SellSeatStatus refusal,
+        OrderStatus expected)
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 2);
+
+        var seats = new FakeSeatReservations { DefaultSell = refusal };
+        var payments = new FakeOrderPayments();
+
+        await using var context = new OrdersDbContext(_options);
+        var result = await ServiceFor(context, seats, payments: payments)
+            .ConfirmAsync(clientId, order.Id);
+
+        Assert.Equal(expected, result.Order!.Status);
+        Assert.Single(payments.Voids);
+        Assert.Empty(payments.Captures);
+    }
+
+    /// <summary>
+    /// The partial case, which is the question <c>OrderStatus.Failed</c> used to
+    /// leave open: is the customer charged for a partial order, or refunded? They
+    /// are charged nothing. Taking money for an order that did not complete is
+    /// the worse of the two ways to be wrong.
+    /// </summary>
+    [Fact]
+    public async Task Confirm_WhenOnlySomeSeatsSell_ShouldChargeNothing()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 2);
+
+        var seats = new FakeSeatReservations();
+        seats.SellRefusals[order.Lines[1].SeatId] = SellSeatStatus.HoldExpired;
+        var payments = new FakeOrderPayments();
+
+        await using var context = new OrdersDbContext(_options);
+        var result = await ServiceFor(context, seats, payments: payments)
+            .ConfirmAsync(clientId, order.Id);
+
+        Assert.Equal(OrderStatus.Failed, result.Order!.Status);
+        Assert.Single(payments.Voids);
+        Assert.Empty(payments.Captures);
+    }
+
+    /// <summary>
+    /// Seats sold, funds held, capture unanswered. Not an ending — the customer
+    /// has their tickets and the only thing outstanding is ours to finish — so the
+    /// order is dated as still going somewhere. See 027.
+    /// </summary>
+    [Fact]
+    public async Task Confirm_WhenTheCaptureGoesUnanswered_ShouldAwaitCaptureRatherThanFail()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 1);
+
+        var payments = new FakeOrderPayments { CaptureWith = CapturePaymentStatus.TimedOut };
+
+        await using var context = new OrdersDbContext(_options);
+        var result = await ServiceFor(context, new FakeSeatReservations(), payments: payments)
+            .ConfirmAsync(clientId, order.Id);
+
+        Assert.Equal(OrderActionOutcome.Completed, result.Outcome);
+        Assert.Equal(OrderStatus.AwaitingCapture, result.Order!.Status);
+        Assert.Null(result.Order.ClosedAt);
+        Assert.Null(result.Order.HoldsExpireAt);
+        Assert.Empty(payments.Voids);
+    }
+
+    /// <summary>
+    /// The resolve-on-next-touch rule that lets 027 exist without a background
+    /// job. The retry captures and nothing else: the seats are already sold, and
+    /// asking Inventory again would be round trips against the hottest rows in the
+    /// system for an answer nobody needs.
+    /// </summary>
+    [Fact]
+    public async Task Confirm_WhenRetriedAfterAnUnansweredCapture_ShouldCaptureAndConfirm()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 1);
+
+        var payments = new FakeOrderPayments { CaptureWith = CapturePaymentStatus.TimedOut };
+
+        await using (var first = new OrdersDbContext(_options))
+        {
+            await ServiceFor(first, new FakeSeatReservations(), payments: payments)
+                .ConfirmAsync(clientId, order.Id);
+        }
+
+        payments.CaptureWith = CapturePaymentStatus.Captured;
+        var seats = new FakeSeatReservations();
+
+        await using var context = new OrdersDbContext(_options);
+        var result = await ServiceFor(context, seats, payments: payments)
+            .ConfirmAsync(clientId, order.Id);
+
+        Assert.Equal(OrderActionOutcome.Completed, result.Outcome);
+        Assert.Equal(OrderStatus.Confirmed, result.Order!.Status);
+        Assert.Equal(Now, result.Order.ClosedAt);
+
+        Assert.Empty(seats.Sells);
+        Assert.Single(payments.Authorizations);
+        Assert.Equal(2, payments.Captures.Count);
+    }
+
+    /// <summary>
+    /// Seats sold and nothing held against them. Reachable only if the
+    /// authorisation went away underneath the confirm, which is exactly the shape
+    /// of problem <c>Failed</c> exists to name.
+    /// </summary>
+    [Fact]
+    public async Task Confirm_WhenTheCaptureFindsNothingHeld_ShouldFailTheOrder()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 1);
+
+        var payments = new FakeOrderPayments { CaptureWith = CapturePaymentStatus.NoAuthorization };
+
+        await using var context = new OrdersDbContext(_options);
+        var result = await ServiceFor(context, new FakeSeatReservations(), payments: payments)
+            .ConfirmAsync(clientId, order.Id);
+
+        Assert.Equal(OrderStatus.Failed, result.Order!.Status);
+    }
+
+    /// <summary>
+    /// A previous confirm captured and then failed to record the order. Carrying
+    /// on is what heals it: the sells are idempotent for the client that already
+    /// bought, and the capture answers Captured a second time.
+    /// </summary>
+    [Fact]
+    public async Task Confirm_WhenTheMoneyWasAlreadyTaken_ShouldCarryOnAndConfirm()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 1);
+
+        var payments = new FakeOrderPayments
+        {
+            AuthorizeWith = AuthorizePaymentStatus.AlreadyCaptured
+        };
+
+        await using var context = new OrdersDbContext(_options);
+        var result = await ServiceFor(context, new FakeSeatReservations(), payments: payments)
+            .ConfirmAsync(clientId, order.Id);
+
+        Assert.Equal(OrderActionOutcome.Completed, result.Outcome);
+        Assert.Equal(OrderStatus.Confirmed, result.Order!.Status);
+    }
+
+    // -- Cancel -----------------------------------------------------------
+
+    /// <summary>
+    /// Cancelling ends the order and hands both the seats and the money back.
+    /// </summary>
+    /// <remarks>
+    /// The release is 034, and it is the reversal of what this test used to pin.
+    /// 021 forbids releasing seats <i>because a hold lapsed</i> — a second
+    /// authority over expiry — and a customer deliberately cancelling is not that.
+    /// Until this changed, <c>SeatReleaseReason.Cancelled</c> had no producer at
+    /// all.
+    /// </remarks>
+    [Fact]
+    public async Task Cancel_ShouldEndTheOrderAndHandBackTheSeatsAndTheMoney()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 2);
+
+        var seats = new FakeSeatReservations();
+        var payments = new FakeOrderPayments();
+
+        await using var context = new OrdersDbContext(_options);
+        var result = await ServiceFor(context, seats, payments: payments)
+            .CancelAsync(clientId, order.Id);
 
         Assert.Equal(OrderActionOutcome.Completed, result.Outcome);
         Assert.Equal(OrderStatus.Cancelled, result.Order!.Status);
         Assert.Equal(Now, result.Order.ClosedAt);
         Assert.Null(result.Order.HoldsExpireAt);
+
+        Assert.Equal(2, seats.Releases.Count);
+        Assert.All(seats.Releases, release => Assert.Equal(clientId, release.ClientId));
+        Assert.Single(payments.Voids);
+    }
+
+    /// <summary>
+    /// A confirm won the race and the customer has been charged. Cancelling now
+    /// would write an ending that contradicts a completed sale, so this refuses
+    /// and lets the retry find the order as it actually stands.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_WhenTheMoneyHasAlreadyBeenTaken_ShouldSayLostRace()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 1);
+
+        var seats = new FakeSeatReservations();
+        var payments = new FakeOrderPayments { VoidWith = VoidPaymentStatus.AlreadyCaptured };
+
+        await using var context = new OrdersDbContext(_options);
+        var result = await ServiceFor(context, seats, payments: payments)
+            .CancelAsync(clientId, order.Id);
+
+        Assert.Equal(OrderActionOutcome.LostRace, result.Outcome);
         Assert.Empty(seats.Releases);
+
+        await using var reader = new OrdersDbContext(_options);
+        var stored = await reader.Orders.SingleAsync(candidate => candidate.Id == order.Id);
+        Assert.Equal(OrderStatus.Pending, stored.Status);
     }
 
     [Fact]
@@ -612,11 +861,13 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         OrdersDbContext context,
         FakeSeatReservations seats,
         FakeEventPricing? pricing = null,
-        DateTime? at = null) =>
+        DateTime? at = null,
+        FakeOrderPayments? payments = null) =>
         new(
             context,
             pricing ?? new FakeEventPricing(),
             seats,
+            payments ?? new FakeOrderPayments(),
             new FixedTimeProvider(at ?? Now));
 
     /// <summary>
@@ -715,6 +966,50 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
                 : DefaultSell;
 
             return Task.FromResult(new SellSeatResponse(status));
+        }
+    }
+
+    /// <summary>
+    /// Payments, faked at its published contract. Everything works unless a test
+    /// says otherwise, and each answer is settable between calls so a test can
+    /// make the first capture hang and the retry succeed.
+    /// </summary>
+    private sealed class FakeOrderPayments : IOrderPayments
+    {
+        public AuthorizePaymentStatus AuthorizeWith { get; set; } = AuthorizePaymentStatus.Authorized;
+
+        public CapturePaymentStatus CaptureWith { get; set; } = CapturePaymentStatus.Captured;
+
+        public VoidPaymentStatus VoidWith { get; set; } = VoidPaymentStatus.Voided;
+
+        public List<AuthorizePaymentRequest> Authorizations { get; } = [];
+
+        public List<CapturePaymentRequest> Captures { get; } = [];
+
+        public List<VoidPaymentRequest> Voids { get; } = [];
+
+        public Task<AuthorizePaymentResponse> AuthorizeAsync(
+            AuthorizePaymentRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Authorizations.Add(request);
+            return Task.FromResult(new AuthorizePaymentResponse(AuthorizeWith, Guid.NewGuid()));
+        }
+
+        public Task<CapturePaymentResponse> CaptureAsync(
+            CapturePaymentRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Captures.Add(request);
+            return Task.FromResult(new CapturePaymentResponse(CaptureWith, Guid.NewGuid()));
+        }
+
+        public Task<VoidPaymentResponse> VoidAsync(
+            VoidPaymentRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Voids.Add(request);
+            return Task.FromResult(new VoidPaymentResponse(VoidWith, Guid.NewGuid()));
         }
     }
 }

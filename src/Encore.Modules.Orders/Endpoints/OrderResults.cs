@@ -113,6 +113,12 @@ internal static class OrderResults
         {
             OrderStatus.Confirmed => TypedResults.Ok(OrderResponse.From(order)),
 
+            // 200, not a conflict. The customer has every seat they asked for and
+            // nothing has failed from where they are standing — the only thing
+            // outstanding is ours to finish, and the status field says so for any
+            // client that cares to look.
+            OrderStatus.AwaitingCapture => TypedResults.Ok(OrderResponse.From(order)),
+
             // Not retriable: the holds are gone, and this module is not the thing
             // that could get them back. A client that still wants the seats starts
             // a new checkout, which is a different request.
@@ -145,16 +151,37 @@ internal static class OrderResults
         {
             OrderActionOutcome.OrderNotFound => NotFound(path),
 
+            // The status is rendered through OrderResponse rather than formatted
+            // here, so a client reads one spelling of a status whether it arrives
+            // in a body or in a sentence. It matters now that one of them is two
+            // words.
             OrderActionOutcome.NotPending => Conflict(
                 path,
                 "order_not_pending",
-                $"This order is {result.Order!.Status.ToString().ToLowerInvariant()} and cannot be changed.",
+                $"This order is {OrderResponse.From(result.Order!).Status} and cannot be changed.",
                 retriable: false),
 
             OrderActionOutcome.LostRace => Conflict(
                 path,
                 "lost_race",
                 "The order changed while your request was in flight.",
+                retriable: true),
+
+            // Retriable, and this is the one place in the module where that flag
+            // means "try again with something different" rather than "try the
+            // identical request again". The order is untouched and its holds are
+            // still live, which is the whole reason a decline does not end it.
+            OrderActionOutcome.PaymentDeclined => Conflict(
+                path,
+                "payment_declined",
+                "The payment was declined. Your seats are still held — try again.",
+                retriable: true),
+
+            OrderActionOutcome.PaymentTimedOut => Conflict(
+                path,
+                "payment_timed_out",
+                "The payment provider did not answer in time. Your seats are still held, "
+                + "and nothing has been charged that will not be released.",
                 retriable: true),
 
             OrderActionOutcome.Completed => throw new ArgumentOutOfRangeException(

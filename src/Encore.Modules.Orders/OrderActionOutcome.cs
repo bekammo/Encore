@@ -45,5 +45,26 @@ public enum OrderActionOutcome
     /// Another writer reached the order row first — the impatient double-click
     /// <c>OrderConfiguration</c> carries <c>xmin</c> for. Worth retrying.
     /// </summary>
-    LostRace = 3
+    LostRace = 3,
+
+    /// <summary>
+    /// The gateway refused the card. The order is untouched and still
+    /// <see cref="Models.OrderStatus.Pending"/>, so the customer can try again
+    /// with a different one while the holds are still live.
+    /// </summary>
+    /// <remarks>
+    /// Not <see cref="Completed"/>, because that member promises the order
+    /// reached an ending and this one deliberately did not. A decline is the most
+    /// ordinary payment failure there is, and ending an order on it would throw
+    /// away four live holds over a typo'd expiry date.
+    /// </remarks>
+    PaymentDeclined = 4,
+
+    /// <summary>
+    /// The gateway did not answer, so whether funds are held is unknown. The order
+    /// is untouched and still <see cref="Models.OrderStatus.Pending"/>; the
+    /// attempt is recorded in Payments and a retry asks the same question under
+    /// the same key rather than a second one.
+    /// </summary>
+    PaymentTimedOut = 5
 }
