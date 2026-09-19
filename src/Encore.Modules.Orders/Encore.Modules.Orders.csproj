@@ -17,10 +17,28 @@
          be extracted without Orders changing, and referencing the module would
          quietly destroy it. -->
     <ProjectReference Include="..\Encore.Modules.Inventory.Contracts\Encore.Modules.Inventory.Contracts.csproj" />
+
+    <!-- Catalog's public face, on the same terms and for the same reason: Orders
+         needs an event's price and sale window, and must not learn Catalog's
+         DbContext or entities to get them. -->
+    <ProjectReference Include="..\Encore.Modules.Catalog.Contracts\Encore.Modules.Catalog.Contracts.csproj" />
+  </ItemGroup>
+
+  <!-- The outcome-to-status mapping and the checkout it maps are internal: they
+       are implementation details of this module's HTTP surface. The mapping is
+       also the part most worth testing directly, since it decides what every
+       client sees and a wrong answer is invisible until somebody hits it. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Encore.Modules.Orders.UnitTests" />
+    <InternalsVisibleTo Include="Encore.Modules.Orders.IntegrationTests" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.4">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 

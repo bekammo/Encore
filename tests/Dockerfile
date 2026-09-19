@@ -33,6 +33,7 @@ COPY src/Encore.Modules.Inventory/Encore.Modules.Inventory.csproj              s
 COPY src/Encore.Modules.Inventory.Domain/Encore.Modules.Inventory.Domain.csproj src/Encore.Modules.Inventory.Domain/
 COPY src/Encore.Modules.Inventory.Contracts/Encore.Modules.Inventory.Contracts.csproj src/Encore.Modules.Inventory.Contracts/
 COPY tests/Encore.Modules.Catalog.IntegrationTests/Encore.Modules.Catalog.IntegrationTests.csproj tests/Encore.Modules.Catalog.IntegrationTests/
+COPY tests/Encore.Modules.Orders.IntegrationTests/Encore.Modules.Orders.IntegrationTests.csproj   tests/Encore.Modules.Orders.IntegrationTests/
 COPY tests/Encore.Modules.Inventory.UnitTests/Encore.Modules.Inventory.UnitTests.csproj               tests/Encore.Modules.Inventory.UnitTests/
 COPY tests/Encore.Modules.Inventory.IntegrationTests/Encore.Modules.Inventory.IntegrationTests.csproj tests/Encore.Modules.Inventory.IntegrationTests/
 

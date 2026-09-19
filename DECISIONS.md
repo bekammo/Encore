@@ -854,3 +854,79 @@ the scenario this assembly exists for. The handler keeps the old name as a forwa
 
 <!-- Expand later: whether the hold duration should be published the same way once
      something outside Inventory needs to show a countdown. -->
+
+---
+
+## 021 — The order state model, and who is allowed to decide an order has expired
+
+An order is `Pending`, and then it is `Confirmed`, `Cancelled`, `Expired` or `Failed`.
+Those four are terminal. Nothing else exists, and in particular there are no payment
+statuses — Payments has no behaviour yet, and inventing its vocabulary now would be
+guessing. `Confirmed` is the status that splits when it arrives.
+
+`Expired` is kept apart from `Cancelled` for exactly the reason 007 keeps
+`SeatReleased(Expired)` apart from `(Cancelled)`: "your hold ran out" and "you changed
+your mind" are different things to tell a customer, and order history cannot be
+backfilled once the distinction has been thrown away. `Failed` is the one status that
+means a person has to look — some seats sold and others did not, or a refusal that was
+not expiry. There is no automatic recovery from it because there cannot be one: a sold
+seat is terminal, so nothing can un-sell the half that worked.
+
+### Orders records the expiry. Inventory decides it.
+
+This is the sharpest rule in the module, and the one most likely to be "fixed" by
+somebody later.
+
+`Order.HoldsExpireAt` is the earliest `HoldExpiresAt` Inventory returned across the
+order's holds. It is **copied, never computed** — Orders does not know the number five,
+the same way it does not know what a seat costs until Catalog tells it. The earliest
+rather than the latest, because an order needs all of its seats, so the first hold to
+lapse is when the order stops being completable.
+
+From that follow three prohibitions:
+
+**Orders never refuses a confirm because `HoldsExpireAt` has passed.** It asks Inventory
+and lets `SellSeatStatus.HoldExpired` be the thing that moves the order to `Expired`. Two
+copies of the expiry rule, judged against two clocks, is a system that can tell a
+customer their hold has gone while the seat is still theirs.
+
+**`GET /orders/{id}` returns the stored status and does not derive expiry on read.**
+Deriving would be Orders deciding, and it would also be wrong in the other direction: a
+seat released early makes `HoldsExpireAt` optimistic. The field is returned so a client
+can show a countdown; the status is returned because it is the fact.
+
+**Orders never releases seats because a hold lapsed.** Inventory reclaims lapsed holds
+itself, lazily on every read and write path. A release from Orders would be a second
+authority over the same rule, and it would fire against Orders' clock.
+
+**No Orders background sweep is built.** Inventory's own sweep is still Phase 7, and
+Orders getting one first would be backwards. 007's criterion — "if a test cannot pass
+with the sweep disabled, the sweep has become load-bearing and the design is broken" —
+is satisfied here by construction, because no sweep exists to lean on. A stale `Pending`
+row is untidy, not incorrect: it is resolved the moment anybody touches the order.
+
+The test that pins all of this is
+`Confirm_WhenHoldsLapsed_ShouldAskInventoryRatherThanItsOwnClock`: a fixed clock far past
+`HoldsExpireAt`, a fake Inventory that reports `Sold`, and an assertion that the order
+**confirms**. The day somebody adds an expiry check to Orders, that test fails.
+
+### Three smaller calls
+
+**`orders.orders` carries `xmin`.** Orders was called a table nobody contends for, and
+mostly that is true — but confirm and cancel arriving together, which is one impatient
+double-click, really do race this row, and without a token the loser can write
+`Cancelled` over an order whose seats are already `Sold`. Inventory protects the seats
+regardless, so this guards Orders' own record rather than an invariant. Three lines of
+configuration and one `catch`, using a mechanism already in the house style.
+
+**`CustomerId` became `ClientId`.** The stub's TODO said customer. Everything else in
+this system — `X-Client-Id`, `HeldByClientId`, the hold cap — says client, and Identity
+does not exist, so "customer" would name an entity nothing can produce.
+
+**`OrderLine.Description` was dropped.** `EventId` and `SeatId` render an order, and a
+copied event name is a second copy of a truth that can drift — the argument
+`SeatActionResponse` already makes. Price is the exception and must be copied, precisely
+because drifting is the thing it must not do.
+
+<!-- Expand later: whether Confirmed splits into Paid/AwaitingPayment when Payments
+     arrives, and whether Failed deserves a stored reason rather than only a log line. -->

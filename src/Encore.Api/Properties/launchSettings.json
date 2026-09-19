@@ -9,7 +9,8 @@
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "Catalog__MigrateOnStartup": "true",
-        "Inventory__MigrateOnStartup": "true"
+        "Inventory__MigrateOnStartup": "true",
+        "Orders__MigrateOnStartup": "true"
       }
     },
     "https": {
@@ -20,7 +21,8 @@
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "Catalog__MigrateOnStartup": "true",
-        "Inventory__MigrateOnStartup": "true"
+        "Inventory__MigrateOnStartup": "true",
+        "Orders__MigrateOnStartup": "true"
       }
     }
   }
