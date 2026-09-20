@@ -33,6 +33,49 @@ services:
       timeout: 3s
       retries: 15
 
+  # The host, containerised so a load harness has something to point at. Behind
+  # the `load` profile for the same reason `tests` is behind its own: a bare
+  # `docker compose up -d` still means "just the dependencies", which is what a
+  # `dotnet run` on the host wants.
+  #
+  # Unlike `tests`, this one does depend on postgres and redis and waits for them
+  # to be healthy. The migrators are IHostedLifecycleService, so they run before
+  # Kestrel opens the socket: a Postgres still initialising is a failed startup
+  # here, not a retried connection.
+  #
+  # ASPNETCORE_ENVIRONMENT is deliberately left at its default of Production.
+  # Measuring a host with the developer exception page in the pipeline would
+  # answer a question nobody asked.
+  api:
+    profiles: ["load"]
+    build:
+      context: .
+      dockerfile: src/Encore.Api/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      # Service names, not localhost: inside the compose network these resolve
+      # to the other containers. The four stay separate even though they name
+      # one database, because the names are the extraction seam — collapsing
+      # them to a single setting here would quietly undo that.
+      ConnectionStrings__Catalog: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      ConnectionStrings__Orders: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      ConnectionStrings__Inventory: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      ConnectionStrings__Payments: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      ConnectionStrings__Redis: "redis:6379"
+      # 013 permits this in development, and a load rig is development. One that
+      # needed a manual `dotnet ef database update` first is a rig nobody can
+      # bring up in one command.
+      Catalog__MigrateOnStartup: "true"
+      Orders__MigrateOnStartup: "true"
+      Inventory__MigrateOnStartup: "true"
+      Payments__MigrateOnStartup: "true"
+
   # The test suite, run on Linux rather than on the host. Behind a profile, so
   # `docker compose up -d` still means "just the dependencies" and this never
   # starts by accident; `docker compose run --rm tests` is the whole interface.
