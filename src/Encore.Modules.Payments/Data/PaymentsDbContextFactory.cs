@@ -17,7 +17,7 @@ public sealed class PaymentsDbContextFactory : IDesignTimeDbContextFactory<Payme
 {
     /// <summary>Matches the Postgres service in docker-compose.yml.</summary>
     private const string LocalDevelopmentConnection =
-        "Host=localhost;Port=5432;Database=encore;Username=encore;Password=encore";
+        "Host=localhost;Port=55432;Database=encore;Username=encore;Password=encore";
 
     /// <inheritdoc />
     public PaymentsDbContext CreateDbContext(string[] args)

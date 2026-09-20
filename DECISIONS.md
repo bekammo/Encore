@@ -2184,3 +2184,150 @@ somewhere honest to run them.
      wait for CI to produce them on consistent hardware, and whether the order-path
      scenario belongs in this same script or in a second one given it measures a different
      system. -->
+
+---
+
+## 049 — Correcting 014's "one shape", and an OpenAPI document that is not a package
+
+The host was run and every route exercised against it. The modules were exactly as
+documented — twenty-six scenarios, no surprises, not one refusal reported the wrong
+`reason`. The host itself was not, in one specific way, and the same session produced a
+document describing the surface.
+
+**014's claim about the middleware is false as written, and it was measurable all along.**
+It says `AddProblemDetails` and `UseExceptionHandler` "earn their place by making every
+response one shape rather than problem+json from the modules and empty bodies from the
+framework." They do not. `AddProblemDetails` registers a body factory and changes no
+response by itself; `UseExceptionHandler` reaches unhandled exceptions and nothing else.
+Everything the framework produces *before* an endpoint runs was still coming back empty.
+Measured on the running host: `404` for an unmatched route, `405` for the wrong verb,
+`415` for the wrong content type and `400` for a body that will not bind were each a
+zero-length body with no `content-type` at all.
+
+**The entry contradicted itself, which is the part worth noticing.** Four paragraphs
+above that sentence, 014 explains that the client id arrives through an endpoint filter
+rather than a bound parameter because "a failed parameter bind yields a framework 400 with
+an empty body, which is precisely the response nobody can diagnose from a load harness."
+It knew. It solved that one case at the endpoint and then described the middleware as
+though it had solved the general one. A claim nothing checks reads exactly like a claim
+that holds — 043's line, landing this time on the entry that made it.
+
+**The fix is `UseStatusCodePages`, one framework line.** It is what asks the registered
+factory for a body when the pipeline is about to return a bare status. All four now come
+back as `application/problem+json`, and module responses are byte-for-byte unchanged.
+**014 stands as written**, as every entry does; this records that one of its sentences
+described an outcome the code did not produce.
+
+**What the fix deliberately does not do is give those responses a `reason`.** A framework
+refusal is about the request being malformed, not about the state of the world, so there
+is no closed vocabulary to draw one from and inventing `route_not_found` would be minting
+a promise no handler makes. Clients still branch on `reason` only for module refusals,
+which is 014's rule intact rather than weakened.
+
+**The document: Swagger UI at `/docs/`, over a hand-written `openapi.json`, and still
+zero packages.** 014 refused Swashbuckle and `Microsoft.AspNetCore.OpenApi` because both
+are packages and `Encore.Api` holds none on purpose. That refusal is untouched — nothing
+here adds a `PackageReference`, `ENCORE001` still passes, and a `<script src>` is not a
+NuGet dependency. What is new is the document itself and two more pieces of framework
+middleware, `UseDefaultFiles` and `UseStaticFiles`, to serve it from `wwwroot`.
+
+**Served by the host rather than opened off disk, and that is not incidental.** A page on
+`file://` is a null origin, so every request Try it out made would be refused, and the
+only fixes would be a CORS policy this API should not need or a second server to host the
+page. Serving it from the host puts the page and the API on one origin and the problem
+disappears. The UI assets come from a CDN instead of being vendored: three megabytes of
+minified JavaScript in a repo that argues about dependency discipline would be the wrong
+trade, and the honest consequence is that `/docs/` needs a network connection while the
+API does not.
+
+**The cost, stated rather than glossed: nothing regenerates this document and nothing
+tests it.** It was written from the endpoints, the result mappers and the closed reason
+enums, then checked against a running instance route by route — which makes it accurate
+today and says nothing about tomorrow. Add a route and no build fails, no test reddens,
+and the document is quietly wrong. That is the exact failure mode 036 through 042 spent
+themselves closing everywhere else, reintroduced deliberately in one file because the
+alternative was a package.
+
+**Two ways to close it, and the first is not mine to take.** Overturning 014 and taking
+`Microsoft.AspNetCore.OpenApi` would generate the document from endpoint metadata that
+already carries `WithName` and `WithSummary`, so it could not drift — at the price of the
+host's zero-package property, which 002, 014 and 036 each spent something to establish.
+That is a decision the owner makes, not an implementation detail. The cheaper half-measure
+needs no package at all: a test resolving `EndpointDataSource` and asserting that the set
+of route patterns and the set of paths in `openapi.json` are equal. It would catch the
+drift that matters — a route added, removed or renamed — while saying nothing about
+whether a response body still matches its schema.
+
+<!-- Expand later: whether the EndpointDataSource parity test is worth writing before the
+     package question is settled, given it would be thrown away if the package arrives;
+     and the smaller thing noticed while exercising the API — `price` comes back `49.50`
+     from POST /catalog/events and `49.5000` from the GET, because one echoes the bound
+     request and the other reads a numeric(18,4) column, which is numerically identical
+     and textually not. -->
+
+---
+
+## 050 — The host-side Postgres port moves to 55432
+
+`dotnet run` died on `Npgsql.PostgresException 28P01: password authentication failed for
+user "encore"` against a connection string that is correct, a container that is healthy,
+and a role whose password is exactly what the string says.
+
+**The asymmetry was the diagnosis, and it is the thing to recognise next time.** Every
+container path was green at the same moment: the full suite, the k6 baseline, the `api`
+service serving requests. Only `dotnet run` failed. Those two populations differ in
+exactly one way — container-to-container traffic resolves `postgres` on the compose
+network and never touches a published port, while `dotnet run` and `dotnet ef` go through
+`localhost`. So a collision on the host's port is invisible to everything this repo uses
+to check itself, and visible only from the one path nothing automated takes.
+
+**The cause: a native PostgreSQL 18 Windows service, auto-start, already owns
+`0.0.0.0:5432` and `[::]:5432`.** Anything reaching `localhost:5432` reached PostgreSQL 18,
+which has no `encore` role with that password, so it refused — correctly, and about a
+different server than the one the message makes you think of.
+
+**What made it expensive is that Docker reports the mapping anyway.** `docker ps` prints
+`0.0.0.0:5432->5432/tcp` for `encore-postgres` while the native service holds the
+listener, so the most obvious check agrees with the wrong hypothesis. The contrast that
+settles it is on the same machine: port 6379 is owned by `com.docker.backend`, which is
+what a published port actually looks like when Docker won it. Checking the owning process
+is the check worth doing; reading `docker ps` is not.
+
+**The evidence, in the order that closed it.** Connecting to the container over the compose
+network with `encore`/`encore` succeeds. Connecting to `host:5432` with the identical
+credentials fails `28P01`. Therefore `host:5432` is not the container. After the move,
+`host:55432` answers as PostgreSQL **16.15** — the container's version, not 18.
+
+**Moving the host side rather than the service is 015's call again.** 015 put the test
+suite in a container because Smart App Control is machine-wide, has no exclusion mechanism,
+and is not this repo's to fix. A PostgreSQL service somebody installed is the same species
+of condition: it belongs to the machine, it may be wanted, and disabling it needs elevation
+and is a change to the developer's computer rather than to this project. 5432 is also the
+single likeliest port on earth to collide, and a portfolio repo that fails on first run for
+anybody who has ever installed Postgres is making a bad argument before anyone reads a line
+of it. **Stopping the service is still the right fix for a machine that does not want
+PostgreSQL 18**, and it is the owner's to make, not this log's.
+
+**The design-time factories moved too, and that was the near-miss.** All four
+`*DbContextFactory` classes carry the same `localhost;Port=5432` fallback, so
+`dotnet ef database update` and `dotnet ef migrations add` were pointed at PostgreSQL 18
+as well. Nobody had run one since the service appeared. A migration applied to the wrong
+server is a worse afternoon than a host that will not start, because it fails silently in
+the direction of looking like it worked.
+
+**What deliberately did not change: the container-internal port.** It is still 5432 inside,
+so the `api` service, the load harness and every Testcontainers suite are untouched — which
+is the same reason none of them caught this and none of them could have.
+
+**One thing to check rather than assume.** Anything ever written through `localhost:5432`
+went into PostgreSQL 18 and is still sitting there; its data directory holds one database
+beyond the three a default install creates. The container's `encore` database is a
+different database on a different server, and this change silently switches which one
+`dotnet run` talks to. If real work was done against the native server, it did not move
+and this entry did not move it.
+
+<!-- Expand later: whether the four connection strings want to come from one environment
+     file rather than being repeated in appsettings.json and four factories, now that a
+     single number has to be changed in nine places; and whether /health should say which
+     server and version it reached, since "wrong Postgres" and "no Postgres" currently look
+     nothing alike but neither is visible until something throws. -->

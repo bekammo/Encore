@@ -6,8 +6,27 @@ services:
       POSTGRES_USER: encore
       POSTGRES_PASSWORD: encore
       POSTGRES_DB: encore
+    # 55432 on the host, 5432 inside. The unusual number is deliberate and was
+    # bought with about an hour: this machine runs a native PostgreSQL 18 Windows
+    # service, auto-start, which already owns 0.0.0.0:5432. Docker still reports
+    # the mapping as `0.0.0.0:5432->5432/tcp`, but the native service holds the
+    # listener, so everything reaching localhost:5432 reached PostgreSQL 18 —
+    # which has no `encore` role — and `dotnet run` died with
+    # `28P01: password authentication failed for user "encore"` while every
+    # container-to-container path stayed green, because those resolve `postgres`
+    # on the compose network and never touch the host's ports at all.
+    #
+    # Moving the host side rather than the service side is the same call 015 made
+    # about Smart App Control: route around a machine-wide condition this repo
+    # does not control instead of requiring every reader to fix their machine
+    # first. 5432 is the likeliest port on earth to collide, and a portfolio repo
+    # that fails on first run for anybody who has ever installed Postgres is a
+    # bad first impression. DECISIONS 050.
+    #
+    # The container-internal port is untouched, so the `api` service, the load
+    # harness and the Testcontainers suites are all unaffected by this.
     ports:
-      - "5432:5432"
+      - "55432:5432"
     volumes:
       - encore-postgres-data:/var/lib/postgresql/data
     # So `docker compose up -d --wait` means "ready", not "started". Without it

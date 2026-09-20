@@ -141,6 +141,39 @@ so a fresh `docker compose up` gets its schema from `dotnet run`. Nothing
 deployed does that — applying migrations is a deliberate step
 (`dotnet ef database update`), for the reasons in `DECISIONS.md` 013.
 
+**Postgres is published on `55432`, not `5432`.** The container still listens on 5432
+internally; only the host side moved. 5432 is the likeliest port on any developer machine
+to be occupied already — by a native PostgreSQL service, most often — and when it is, the
+symptom is a `28P01: password authentication failed` against a connection string that is
+perfectly correct, because a different server answered. Docker will still report the
+mapping while losing the port, so the check that settles it is which process owns the
+listener. `DECISIONS.md` 050. Redis is unmoved on `6379`.
+
+To run the host in a container instead — which is also what the load harness points at:
+
+```bash
+docker compose --profile load up -d --build api --wait
+```
+
+## API documentation
+
+Interactive documentation is served by the host itself at **`/docs/`**, and both launch
+profiles open it on start: F5 in Visual Studio (or `dotnet watch`) lands on
+[http://localhost:5107/docs/](http://localhost:5107/docs/) rather than a bare 404 at the
+root. Plain `dotnet run` ignores `launchBrowser`, so open it yourself there. The
+containerised host serves the same page at
+[http://localhost:8080/docs/](http://localhost:8080/docs/).
+Swagger UI over [`src/Encore.Api/wwwroot/docs/openapi.json`](src/Encore.Api/wwwroot/docs/openapi.json),
+with every route, every `reason` code and the `X-Client-Id` header wired into the
+Authorize box so **Try it out** works — the page and the API share an origin, so there is
+no CORS policy to configure and none exists.
+
+The document is written by hand and verified against a running instance, not generated.
+`Encore.Api` holds zero `PackageReference` items on purpose, which rules out both
+Swashbuckle and `Microsoft.AspNetCore.OpenApi` (`DECISIONS.md` 014). The honest cost is
+that nothing regenerates it and no test fails when a route changes and the document does
+not — `DECISIONS.md` 049 records that, and the two ways to close it.
+
 ## Running the tests
 
 ```bash
