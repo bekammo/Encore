@@ -23,7 +23,20 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
         base.OnModelCreating(modelBuilder);
     }
 
-    // TODO (Soundcheck, not now): outbox DbSet, and the SaveChanges override
-    // that writes raised domain events into it in the same transaction as the
-    // seat change. Design the outbox pattern before writing any of it.
+    // TODO (Soundcheck, not now): the outbox DbSet, and the SaveChanges override
+    // that drains every tracked aggregate's domain events into it in the same
+    // transaction as the state change.
+    //
+    // This is the one place that owns the drain — DECISIONS 044 — which is why
+    // EfSeatRepository.SaveAsync no longer carries a TODO of its own. Two things
+    // to get right when it is written, both already reachable today:
+    //
+    //   - Both write paths must be covered. EfSeatRepository calls
+    //     SaveChangesAsync from SaveAsync and again from AddRangeAsync, and an
+    //     override is the only thing that sees both.
+    //   - A rejected save leaves its outbox rows tracked as Added. All three seat
+    //     handlers retry once after a lost race, so the second attempt must not
+    //     write the first attempt's events alongside its own.
+    //
+    // Design the outbox pattern before writing any of it.
 }

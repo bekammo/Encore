@@ -51,8 +51,8 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
     /// <inheritdoc />
     public async Task SaveAsync(Seat seat, CancellationToken cancellationToken = default)
     {
-        // TODO: drain seat.DomainEvents into the outbox in this same transaction,
-        // then ClearDomainEvents(). Waiting on the outbox table (Soundcheck).
+        // The outbox drain is not this method's: InventoryDbContext's SaveChanges
+        // override owns it, for the reasons in DECISIONS 044.
         try
         {
             await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);

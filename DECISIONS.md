@@ -1862,3 +1862,62 @@ and neither has been met.
 
 <!-- Expand later: whether a phase should end with an entry like this at all, or whether the
      roadmap table in CLAUDE.md is the better home for the claim. -->
+
+---
+
+## 044 — The outbox drain belongs to the unit of work, not to the repository
+
+Two comments had been disagreeing about where domain events get written to the outbox since
+before either was reachable. `EfSeatRepository.SaveAsync` said to drain `seat.DomainEvents`
+there; `InventoryDbContext` said a `SaveChanges` override would do it. Nothing was built
+either way, so nothing was broken — but the two were describing different designs, and
+whichever got written first would have quietly falsified the other comment. The override
+wins. The repository's TODO is gone, replaced by a pointer.
+
+**Timing does not decide it, and that is worth saying because it is the first objection.**
+Both locations see the events at a usable moment. The three handlers call
+`ClearDomainEvents()` *before* their transition — a scrub of any previous rejected attempt,
+not a drain — so by the time `SaveAsync` runs, the events raised by this attempt are on the
+instance and `SaveChangesAsync` has not yet been called. An override sees the same events at
+the same point through `ChangeTracker.Entries<Seat>()`. Atomicity does not decide it either:
+both add outbox rows to the same context before one `SaveChangesAsync`, so both get the
+state change and the events in a single transaction, which is the only guarantee an outbox
+is actually for.
+
+**What decides it is that the repository is handed one aggregate and the context commits
+all of them.** `SaveAsync(seat)` knows about the seat it was passed. `SaveChangesAsync`
+persists everything the context is tracking, and the context is scoped per request — a
+four-seat checkout drives four `HoldAsync` calls through one `InventoryDbContext`, so by the
+fourth the tracker holds four seats. Those two sets happen to coincide today only because
+every mutation is followed immediately by its own `SaveAsync`. That is a property of the
+current call pattern, not of the design, and an outbox whose completeness rests on a call
+pattern is an outbox that loses an event the first time somebody changes one.
+
+**The evidence is already in the file, not hypothetical.** `EfSeatRepository` calls
+`SaveChangesAsync` twice — once in `SaveAsync` and once in `AddRangeAsync` — and the TODO
+sat on only one of them. A drain written where it was proposed would have been incomplete on
+the day it was written. It costs nothing today because `Seat.Create` raises no events, which
+is a fact about this week's domain rather than a guarantee; 012 has bulk creation raising
+nothing only because there is nothing yet worth raising. An override is blind to no write
+this context makes.
+
+**What the override costs, stated rather than glossed.** It has to *discover* which
+aggregates have events by walking the tracker, where the repository would have been handed
+one directly. `Seat` has no base class and no marker interface — `Encore.BuildingBlocks.Domain`
+was removed deliberately and `Seat` manages its own list — so the override will name `Seat`
+concretely and filter on a non-empty `DomainEvents`. That is honest while there is one
+aggregate and slightly awkward when there is a second, at which point the answer is a marker
+interface in `Encore.Shared` next to `IDomainEvent`, not the base class that was removed.
+
+**One hazard recorded now so it is not rediscovered later.** A rejected save leaves its
+outbox rows in the tracker as `Added`. All three seat handlers retry once after a lost race,
+and the retry raises the same event again — so without removing the stale entries, the
+eventual commit writes the event twice. This is true of either location and is the reason
+the surviving TODO names it.
+
+**Nothing is implemented.** The outbox is still Soundcheck (043), and this entry settles only
+which component will own the drain when it arrives.
+
+<!-- Expand later: whether the override should also be where ClearDomainEvents() is called,
+     given the handlers already clear defensively before each attempt, and whether a second
+     aggregate should arrive with the marker interface rather than after it. -->
