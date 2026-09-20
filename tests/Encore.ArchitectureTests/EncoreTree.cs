@@ -41,6 +41,7 @@ internal static class EncoreTree
         "Encore.Modules.Catalog",
         "Encore.Modules.Catalog.Contracts",
         "Encore.Modules.Orders",
+        "Encore.Modules.Notifications",
         "Encore.Modules.Payments",
         "Encore.Modules.Payments.Contracts",
         "Encore.Modules.Inventory",
@@ -64,6 +65,7 @@ internal static class EncoreTree
     [
         "Encore.Modules.Catalog",
         "Encore.Modules.Orders",
+        "Encore.Modules.Notifications",
         "Encore.Modules.Payments",
         "Encore.Modules.Inventory",
         "Encore.Modules.Inventory.Domain"

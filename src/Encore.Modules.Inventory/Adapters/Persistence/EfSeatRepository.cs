@@ -52,7 +52,10 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
     public async Task SaveAsync(Seat seat, CancellationToken cancellationToken = default)
     {
         // The outbox drain is not this method's: InventoryDbContext's SaveChanges
-        // override owns it, for the reasons in DECISIONS 044.
+        // override owns it, for the reasons in DECISIONS 044. It runs underneath
+        // this call, so the seat's events and the seat's new state reach Postgres
+        // in one transaction — including on the AddRangeAsync path below, which a
+        // drain written here would have missed.
         try
         {
             await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);

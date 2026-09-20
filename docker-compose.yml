@@ -86,6 +86,7 @@ services:
       ConnectionStrings__Orders: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
       ConnectionStrings__Inventory: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
       ConnectionStrings__Payments: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      ConnectionStrings__Notifications: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
       ConnectionStrings__Redis: "redis:6379"
       # 013 permits this in development, and a load rig is development. One that
       # needed a manual `dotnet ef database update` first is a rig nobody can
@@ -94,6 +95,16 @@ services:
       Orders__MigrateOnStartup: "true"
       Inventory__MigrateOnStartup: "true"
       Payments__MigrateOnStartup: "true"
+      Notifications__MigrateOnStartup: "true"
+      # The outbox dispatcher, overridable so a run can separate the two halves of
+      # what the outbox costs: the drain, which writes a row inside every seat
+      # transaction and is not optional, from delivery, which competes with the API
+      # for the same database and is. `OUTBOX_ENABLED=false docker compose run --rm
+      # --build load` measures the first alone. DECISIONS 056.
+      #
+      # The drain has no flag and never will. Turning off the half that has to be
+      # atomic would not be a measurement, it would be a different system.
+      Inventory__Outbox__Enabled: "${OUTBOX_ENABLED:-true}"
 
   # The load harness. k6 in a container rather than NBomber in a project: this
   # way the rig adds no PackageReference, no fifth test project and nothing the

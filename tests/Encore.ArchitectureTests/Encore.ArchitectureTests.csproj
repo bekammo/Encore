@@ -33,6 +33,7 @@
     <ProjectReference Include="..\..\src\Encore.Shared\Encore.Shared.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Encore.Modules.Catalog\Encore.Modules.Catalog.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Encore.Modules.Orders\Encore.Modules.Orders.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Encore.Modules.Notifications\Encore.Modules.Notifications.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Encore.Modules.Payments\Encore.Modules.Payments.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Encore.Modules.Inventory\Encore.Modules.Inventory.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Encore.Modules.Inventory.Domain\Encore.Modules.Inventory.Domain.csproj" ReferenceOutputAssembly="false" />

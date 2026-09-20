@@ -12,7 +12,8 @@
         "Catalog__MigrateOnStartup": "true",
         "Inventory__MigrateOnStartup": "true",
         "Orders__MigrateOnStartup": "true",
-        "Payments__MigrateOnStartup": "true"
+        "Payments__MigrateOnStartup": "true",
+        "Notifications__MigrateOnStartup": "true"
       }
     },
     "https": {
@@ -26,7 +27,8 @@
         "Catalog__MigrateOnStartup": "true",
         "Inventory__MigrateOnStartup": "true",
         "Orders__MigrateOnStartup": "true",
-        "Payments__MigrateOnStartup": "true"
+        "Payments__MigrateOnStartup": "true",
+        "Notifications__MigrateOnStartup": "true"
       }
     }
   }

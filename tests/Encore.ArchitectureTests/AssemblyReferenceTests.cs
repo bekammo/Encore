@@ -113,6 +113,7 @@ public class AssemblyReferenceTests
     [Theory]
     [InlineData("Encore.Modules.Catalog")]
     [InlineData("Encore.Modules.Orders")]
+    [InlineData("Encore.Modules.Notifications")]
     [InlineData("Encore.Modules.Payments")]
     [InlineData("Encore.Modules.Inventory")]
     public void Module_ShouldReachOtherModulesOnlyThroughContracts(string module)
@@ -142,6 +143,7 @@ public class AssemblyReferenceTests
     [InlineData("Encore.Modules.Catalog")]
     [InlineData("Encore.Modules.Catalog.Contracts")]
     [InlineData("Encore.Modules.Orders")]
+    [InlineData("Encore.Modules.Notifications")]
     [InlineData("Encore.Modules.Payments")]
     [InlineData("Encore.Modules.Payments.Contracts")]
     [InlineData("Encore.Modules.Inventory")]

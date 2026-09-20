@@ -8,7 +8,7 @@
        and 017 refused a host-level migrator, both partly to keep this project
        free of packages of its own, and until now nothing checked it. It cannot
        take the full EncoreZeroDependency treatment: the Web SDK adds ASP.NET
-       Core, and composing four modules brings EF Core in transitively, both of
+       Core, and composing the modules brings EF Core in transitively, both of
        which are exactly what a host is for. See Directory.Build.targets. -->
   <PropertyGroup>
     <EncoreNoDirectPackages>true</EncoreNoDirectPackages>
@@ -17,6 +17,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Catalog\Encore.Modules.Catalog.csproj" />
     <ProjectReference Include="..\Encore.Modules.Inventory\Encore.Modules.Inventory.csproj" />
+    <ProjectReference Include="..\Encore.Modules.Notifications\Encore.Modules.Notifications.csproj" />
     <ProjectReference Include="..\Encore.Modules.Orders\Encore.Modules.Orders.csproj" />
     <ProjectReference Include="..\Encore.Modules.Payments\Encore.Modules.Payments.csproj" />
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />

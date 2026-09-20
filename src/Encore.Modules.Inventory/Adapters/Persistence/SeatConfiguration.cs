@@ -66,7 +66,9 @@ public sealed class SeatConfiguration : IEntityTypeConfiguration<Seat>
             .HasIndex(seat => new { seat.EventId, seat.HeldByClientId, seat.Status })
             .HasDatabaseName("ix_seats_event_client_status");
 
-        // Raised events are in-memory bookkeeping handed to the outbox on save.
+        // Raised events are in-memory bookkeeping, not a column. InventoryDbContext
+        // copies them into outbox_messages during SaveChanges, in the same
+        // transaction as this row.
         builder.Ignore(seat => seat.DomainEvents);
     }
 }
