@@ -49,7 +49,42 @@ public static class PaymentsModule
             services.AddHostedService<PaymentsMigrator>();
         }
 
+        AddReconciliation(services, configuration);
+
         return services;
+    }
+
+    /// <summary>
+    /// Registers the sweep that settles attempts the gateway never answered.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Read once for the registration decision and bound separately for the
+    /// reconciler's own use, the same shape <c>InventoryModule.AddOutbox</c> uses
+    /// and for the same reason: whether a hosted service exists at all is a
+    /// composition-time question, and rebinding it at resolve time would be
+    /// pretending it could change.
+    /// </para>
+    /// <para>
+    /// <b>No port, and no interface over the sweep.</b> It reads this module's own
+    /// table and calls this module's own gateway, and nothing will ever substitute
+    /// it — which is 001's test for whether an abstraction has earned its place.
+    /// It sits in <c>Data/</c> beside <c>PaymentsMigrator</c>, the module's other
+    /// hosted service, rather than in a folder invented for it.
+    /// </para>
+    /// </remarks>
+    private static void AddReconciliation(IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(PaymentReconciliationOptions.SectionName);
+
+        services.Configure<PaymentReconciliationOptions>(section);
+
+        var options = section.Get<PaymentReconciliationOptions>() ?? new PaymentReconciliationOptions();
+
+        if (options.Enabled)
+        {
+            services.AddHostedService<PaymentReconciler>();
+        }
     }
 
     /// <summary>Maps the module's HTTP surface.</summary>

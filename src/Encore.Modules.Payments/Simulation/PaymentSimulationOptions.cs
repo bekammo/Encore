@@ -30,6 +30,29 @@ public sealed class PaymentSimulationOptions
     /// </summary>
     public double TimeoutRate { get; set; }
 
+    /// <summary>
+    /// Given that a call got no answer, the probability the request never reached
+    /// the gateway at all, in <c>[0, 1]</c>. Half by default.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A different axis from the two above, which is why it does not reopen the
+    /// sum-to-one problem the remarks on this class refuse.</b> Those two divide
+    /// every call into answered-yes, answered-no and unanswered. This one divides
+    /// the unanswered ones into the two things "unanswered" can physically mean:
+    /// the request was lost on the way there, so nothing happened, or it arrived
+    /// and the answer was lost coming back, so something did.
+    /// </para>
+    /// <para>
+    /// <b>It exists because reconciliation has two branches and both have to be
+    /// reachable.</b> At <c>0</c> every timed-out authorisation turns out to have
+    /// landed; at <c>1</c> none of them did. A simulator that only ever produced
+    /// one of those would leave the other path untested while looking thoroughly
+    /// exercised.
+    /// </para>
+    /// </remarks>
+    public double LostRequestRate { get; set; } = 0.5;
+
     /// <summary>Shortest the gateway takes to answer.</summary>
     public TimeSpan MinLatency { get; set; } = TimeSpan.FromMilliseconds(50);
 

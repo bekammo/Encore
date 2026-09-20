@@ -22,6 +22,26 @@ namespace Encore.Modules.Payments.Simulation;
 /// guarantee this one cannot make.
 /// </para>
 /// <para>
+/// <b>A timeout is two different events wearing one name, and since
+/// <c>DECISIONS.md</c> 057 this class tells them apart.</b> A request lost on the
+/// way to the gateway leaves nothing on record; one whose answer was lost coming
+/// back leaves a decision the gateway will happily repeat when asked. The caller
+/// cannot distinguish them — that is what makes a timeout ambiguous — but
+/// <see cref="LookUpAsync"/> can, and reconciliation is built on exactly that.
+/// <see cref="PaymentSimulationOptions.LostRequestRate"/> is which of the two a
+/// given timeout turns out to have been.
+/// </para>
+/// <para>
+/// <b>That supersedes an earlier note here saying a timeout is deliberately never
+/// remembered.</b> Its reasoning was that remembering one would make the ambiguity
+/// trivially resolvable and leave the retry path untested. That was wrong in an
+/// instructive way: what the gateway records is not visible to the caller, so
+/// recording it removes no ambiguity from the only side that experiences it — and a
+/// retry under the same key getting a consistent answer back is precisely what a
+/// real idempotent gateway does. Never recording it made one branch of
+/// reconciliation unreachable instead.
+/// </para>
+/// <para>
 /// <b>Seeded randomness is locked, unseeded randomness is not.</b>
 /// <see cref="Random.Shared"/> is already thread-safe; a seeded
 /// <see cref="Random"/> is not, and an unsynchronised one under concurrent load
@@ -60,11 +80,73 @@ internal sealed class SimulatedPaymentGateway(
 
         await DelayAsync(cancellationToken).ConfigureAwait(false);
 
-        var outcome = Remember(idempotencyKey);
+        lock (_gate)
+        {
+            // Two independent misfortunes, decided in the order they would happen to
+            // a real request. First: does the caller hear anything back at all?
+            var unanswered = NextDoubleLocked() < _options.TimeoutRate;
 
-        return outcome is GatewayOutcome.Succeeded
-            ? (outcome, ReferenceFor(idempotencyKey))
-            : (outcome, null);
+            // Second, and only when it does not: was it the request that went
+            // missing, or the answer? A request lost on the way there leaves the
+            // gateway with nothing on record, which is what a later lookup reports
+            // as NotFound.
+            if (unanswered && NextDoubleLocked() < _options.LostRequestRate)
+            {
+                return (GatewayOutcome.TimedOut, null);
+            }
+
+            var outcome = RememberLocked(idempotencyKey);
+
+            // It arrived and it was decided; the caller simply does not get to know.
+            // That gap between what is true and what is known is the whole subject
+            // of DECISIONS 031 and 057.
+            if (unanswered)
+            {
+                return (GatewayOutcome.TimedOut, null);
+            }
+
+            return outcome is GatewayOutcome.Succeeded
+                ? (outcome, ReferenceFor(idempotencyKey))
+                : (outcome, null);
+        }
+    }
+
+    /// <summary>
+    /// Asks what the gateway knows about a key it may or may not have seen. A read:
+    /// it decides nothing and records nothing.
+    /// </summary>
+    /// <remarks>
+    /// The call reconciliation is built on, and the only way to tell the two halves
+    /// of a timeout apart. It can itself fail to answer, in which case it says
+    /// <see cref="GatewayRecord.Unknown"/> and the attempt stays exactly as
+    /// unresolved as it was — reading a failed lookup as "nothing happened" would
+    /// hand an order its live-attempt slot back while the customer's funds were
+    /// still held.
+    /// </remarks>
+    public async Task<(GatewayRecord Record, string? Reference)> LookUpAsync(
+        string idempotencyKey,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(idempotencyKey);
+
+        await DelayAsync(cancellationToken).ConfigureAwait(false);
+
+        if (HangsUp())
+        {
+            return (GatewayRecord.Unknown, null);
+        }
+
+        lock (_gate)
+        {
+            if (!_answered.TryGetValue(idempotencyKey, out var outcome))
+            {
+                return (GatewayRecord.NotFound, null);
+            }
+
+            return outcome is GatewayOutcome.Succeeded
+                ? (GatewayRecord.Authorized, ReferenceFor(idempotencyKey))
+                : (GatewayRecord.Declined, null);
+        }
     }
 
     /// <summary>Takes funds that are being held.</summary>
@@ -83,6 +165,13 @@ internal sealed class SimulatedPaymentGateway(
     }
 
     /// <summary>Releases funds that are being held, without taking them.</summary>
+    /// <remarks>
+    /// A released authorisation stays in the memory, so a lookup under the same key
+    /// would still report it held. Nothing looks: an attempt is only ever reconciled
+    /// while it is timed out, and resolving it moves it out of that set for good.
+    /// Doing better would mean mapping a reference back to a key, and
+    /// <see cref="ReferenceFor"/> is deliberately one-way.
+    /// </remarks>
     public async Task<GatewayOutcome> VoidAsync(
         string gatewayReference,
         CancellationToken cancellationToken = default)
@@ -95,45 +184,26 @@ internal sealed class SimulatedPaymentGateway(
     }
 
     /// <summary>
-    /// The answer for this key: the one already given if there is one, otherwise a
-    /// fresh roll recorded for next time.
+    /// The gateway's own decision for this key: the one already made if there is
+    /// one, otherwise a fresh roll recorded for next time. Whether the caller gets
+    /// to hear it is a separate question, and <see cref="AuthorizeAsync"/> answers
+    /// it.
     /// </summary>
-    /// <remarks>
-    /// A timeout is deliberately <i>not</i> remembered. The whole point of the
-    /// outcome is that the gateway's state is unknown, so a retry has to be allowed
-    /// to land somewhere different — a gateway that answered "timed out" forever
-    /// would make the ambiguity trivially resolvable and the retry path untested.
-    /// </remarks>
-    private GatewayOutcome Remember(string idempotencyKey)
+    /// <remarks>The caller holds <c>_gate</c>.</remarks>
+    private GatewayOutcome RememberLocked(string idempotencyKey)
     {
-        lock (_gate)
+        if (_answered.TryGetValue(idempotencyKey, out var already))
         {
-            if (_answered.TryGetValue(idempotencyKey, out var already))
-            {
-                return already;
-            }
-
-            var outcome = Roll();
-
-            if (outcome is not GatewayOutcome.TimedOut)
-            {
-                _answered[idempotencyKey] = outcome;
-            }
-
-            return outcome;
-        }
-    }
-
-    private GatewayOutcome Roll()
-    {
-        if (NextDouble() < _options.TimeoutRate)
-        {
-            return GatewayOutcome.TimedOut;
+            return already;
         }
 
-        return NextDouble() < _options.DeclineRate
+        var outcome = NextDoubleLocked() < _options.DeclineRate
             ? GatewayOutcome.Declined
             : GatewayOutcome.Succeeded;
+
+        _answered[idempotencyKey] = outcome;
+
+        return outcome;
     }
 
     private bool HangsUp() => NextDouble() < _options.TimeoutRate;
@@ -166,6 +236,15 @@ internal sealed class SimulatedPaymentGateway(
             return _seeded.NextDouble();
         }
     }
+
+    /// <summary>
+    /// The same draw, for a caller that already holds <c>_gate</c>. Separate from
+    /// <see cref="NextDouble"/> rather than relying on the lock being reentrant: it
+    /// is, but a detail this file's thread safety rests on should not be one a
+    /// reader has to go and look up.
+    /// </summary>
+    private double NextDoubleLocked() =>
+        _seeded is null ? Random.Shared.NextDouble() : _seeded.NextDouble();
 
     /// <summary>
     /// A stable, opaque handle derived from the key, so the same authorisation

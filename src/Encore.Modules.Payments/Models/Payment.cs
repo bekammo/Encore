@@ -375,6 +375,89 @@ public sealed class Payment
     }
 
     /// <summary>
+    /// Records that the timed-out authorisation did land, and that the funds it was
+    /// holding have now been released. Terminal.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>One method for two facts, because a row between them would be a worse
+    /// lie than either.</b> Reconciliation learns that funds are held and releases
+    /// them in the same breath; writing <see cref="PaymentStatus.Authorized"/> in
+    /// between would leave an authorisation nobody is going to capture if the
+    /// process died there — a new orphan of exactly the kind this path exists to
+    /// clear. Nothing is written until the release succeeded, so a failure leaves
+    /// the row <see cref="PaymentStatus.TimedOut"/> and the next sweep tries again.
+    /// </para>
+    /// <para>
+    /// <b>Releasing rather than capturing is <c>DECISIONS.md</c> 028 arriving
+    /// late.</b> An authorisation that times out aborts the confirm before any seat
+    /// is sold, so a <see cref="PaymentStatus.TimedOut"/> row never has seats behind
+    /// it and 028's rule — a sale that does not complete voids — is the rule that
+    /// applies. The void simply never happened, because nobody knew there was
+    /// anything to void.
+    /// </para>
+    /// <para>
+    /// <see cref="AttemptedAt"/> does not move. No attempt was made here; an answer
+    /// was read back, and the funds were held when the original call reached the
+    /// gateway rather than when this found out about it.
+    /// </para>
+    /// </remarks>
+    /// <param name="gatewayReference">
+    /// The handle the lookup returned, kept because the row never got one and it is
+    /// what a human needs to chase this payment by hand.
+    /// </param>
+    /// <param name="utcNow">When reconciliation resolved the attempt.</param>
+    /// <exception cref="PaymentTransitionException">The attempt is not timed out.</exception>
+    public void ResolveAsVoided(string gatewayReference, DateTime utcNow)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(gatewayReference);
+        GuardUtc(utcNow);
+        GuardTimedOut();
+
+        Status = PaymentStatus.Voided;
+        GatewayReference = gatewayReference;
+        ResolvedAt = utcNow;
+    }
+
+    /// <summary>
+    /// Records that the timed-out authorisation reached the gateway and was
+    /// refused. Terminal.
+    /// </summary>
+    /// <remarks>
+    /// The one route to <see cref="PaymentStatus.Declined"/> that 031 did not
+    /// reject. Its objection was to reading a silence as a refusal; this is a
+    /// refusal read back from the gateway, which is the fact the silence was hiding.
+    /// </remarks>
+    /// <exception cref="PaymentTransitionException">The attempt is not timed out.</exception>
+    public void ResolveAsDeclined(DateTime utcNow)
+    {
+        GuardUtc(utcNow);
+        GuardTimedOut();
+
+        Status = PaymentStatus.Declined;
+        ResolvedAt = utcNow;
+    }
+
+    /// <summary>
+    /// Records that the gateway has no knowledge of this attempt, so it never
+    /// arrived and nothing was ever held. Terminal.
+    /// </summary>
+    /// <remarks>
+    /// No <see cref="GatewayReference"/> is written, because there is nothing to
+    /// refer to. This is the outcome that gives the order its live-attempt slot
+    /// back, so the customer can try again without waiting for anybody.
+    /// </remarks>
+    /// <exception cref="PaymentTransitionException">The attempt is not timed out.</exception>
+    public void ResolveAsAbandoned(DateTime utcNow)
+    {
+        GuardUtc(utcNow);
+        GuardTimedOut();
+
+        Status = PaymentStatus.Abandoned;
+        ResolvedAt = utcNow;
+    }
+
+    /// <summary>
     /// Every method that takes the current instant takes it as a parameter, and
     /// that instant must be UTC. This is where that contract is checked rather
     /// than assumed. See <c>DECISIONS.md</c> 045, which is 039 applied here.
@@ -423,6 +506,21 @@ public sealed class Payment
         if (Status is not PaymentStatus.Authorized)
         {
             throw new PaymentTransitionException(Id, PaymentTransitionReason.NotAuthorized);
+        }
+    }
+
+    /// <summary>
+    /// Shared by <see cref="Retry"/> and the three reconciliation transitions, and
+    /// they are the only methods that have it: the ambiguity of "no answer came
+    /// back" is what licenses both reusing an idempotency key and settling an
+    /// attempt on an answer this module was never told. Every other status already
+    /// got its answer.
+    /// </summary>
+    private void GuardTimedOut()
+    {
+        if (Status is not PaymentStatus.TimedOut)
+        {
+            throw new PaymentTransitionException(Id, PaymentTransitionReason.NotTimedOut);
         }
     }
 }

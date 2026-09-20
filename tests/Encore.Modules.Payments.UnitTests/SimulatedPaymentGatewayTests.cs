@@ -21,17 +21,40 @@ public class SimulatedPaymentGatewayTests
     private static SimulatedPaymentGateway Gateway(
         double declineRate = 0,
         double timeoutRate = 0,
+        double lostRequestRate = 0.5,
         int? seed = null) =>
-        new(
-            Options.Create(new PaymentSimulationOptions
-            {
-                DeclineRate = declineRate,
-                TimeoutRate = timeoutRate,
-                MinLatency = TimeSpan.Zero,
-                MaxLatency = TimeSpan.Zero,
-                Seed = seed
-            }),
-            TimeProvider.System);
+        Configured(declineRate, timeoutRate, lostRequestRate, seed).Gateway;
+
+    /// <summary>
+    /// The gateway and the options object it is still reading, so a test can change
+    /// the weather between two calls.
+    /// </summary>
+    /// <remarks>
+    /// Every lookup test needs this. Reconciliation only ever asks about an
+    /// authorisation that got no answer, so the two calls have to happen under
+    /// opposite conditions — <c>TimeoutRate</c> at 1 for the authorisation and 0 for
+    /// the lookup — and they have to hit the <i>same</i> gateway, because the record
+    /// being looked up lives in that instance. Rebuilding it between the calls would
+    /// look like the same test and assert nothing.
+    /// </remarks>
+    private static (SimulatedPaymentGateway Gateway, PaymentSimulationOptions Options) Configured(
+        double declineRate = 0,
+        double timeoutRate = 0,
+        double lostRequestRate = 0.5,
+        int? seed = null)
+    {
+        var options = new PaymentSimulationOptions
+        {
+            DeclineRate = declineRate,
+            TimeoutRate = timeoutRate,
+            LostRequestRate = lostRequestRate,
+            MinLatency = TimeSpan.Zero,
+            MaxLatency = TimeSpan.Zero,
+            Seed = seed
+        };
+
+        return (new SimulatedPaymentGateway(Options.Create(options), TimeProvider.System), options);
+    }
 
     // -- Outcomes ---------------------------------------------------------
 
@@ -194,6 +217,124 @@ public class SimulatedPaymentGatewayTests
 
         Assert.Equal(GatewayOutcome.Succeeded, outcome);
     }
+
+    // -- Lookup -----------------------------------------------------------
+
+    /// <summary>
+    /// The two branches reconciliation turns on, and the reason
+    /// <c>LostRequestRate</c> exists: a timeout means either that the request never
+    /// arrived or that the answer never came back, and only the gateway can say
+    /// which. These are the tests that would catch a simulator that had quietly
+    /// stopped being able to produce one of the two.
+    /// </summary>
+    [Fact]
+    public async Task LookUp_AfterAnAuthorisationThatArrived_ShouldReportTheHold()
+    {
+        var (gateway, options) = Configured(timeoutRate: 1, lostRequestRate: 0);
+
+        var (outcome, _) = await gateway.AuthorizeAsync("key-1", Amount, Currency);
+        Assert.Equal(GatewayOutcome.TimedOut, outcome);
+
+        options.TimeoutRate = 0;
+        var (record, reference) = await gateway.LookUpAsync("key-1");
+
+        Assert.Equal(GatewayRecord.Authorized, record);
+        Assert.NotNull(reference);
+    }
+
+    [Fact]
+    public async Task LookUp_AfterAnAuthorisationThatNeverArrived_ShouldReportNotFound()
+    {
+        var (gateway, options) = Configured(timeoutRate: 1, lostRequestRate: 1);
+
+        await gateway.AuthorizeAsync("key-1", Amount, Currency);
+
+        options.TimeoutRate = 0;
+        var (record, reference) = await gateway.LookUpAsync("key-1");
+
+        Assert.Equal(GatewayRecord.NotFound, record);
+        Assert.Null(reference);
+    }
+
+    /// <summary>
+    /// A refusal whose answer was lost is still a refusal, and this is the one route
+    /// by which a timed-out attempt may honestly end up declined — the gateway said
+    /// so, rather than a silence being read as if it had.
+    /// </summary>
+    [Fact]
+    public async Task LookUp_AfterADeclineThatWasNotHeard_ShouldReportTheDecline()
+    {
+        var (gateway, options) = Configured(declineRate: 1, timeoutRate: 1, lostRequestRate: 0);
+
+        await gateway.AuthorizeAsync("key-1", Amount, Currency);
+
+        options.TimeoutRate = 0;
+        var (record, reference) = await gateway.LookUpAsync("key-1");
+
+        Assert.Equal(GatewayRecord.Declined, record);
+        Assert.Null(reference);
+    }
+
+    [Fact]
+    public async Task LookUp_WhenTheCallerDidHearTheAnswer_ShouldAgreeWithIt()
+    {
+        var gateway = Gateway();
+
+        var (_, authorised) = await gateway.AuthorizeAsync("key-1", Amount, Currency);
+        var (record, reference) = await gateway.LookUpAsync("key-1");
+
+        Assert.Equal(GatewayRecord.Authorized, record);
+        Assert.Equal(authorised, reference);
+    }
+
+    [Fact]
+    public async Task LookUp_WhenTheKeyWasNeverSeen_ShouldReportNotFound()
+    {
+        var (record, reference) = await Gateway().LookUpAsync("never-asked");
+
+        Assert.Equal(GatewayRecord.NotFound, record);
+        Assert.Null(reference);
+    }
+
+    /// <summary>
+    /// The distinction the reconciler's correctness rests on. "I looked and there is
+    /// nothing" releases the order's live-attempt slot; "I could not look" must not,
+    /// because the funds may be held and nobody has established otherwise.
+    /// </summary>
+    [Fact]
+    public async Task LookUp_WhenTheGatewayDoesNotAnswer_ShouldReportUnknownRatherThanNotFound()
+    {
+        var (record, reference) = await Gateway(timeoutRate: 1).LookUpAsync("key-1");
+
+        Assert.Equal(GatewayRecord.Unknown, record);
+        Assert.Null(reference);
+    }
+
+    /// <summary>
+    /// A lookup is a read. If it recorded an answer of its own, the first thing
+    /// reconciliation did to an attempt would be to decide it — and the decision
+    /// would be this gateway's coin flip rather than anything that happened.
+    /// </summary>
+    [Fact]
+    public async Task LookUp_ShouldDecideNothing()
+    {
+        var gateway = Gateway(declineRate: 1);
+
+        var (before, _) = await gateway.LookUpAsync("key-1");
+        Assert.Equal(GatewayRecord.NotFound, before);
+
+        var (outcome, _) = await gateway.AuthorizeAsync("key-1", Amount, Currency);
+        Assert.Equal(GatewayOutcome.Declined, outcome);
+
+        var (after, _) = await gateway.LookUpAsync("key-1");
+        Assert.Equal(GatewayRecord.Declined, after);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task LookUp_WithoutAKey_ShouldThrow(string key) =>
+        await Assert.ThrowsAsync<ArgumentException>(() => Gateway().LookUpAsync(key));
 
     private static async Task<IReadOnlyList<GatewayOutcome>> SequenceAsync(SimulatedPaymentGateway gateway)
     {

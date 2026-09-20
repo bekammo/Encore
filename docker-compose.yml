@@ -105,6 +105,13 @@ services:
       # The drain has no flag and never will. Turning off the half that has to be
       # atomic would not be a measurement, it would be a different system.
       Inventory__Outbox__Enabled: "${OUTBOX_ENABLED:-true}"
+      # The payment reconciler, on the same terms and for the same reason: it is a
+      # third background workload beside the request path, and 056's finding was
+      # that a second one is where the outbox's cost actually went. This one sweeps
+      # once a minute and, with the simulated gateway timing out at 0.0 here, finds
+      # nothing to sweep — so it should cost nothing measurable. A baseline that
+      # cannot switch it off cannot demonstrate that. DECISIONS 057.
+      Payments__Reconciliation__Enabled: "${RECONCILER_ENABLED:-true}"
 
   # The load harness. k6 in a container rather than NBomber in a project: this
   # way the rig adds no PackageReference, no fifth test project and nothing the

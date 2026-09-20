@@ -2715,3 +2715,190 @@ threshold once the dispatcher's arrangement is settled.
      and which of the two the extraction makes free; and whether a run with the dispatcher on
      but no consumer registered would separate the claim-and-mark cost from the consumer's
      INSERT, which this pair of runs cannot. -->
+
+---
+
+## 057 — Reconciliation: the gateway is asked what it did, and a timeout stops being permanent
+
+031 made a timed-out authorisation *safe* and left it *unresolved*. The row keeps its
+idempotency key so a retry asks the same question rather than a second one, and it keeps
+the order's one live slot so nothing else can authorise underneath it. What it could not
+do was make the ambiguity go away, because only the gateway knows, and nothing asked. This
+asks: `PaymentReconciler` sweeps attempts that have been `TimedOut` for longer than
+`MinimumAge`, calls `SimulatedPaymentGateway.LookUpAsync` with the key the row is carrying,
+and settles the attempt on what comes back.
+
+**It is in Payments, not behind the outbox, and that is 031's open question answered.** 031
+left it as "whether it belongs in Payments or is the first real consumer of the dispatcher".
+Payments, decisively. The outbox carries facts that are already decided; a timed-out
+authorisation contains no fact to carry — its whole content is that nobody knows. Publishing
+"something ambiguous happened to order X" and having a consumer go and ask the gateway would
+put the authority over payment state in a different module from the one that owns the row,
+which is the second-authority hazard 031 refused to build half of. What the outbox unblocked
+is not the mechanism but the *precedent*: 053 is the argument that a background worker may
+own a slow, retrying, at-least-once job without any invariant depending on it, and this is
+the second worker built on that argument.
+
+### The three answers, and the fourth that is not one
+
+`GatewayRecord` is a separate enum from `GatewayOutcome` because a lookup answers a different
+question — not "what did this call do" but "what, if anything, is on record".
+
+| Record | What it means | What the attempt becomes |
+|---|---|---|
+| `Authorized` | Funds are held under this key | Released at the gateway, then `Voided` |
+| `Declined` | The gateway received it and refused | `Declined` |
+| `NotFound` | The gateway has no record: it never arrived | `Abandoned` |
+| `Unknown` | The lookup itself got no answer | unchanged, still `TimedOut` |
+
+**`NotFound` against `Unknown` is the distinction the whole thing rests on.** One is an
+answer — the gateway looked and there is nothing there — and the other is the absence of one.
+Collapsing them would let a failed lookup be read as proof that nothing happened, which is the
+worst available reading: it would hand an order its live-attempt slot back while the customer's
+funds were still held, and the next confirm would authorise a second time.
+
+### `PaymentStatus.Abandoned`, and why the existing members would each have been a lie
+
+**Rejected: `Declined`.** 031 refused to treat a timeout as a decline because it tells a
+customer their card was refused when it may not have been. An attempt the gateway never
+received was not refused either; the objection arrives one step later, unchanged.
+
+**Rejected: `Voided`.** A void releases an authorisation that existed. There was none, and a
+row claiming otherwise sends whoever chases it to the gateway for a reference that does not
+exist.
+
+**Rejected: `Retry` back to `Pending`, leaving the request path to finish it.** Tempting,
+because the adapter already knows how to resume a `Pending` row and no new status is needed.
+It is worse than doing nothing: `Pending` is live, so the row would keep the order's slot,
+and if no further confirm ever came it would sit there forever — the same orphan, wearing a
+status that also lies about there being a call in flight.
+
+`Abandoned = 6` is terminal and not live. It costs no migration: the index filter is
+`"Status" IN (0, 1, 2, 4)` and a new non-live member is simply absent from it.
+`PaymentTests.IsLive_ShouldMatchTheIndexFilter` gained a row, which is the only thing pinning
+the enum to that SQL literal.
+
+### A hold it finds is released, not recorded
+
+**The sweep does not write `Authorized` and stop.** That would be bookkeeping: the funds would
+still be held, and 031's actual complaint — held until the gateway expires them days later —
+would be untouched. It voids, and only then writes, in one transition (`ResolveAsVoided`).
+
+**Why releasing is Payments' call and not an intrusion into Orders' lifecycle.** 028 authorises,
+sells, then captures, and a confirm whose authorisation times out returns before selling
+anything. So a `TimedOut` row never has sold seats behind it, and 028's own rule — a sale that
+does not complete voids the authorisation — is already the rule that applies. The void simply
+never happened, because nobody knew there was anything to void. The sweep is not deciding an
+order is dead; it is finishing a decision this module already made.
+
+**Nothing is written when the void gets no answer.** Recording the authorisation without having
+released it would swap one orphan for a worse one: an `Authorized` row nobody will ever capture
+and that no sweep looks at. The row stays `TimedOut` and the next sweep tries again.
+
+**Three transitions, not loosened guards on the existing three.** `ResolveAsVoided`,
+`ResolveAsDeclined` and `ResolveAsAbandoned` all refuse anything but `TimedOut`, reusing
+`NotTimedOut`. Letting `Authorize` or `Decline` accept a timed-out row would let the ordinary
+request path write a settled answer it never actually received, which is exactly the property
+the separation protects. They also leave `AttemptedAt` alone: no attempt was made, an answer was
+read back, and the funds were held when the original call reached the gateway rather than when
+we found out.
+
+### Shape of the worker, and where it deliberately differs from the dispatcher
+
+**No claim, no `FOR UPDATE SKIP LOCKED`.** The dispatcher locks because delivering a message
+twice is a real cost. Here the expensive half is a *read* at the gateway, which two instances
+may safely duplicate, and the write is arbitrated by `xmin` like every other write in this
+module. Holding a Postgres row lock across a call to a third party would be the worse trade by
+a distance — a confirm touching that row would block for as long as the gateway felt like
+taking. One scope per row, so a row losing on `xmin` leaves the rest of the sweep with a clean
+change tracker.
+
+**It always sleeps, even after a full batch — the opposite of the dispatcher.** A message the
+dispatcher fails to deliver has its next attempt pushed into the future, so a full batch there
+really does mean more work is ready now. A row this fails to resolve is still timed out, still
+old enough, and still first in the next sweep's ordering, so looping on a full batch would mean
+hammering the gateway with the same unanswerable questions as fast as it can refuse to answer
+them.
+
+**`PollInterval` is one minute, not the outbox's one second.** An undelivered event is a fact
+the system already owns and is merely late in passing on. An unresolved authorisation is a
+question only a third party can answer, and asking more often does not make the answer arrive
+sooner. This is also the direct lesson of 056: the outbox's cost was not the write on the hot
+path, it was a second workload competing for the same database, and a third one polling every
+second would be repeating a mistake that has already been measured once.
+
+**`MinimumAge` is five minutes, which is one seat-hold duration.** A confirm whose authorisation
+timed out aborts before selling, so the customer's only route back is another confirm — which
+finds the row and retries it under the same key. Past five minutes the seats that confirm was
+for have certainly expired, so no confirm that could still succeed is racing the sweep. The race
+is survivable either way; this is about not doing pointless work and not voiding an
+authorisation somebody is seconds from using.
+
+**`Enabled` defaults true**, on `OutboxOptions.Enabled`'s reasoning rather than
+`MigrateOnStartup`'s: a reconciler that did not run by default would silently leave funds held.
+`RECONCILER_ENABLED` is a compose variable for the same reason `OUTBOX_ENABLED` is — 056's
+baseline needs to be able to switch a background workload off to attribute its cost.
+
+### The simulator had to change, and it corrects an earlier note
+
+`SimulatedPaymentGateway` recorded nothing for a timed-out call, with a comment saying a timeout
+is deliberately not remembered so that "the ambiguity is not trivially resolvable and the retry
+path stays tested". **That was wrong in an instructive direction, and the note is superseded
+rather than deleted.** What the gateway records is not visible to the caller, so recording it
+removes no ambiguity from the only side that experiences it — and a retry under the same key
+getting a consistent answer back is precisely what a real idempotent gateway does. Never
+recording it made one branch of reconciliation *unreachable*: every lookup would have answered
+`NotFound`, so "the authorisation landed" could never be produced and the branch that actually
+returns somebody's money would have looked tested while being unreachable.
+
+So a timeout is now two events wearing one name. The gateway decides whether the caller hears
+anything (`TimeoutRate`), and separately, when they do not, whether the request arrived at all
+(`LostRequestRate`, default 0.5). A request lost outbound leaves nothing on record; one whose
+answer was lost leaves a decision the gateway repeats when asked. The caller still cannot tell
+them apart — that is what makes a timeout ambiguous — but `LookUpAsync` can.
+
+`LostRequestRate` does not reopen the sum-to-one problem `PaymentSimulationOptions` refuses. It
+is on a different axis: the first two rates divide every call into answered-yes, answered-no and
+unanswered, and this one divides the unanswered ones.
+
+### One new catch on the request path
+
+`InProcessOrderPayments.AuthorizeAsync` now catches `DbUpdateConcurrencyException` on its first
+save and answers `ConcurrentAttemptInFlight`. The reconciler is the first writer of these rows
+that is not a request, so a confirm that reads a `TimedOut` row, calls `Retry`, and saves after
+the sweep has settled it is newly reachable — and without the catch it is a 500 for a situation
+the caller can simply retry. It must come before the `IsDuplicateLiveAttempt` clause, which
+filters a base type of it.
+
+**Stated plainly: no test forces that interleaving.** Every settled status is non-live, so the
+server-side filter in `LiveAsync` excludes a resolved row and the retry path is never entered —
+the only way to reach the catch is a conflict landing between that read and that save, and
+nothing in the suite can hold the two apart. The clause is defensive, and it is cheaper than the
+alternative of discovering it in a log.
+
+### What this does not do
+
+**`Payment` still raises no domain events, so nothing is announced.** 029 refused them on the
+grounds that events with no consumer are ceremony, and that is still true of a capture; it is
+noticeably less true of "the authorisation we could not account for has been released", which an
+order sitting `Pending` would like to know about. Announcing it means Payments getting an outbox
+of its own — the drain, the table, the dispatcher, all currently Inventory's — and that is a
+second argument that should not ride along inside this one. It also collides with 027, which
+chose to resolve `AwaitingCapture` by the next confirm rather than by a background job, and that
+choice deserves re-examining on its own terms rather than by implication. **Deferred, named, and
+the next obvious chunk of Payments work.**
+
+**One branch has no integration test, deliberately.** A lookup that finds funds and then fails to
+release them leaves the row timed out. Reaching it needs the lookup to answer and the void not
+to, and both are governed by the single `TimeoutRate` knob — so forcing it would mean adding a
+knob to the simulator whose only purpose is to be a test's seam.
+
+**The simulator does not forget a released key.** After the sweep voids, a lookup under that key
+would still report the funds held. Nothing looks: an attempt is only reconciled while it is timed
+out, and settling it removes it from that set for good. Doing better needs a reference-to-key map,
+and `ReferenceFor` is deliberately one-way.
+
+<!-- Expand later: whether Payments gets its own outbox or the reconciler's outcome reaches
+     Orders some other way, which is the 029/027 pair above; and whether a reconciled hold should
+     ever be captured rather than voided, which only becomes a question if some future path can
+     time out an authorisation after seats are already sold. -->

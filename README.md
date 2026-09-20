@@ -325,10 +325,19 @@ transaction as every seat write, so a baseline taken afterwards could never say 
 (`DECISIONS.md` 048); three pre-outbox runs establish the spread and **056** records the
 delta.
 
-The honest gap: a gateway call that times out is still recorded rather than resolved. The
-attempt keeps its idempotency key so a retry asks the same question rather than a second one,
-but nothing yet reconciles an authorisation that may or may not have landed. 031 parked that
-behind the outbox, which now exists — so it is unblocked rather than deferred.
+Reconciliation closed the gap this section used to describe. A gateway call that times out is no
+longer merely recorded: `PaymentReconciler` sweeps attempts that have been timed out for longer
+than a seat hold, asks the gateway what it actually did with the key the row is carrying, and
+settles them — releasing funds that turn out to be held, recording a refusal that was made but
+never heard, abandoning an attempt that never arrived, and writing nothing at all when the lookup
+itself gets no answer. Until it existed a timed-out attempt was live forever, which meant the
+order it belonged to could not be paid for by anybody, ever. `DECISIONS.md` 057.
+
+The honest gap that remains is the other half of 029: `Payment` still raises no domain events, so
+when the sweep releases an authorisation, nothing tells the order it was released. Announcing it
+means Payments getting an outbox of its own, and it collides with 027's choice to resolve an
+order by the next confirm rather than by a background job — two arguments that deserve their own
+change rather than a ride inside this one.
 
 Deliberately absent, by roadmap phase rather than oversight: the Strangler Fig extraction of
 Payments, the expired-hold sweep, MediatR, MassTransit, SignalR, observability and any
