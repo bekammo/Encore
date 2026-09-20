@@ -35,12 +35,6 @@ public sealed class SellSeatCommandHandler(
     IDistributedLock distributedLock,
     TimeProvider timeProvider)
 {
-    /// <summary>
-    /// How long the per-seat lock survives if it is never released. Sized to one
-    /// write attempt, never to the checkout window.
-    /// </summary>
-    private static readonly TimeSpan LockTtl = TimeSpan.FromSeconds(5);
-
     private readonly ISeatRepository _seats = seats;
     private readonly IDistributedLock _distributedLock = distributedLock;
     private readonly TimeProvider _timeProvider = timeProvider;
@@ -54,7 +48,7 @@ public sealed class SellSeatCommandHandler(
         SellSeatCommand command,
         CancellationToken cancellationToken = default)
     {
-        var resource = ResourceFor(command.SeatId);
+        var resource = SeatLocks.ForSeat(command.SeatId);
 
         // One lock, and it is purely an optimisation. Contended or unreachable,
         // the attempt proceeds either way: this is a single-row write, so the
@@ -62,7 +56,7 @@ public sealed class SellSeatCommandHandler(
         // aggregate. Unlike holding, there is no cap here for a missed lock to
         // undermine, so there is nothing to refuse for.
         var seatLock = await _distributedLock
-            .TryAcquireAsync(resource, LockTtl, cancellationToken)
+            .TryAcquireAsync(resource, SeatLocks.Ttl, cancellationToken)
             .ConfigureAwait(false);
 
         try
@@ -75,15 +69,7 @@ public sealed class SellSeatCommandHandler(
         }
         finally
         {
-            if (seatLock.Token is { } token)
-            {
-                // CancellationToken.None on purpose: the sale has already
-                // happened by now, and a client that hung up must not be able to
-                // cancel the release and strand the lock on a sold seat.
-                await _distributedLock
-                    .ReleaseAsync(resource, token, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
+            await _distributedLock.ReleaseIfHeldAsync(resource, seatLock).ConfigureAwait(false);
         }
     }
 
@@ -91,6 +77,11 @@ public sealed class SellSeatCommandHandler(
         SellSeatCommand command,
         CancellationToken cancellationToken)
     {
+        // One reading per attempt, as the other two handlers take theirs. Bound
+        // here rather than read at the call below so that a second use cannot
+        // quietly become a second clock reading.
+        var utcNow = _timeProvider.GetUtcNow().UtcDateTime;
+
         var seat = await _seats.GetByIdAsync(command.SeatId, cancellationToken).ConfigureAwait(false);
 
         // Checked, never trusted — as with holding. A seat reached through
@@ -106,7 +97,7 @@ public sealed class SellSeatCommandHandler(
 
         try
         {
-            seat.Sell(command.ClientId, _timeProvider.GetUtcNow().UtcDateTime);
+            seat.Sell(command.ClientId, utcNow);
             await _seats.SaveAsync(seat, cancellationToken).ConfigureAwait(false);
 
             return SellSeatResult.Sold;
@@ -141,5 +132,4 @@ public sealed class SellSeatCommandHandler(
         // aggregate's contract moved without this handler being told.
     }
 
-    private static string ResourceFor(Guid seatId) => $"seat:{seatId}";
 }

@@ -1978,3 +1978,67 @@ is worth having at all.
 <!-- Expand later: whether the guard belongs in Encore.Shared beside IDomainEvent once a
      third caller wants it, and whether Order should get the identity guards too given it is
      a POCO with public setters and no factory to put them in. -->
+
+---
+
+## 046 — The three seat handlers share one lock vocabulary
+
+`HoldSeatCommandHandler` was the reference shape and the other two had drifted from it in
+four places. All four are now one copy in `SeatLocks`, an internal static class in
+`Application/`: the five-second TTL, the seat resource key, the client resource key, and the
+release-from-a-`finally` helper. `SellSeatCommandHandler` also binds `utcNow` once at the top
+of `AttemptAsync` as the other two always have, instead of reading the clock inline at the
+`Seat.Sell` call.
+
+**The resource keys were the one worth doing first, and they were not on the list.** A drifting
+TTL is untidy and a drifting release helper is a maintenance cost, but `$"seat:{seatId}"`
+written out in three files is a latent correctness bug: two handlers spelling the same seat's
+resource differently would take two different locks, each believing it held the one that
+matters. Mutual exclusion would simply stop happening, silently, at the moment it is wanted,
+and nothing would fail — the seat row's `xmin` would still keep the system correct, so the
+symptom would be a throughput collapse under contention with no error anywhere. That is the
+worst shape a bug can have in this module, and it is why this went slightly beyond the four
+items it was asked to converge.
+
+**017's criterion, and why the migrators stay duplicated while this does not.** 017 accepted
+sixty duplicated lines per module on the grounds that the code is inert — "a bug in one copy
+cannot be a bug in another". These are not inert: they are read at run time by three callers
+racing for the same rows, and a divergence in one copy changes what another copy does. 036
+made the same distinction when it moved the build guards into one file. The migrators are
+unaffected and stay as they are.
+
+**`Application/`, not `Ports/`.** `Ports/` states a contract that adapters implement. None of
+this is part of that contract — `ReleaseIfHeldAsync` is a caller's discipline, not an
+implementor's obligation, and the TTL and key formats are decisions this layer makes about
+how it uses the port rather than anything the port promises. Every caller today is in
+`Application/`, and the expired-hold sweep will be too.
+
+**The helper takes no `CancellationToken` at all**, which is stronger than the convention it
+replaces. The port's doc comment has always said callers should release with
+`CancellationToken.None`, because a release runs from a `finally` after the write has already
+happened and a client that hung up must not be able to strand a lock until its TTL expires.
+Not accepting a token is what stops the next caller passing the wrong one; the rule is now
+unable to be broken rather than merely written down.
+
+**The two reload-after-a-lost-race implementations stay as they are, and that was checked
+rather than assumed.** `EfSeatRepository.GetByIdAsync` and `InProcessOrderPayments.ReloadAsync`
+both end up calling `EntityEntry.ReloadAsync`, and there the resemblance stops. The first
+takes an **id**, runs on **every read**, searches the change tracker, falls back to a query
+when nothing is tracked, and maps a detached entry to `null` because the row may have been
+deleted. The second takes an **entity the caller already holds**, runs **only from a catch
+block** after a rejected save, resets the entry from `Modified` to `Unchanged` so the reload
+will take, and has no null case because the row is known to exist. Different inputs, different
+triggers, different return types, different edge cases; 009's move is a one-line EF idiom that
+both happen to need, the way both happen to need `SaveChangesAsync`.
+
+There is also a hard structural barrier, which settles it independently. A shared helper needs
+a home both modules can reference. `Encore.Shared` cannot be it: that project carries
+`EncoreZeroDependency`, so an EF Core reference there fails the build outright with
+`ENCORE001` and `ENCORE003`, and `Inventory.Domain` references it, so the domain-purity rule
+would go too. The only alternative is a new `Encore.Persistence` assembly referenced by two
+modules — a cross-module implementation dependency, bought for two methods that do not share
+behaviour. Left alone, deliberately.
+
+<!-- Expand later: whether the expired-hold sweep should take a seat lock at all when it
+     arrives, given it writes rows nobody is contending for by definition, and whether
+     SeatLocks is where a per-resource TTL would go if the sweep wants a longer one. -->

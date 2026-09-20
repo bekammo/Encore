@@ -30,12 +30,6 @@ public sealed class ReleaseSeatCommandHandler(
     IDistributedLock distributedLock,
     TimeProvider timeProvider)
 {
-    /// <summary>
-    /// How long the per-seat lock survives if it is never released. Sized to one
-    /// write attempt.
-    /// </summary>
-    private static readonly TimeSpan LockTtl = TimeSpan.FromSeconds(5);
-
     private readonly ISeatRepository _seats = seats;
     private readonly IDistributedLock _distributedLock = distributedLock;
     private readonly TimeProvider _timeProvider = timeProvider;
@@ -49,10 +43,10 @@ public sealed class ReleaseSeatCommandHandler(
         ReleaseSeatCommand command,
         CancellationToken cancellationToken = default)
     {
-        var resource = ResourceFor(command.SeatId);
+        var resource = SeatLocks.ForSeat(command.SeatId);
 
         var seatLock = await _distributedLock
-            .TryAcquireAsync(resource, LockTtl, cancellationToken)
+            .TryAcquireAsync(resource, SeatLocks.Ttl, cancellationToken)
             .ConfigureAwait(false);
 
         try
@@ -65,14 +59,7 @@ public sealed class ReleaseSeatCommandHandler(
         }
         finally
         {
-            if (seatLock.Token is { } token)
-            {
-                // CancellationToken.None: the write is already done, and a client
-                // that hung up must not be able to strand the lock.
-                await _distributedLock
-                    .ReleaseAsync(resource, token, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
+            await _distributedLock.ReleaseIfHeldAsync(resource, seatLock).ConfigureAwait(false);
         }
     }
 
@@ -118,5 +105,4 @@ public sealed class ReleaseSeatCommandHandler(
         // told, and it is left to propagate rather than be swallowed.
     }
 
-    private static string ResourceFor(Guid seatId) => $"seat:{seatId}";
 }

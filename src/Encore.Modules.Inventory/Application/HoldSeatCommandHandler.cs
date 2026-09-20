@@ -76,13 +76,6 @@ public sealed class HoldSeatCommandHandler(
     public static readonly int MaxHoldsPerClientPerEvent =
         SeatReservationLimits.MaxHoldsPerClientPerEvent;
 
-    /// <summary>
-    /// How long a lock survives if it is never released. Sized to one write
-    /// attempt, never to the business-level hold window: it is a safety net for
-    /// a process that died mid-write, not a booking.
-    /// </summary>
-    private static readonly TimeSpan LockTtl = TimeSpan.FromSeconds(5);
-
     private readonly ISeatRepository _seats = seats;
     private readonly IDistributedLock _distributedLock = distributedLock;
     private readonly TimeProvider _timeProvider = timeProvider;
@@ -99,13 +92,13 @@ public sealed class HoldSeatCommandHandler(
         HoldSeatCommand command,
         CancellationToken cancellationToken = default)
     {
-        var clientResource = ClientResourceFor(command.ClientId, command.EventId);
-        var seatResource = SeatResourceFor(command.SeatId);
+        var clientResource = SeatLocks.ForClient(command.ClientId, command.EventId);
+        var seatResource = SeatLocks.ForSeat(command.SeatId);
 
         // Outer: serialises this client against themselves across the several
         // seats the cap counts.
         var clientLock = await _distributedLock
-            .TryAcquireAsync(clientResource, LockTtl, cancellationToken)
+            .TryAcquireAsync(clientResource, SeatLocks.Ttl, cancellationToken)
             .ConfigureAwait(false);
 
         // Contended means another request by this same client is mid-count for
@@ -122,7 +115,7 @@ public sealed class HoldSeatCommandHandler(
             // Neither contention nor an outage stops the attempt — optimistic
             // concurrency decides.
             var seatLock = await _distributedLock
-                .TryAcquireAsync(seatResource, LockTtl, cancellationToken)
+                .TryAcquireAsync(seatResource, SeatLocks.Ttl, cancellationToken)
                 .ConfigureAwait(false);
 
             try
@@ -135,12 +128,16 @@ public sealed class HoldSeatCommandHandler(
             }
             finally
             {
-                await ReleaseAsync(seatResource, seatLock).ConfigureAwait(false);
+                await _distributedLock
+                    .ReleaseIfHeldAsync(seatResource, seatLock)
+                    .ConfigureAwait(false);
             }
         }
         finally
         {
-            await ReleaseAsync(clientResource, clientLock).ConfigureAwait(false);
+            await _distributedLock
+                .ReleaseIfHeldAsync(clientResource, clientLock)
+                .ConfigureAwait(false);
         }
     }
 
@@ -206,28 +203,4 @@ public sealed class HoldSeatCommandHandler(
         // it to some catch-all response here would hide that until it mattered.
     }
 
-    /// <summary>
-    /// Releases a lock this handler took, if it took one.
-    /// </summary>
-    /// <remarks>
-    /// Deliberately not passed the request's <c>CancellationToken</c>. This runs
-    /// from a <c>finally</c> after the write has already happened, so a client
-    /// that disconnected mid-request would otherwise cancel the release and
-    /// strand the lock — holding every other caller off the seat until the TTL
-    /// expires, on the one path where releasing promptly matters most.
-    /// </remarks>
-    private async Task ReleaseAsync(string resource, LockAcquisition acquisition)
-    {
-        if (acquisition.Token is { } token)
-        {
-            await _distributedLock
-                .ReleaseAsync(resource, token, CancellationToken.None)
-                .ConfigureAwait(false);
-        }
-    }
-
-    private static string SeatResourceFor(Guid seatId) => $"seat:{seatId}";
-
-    private static string ClientResourceFor(Guid clientId, Guid eventId) =>
-        $"client:{clientId}:event:{eventId}";
 }
