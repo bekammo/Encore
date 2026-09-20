@@ -131,11 +131,27 @@ public sealed class Seat
     public IReadOnlyList<IDomainEvent> DomainEvents => _domainEvents;
 
     /// <summary>
-    /// Drops the recorded events. Every caller today is an application handler
-    /// scrubbing a rejected attempt before it retries — not a drain, because
-    /// nothing reads <see cref="DomainEvents"/> yet. Whether the outbox drain
-    /// also calls this when it arrives is open; see <c>DECISIONS.md</c> 008 and 044.
+    /// Drops the recorded events. Called from two places, for two reasons.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The application handlers call it <i>before</i> a transition, scrubbing any
+    /// events a previous rejected attempt left behind so they cannot survive into
+    /// the attempt that succeeds (008).
+    /// </para>
+    /// <para>
+    /// The outbox drain calls it <i>after</i> a successful save, to mark these
+    /// events as written. That second caller is not optional: the context is scoped
+    /// and the drain walks every tracked seat, so a seat left holding its events
+    /// after its own save would have them written again by the next seat's save.
+    /// 044 left this open and 052 closes it.
+    /// </para>
+    /// <para>
+    /// The aggregate does not know about either caller, and deliberately has no
+    /// opinion about when publication happens — it records what it did and lets the
+    /// outside decide what that is worth.
+    /// </para>
+    /// </remarks>
     public void ClearDomainEvents() => _domainEvents.Clear();
 
     /// <summary>

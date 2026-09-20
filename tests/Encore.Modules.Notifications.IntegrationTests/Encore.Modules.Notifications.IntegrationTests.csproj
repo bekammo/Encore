@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Notifications' one enforced rule — one row per delivered message, whatever
+       the outbox does — lives in a unique index, and the handler that relies on it
+       catches a constraint violation by name. Neither can be tested without real
+       Postgres, and no EntityFrameworkCore.InMemory either: it would fake away the
+       guard these tests are here for.
+
+       This is the module's only test project, and the only way to exercise it at
+       all. Notifications serves no routes (see NotificationsModule), so there is no
+       HTTP mapping to unit test and no request anybody can send by hand. DECISIONS
+       033 accepted the same cost for Payments' write side, for the same reason: the
+       interesting behaviour is a unique index, which a hand-sent request would not
+       exercise usefully. -->
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.15.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Encore.Modules.Notifications\Encore.Modules.Notifications.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

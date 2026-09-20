@@ -1,8 +1,10 @@
 using Encore.Modules.Inventory.Adapters.Caching;
 using Encore.Modules.Inventory.Adapters.InProcess;
+using Encore.Modules.Inventory.Adapters.Messaging;
 using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Application;
 using Encore.Modules.Inventory.Contracts;
+using Encore.Modules.Inventory.Contracts.Events;
 using Encore.Modules.Inventory.Endpoints;
 using Encore.Modules.Inventory.Ports;
 using Microsoft.AspNetCore.Routing;
@@ -90,9 +92,55 @@ public static class InventoryModule
             services.AddHostedService<InventoryMigrator>();
         }
 
-        // TODO: the expired-hold sweep (Phase 7) is still to come. The outbox
-        // dispatcher is a Soundcheck concern and is deliberately absent.
+        AddOutbox(services, configuration);
+
+        // TODO: the expired-hold sweep (Phase 7) is still to come.
         return services;
+    }
+
+    /// <summary>
+    /// Registers the outbox: what the published names mean, and the dispatcher that
+    /// delivers them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The catalog is built here rather than discovered.</b> Scanning the assembly
+    /// for handlers or contracts would make the published surface of this module an
+    /// emergent property of what happens to be compiled in, and a typo'd name would
+    /// present as an event that silently never arrives. Three explicit lines say what
+    /// Inventory publishes, and adding a fourth event without one fails at the first
+    /// save that raises it (<c>SeatEventPublication</c>).
+    /// </para>
+    /// <para>
+    /// <b>The drain is not registered anywhere, and that is the design.</b> It lives
+    /// in <c>InventoryDbContext.SaveChanges</c>, so it is on by construction for every
+    /// write this module makes — there is no wiring to forget and no flag that can
+    /// turn off the half of the outbox that has to be atomic. Only delivery is
+    /// optional.
+    /// </para>
+    /// </remarks>
+    private static void AddOutbox(IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(OutboxOptions.SectionName);
+
+        services.Configure<OutboxOptions>(section);
+
+        services.AddSingleton(_ => new OutboxEventCatalog()
+            .Register<SeatHeldV1>(InventoryEventTypes.SeatHeld)
+            .Register<SeatReleasedV1>(InventoryEventTypes.SeatReleased)
+            .Register<SeatSoldV1>(InventoryEventTypes.SeatSold));
+
+        // Read once for the registration decision and bound separately for the
+        // dispatcher's own use. On by default, unlike the migrator directly above:
+        // a migrator that ran by default would rewrite a database as a side effect
+        // of booting, while a dispatcher that did not would silently stop
+        // delivering. Same question, opposite risk, opposite answer.
+        var options = section.Get<OutboxOptions>() ?? new OutboxOptions();
+
+        if (options.Enabled)
+        {
+            services.AddHostedService<OutboxDispatcher>();
+        }
     }
 
     /// <summary>Maps the module's HTTP surface.</summary>

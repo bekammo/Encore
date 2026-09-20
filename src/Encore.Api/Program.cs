@@ -1,5 +1,6 @@
 using Encore.Modules.Catalog;
 using Encore.Modules.Inventory;
+using Encore.Modules.Notifications;
 using Encore.Modules.Orders;
 using Encore.Modules.Payments;
 
@@ -22,10 +23,17 @@ builder.Services.AddProblemDetails();
 // its public face. The host cannot tell which is which, and that is the point.
 // When a module is extracted into its own service later, this is the line that
 // gets deleted — nothing else, and Payments is the one 004 nominated to go first.
+//
+// Notifications has no Map call below, and the asymmetry is deliberate rather
+// than an omission. It serves no routes: its entire inbound surface is a handler
+// that Inventory's outbox dispatcher resolves from this container. The host does
+// not know that, any more than it knows the others have databases — it registers
+// a module and the module says what it is.
 builder.Services
     .AddCatalogModule(builder.Configuration)
     .AddOrdersModule(builder.Configuration)
     .AddPaymentsModule(builder.Configuration)
+    .AddNotificationsModule(builder.Configuration)
     .AddInventoryModule(builder.Configuration);
 
 var app = builder.Build();

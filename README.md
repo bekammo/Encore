@@ -13,6 +13,7 @@ plain, and one is deliberately not:
 | **Catalog** | Flat: `Endpoints` / `Data` / `Models` | Read-mostly CRUD. No contention, no invariants. |
 | **Orders** | Flat: `Endpoints` / `Data` / `Models` | A record of what was bought. The hard parts live elsewhere. |
 | **Payments** | Flat, plus `Simulation/` | A fake gateway that declines and hangs on demand, so the rest of the system has to cope with an unreliable dependency. `Payment` owns a guarded state machine — a factory and no public setters — without any of the layering: `DECISIONS.md` 029. |
+| **Notifications** | Flat: `Models` / `Data`, and no `Endpoints` | The first consumer of a published event, and the only module with no HTTP surface at all — it is reached by Inventory's outbox dispatcher, not by a client. `DECISIONS.md` 055. |
 | **Inventory** | Hexagonal: `Domain` / `Ports` / `Adapters` / `Application` | Seat contention under flash-sale load — the one genuinely hard problem. |
 
 That asymmetry is the argument, not an accident. Architecture is a cost you pay
@@ -32,17 +33,19 @@ Encore.sln
 │   ├── Encore.Modules.Orders               flat CRUD + the checkout
 │   ├── Encore.Modules.Payments             flat, + a state machine and a fake gateway
 │   ├── Encore.Modules.Payments.Contracts   its public face — zero packages, zero refs
+│   ├── Encore.Modules.Notifications        flat, no routes — consumes SeatSoldV1
 │   ├── Encore.Modules.Inventory.Domain     the hexagon's interior — no packages
-│   ├── Encore.Modules.Inventory            ports, adapters, use cases
+│   ├── Encore.Modules.Inventory            ports, adapters, use cases, the outbox
 │   └── Encore.Modules.Inventory.Contracts  its public face — zero packages, zero refs
 └── tests/
     ├── Encore.Modules.Inventory.UnitTests         domain + handlers, in memory
-    ├── Encore.Modules.Inventory.IntegrationTests  adapters, via Testcontainers
+    ├── Encore.Modules.Inventory.IntegrationTests  adapters + the outbox, via Testcontainers
     ├── Encore.Modules.Catalog.IntegrationTests    schema + pricing projection
     ├── Encore.Modules.Orders.UnitTests            the HTTP mapping, no database
     ├── Encore.Modules.Orders.IntegrationTests     checkout, against real Postgres
     ├── Encore.Modules.Payments.UnitTests          the state machine + the gateway
     ├── Encore.Modules.Payments.IntegrationTests   the one-live-attempt index
+    ├── Encore.Modules.Notifications.IntegrationTests  the consumer, and its idempotency
     └── Encore.ArchitectureTests                   the boundaries, over metadata and csprojs
 ```
 
@@ -55,6 +58,10 @@ resolved reference closure, which is the transitive case the first rule cannot
 see. `tests/Encore.ArchitectureTests` asserts the same boundaries again over
 compiled metadata and the declared project graph. EF Core, Redis and ASP.NET Core
 exist only on the far side of the ports.
+
+`Encore.Shared` holds exactly two things, and that is the shape of the rule: `IDomainEvent`,
+and `IIntegrationEventHandler<T>` — how a module is told that something happened elsewhere.
+Both are pure BCL, so the assembly the domain depends on stays as empty as it was.
 
 ## What Inventory actually does
 
@@ -81,6 +88,18 @@ converting a hold is always a single-row write.
   best-effort-plus. If Redis is down a client could exceed it. That asymmetry is
   deliberate: a cap breach is a refund email, an oversell is a customer standing
   outside a sold-out venue.
+- **Events leave through an outbox, in the seat's own transaction.** Every transition
+  a seat makes is drained into `inventory.outbox_messages` by
+  `InventoryDbContext.SaveChanges`, so the sale and the announcement of the sale
+  cannot disagree — they commit together or not at all. A background dispatcher
+  claims rows with `FOR UPDATE SKIP LOCKED`, delivers at-least-once, backs off on
+  failure and dead-letters after five attempts. What crosses the wire is a published
+  contract in `Inventory.Contracts`, never the domain record, so renaming a field in
+  the aggregate cannot break a consumer or a row already written.
+- **Delivery is not load-bearing for anything.** The concurrency tests never register
+  a dispatcher and pass unchanged. That is the same rule the expiry sweep lives under:
+  if a test cannot pass with it disabled, it has become load-bearing and the design is
+  broken.
 
 The claim that matters is tested rather than asserted: fifty clients contend for
 one seat, with no Redis lock anywhere in the test, and exactly one wins.
@@ -180,7 +199,7 @@ not — `DECISIONS.md` 049 records that, and the two ways to close it.
 docker compose run --rm tests
 ```
 
-353 tests: 259 unit and architecture, 94 integration against real Postgres and
+397 tests: 282 unit and architecture, 115 integration against real Postgres and
 Testcontainers.
 
 The suite runs in a container rather than on the host, and that is a host problem
@@ -225,6 +244,38 @@ exist — and **no unexpected responses**, where a 409 is the system working and
 invented before the first measurement is a guess wearing a test's clothing
 (`DECISIONS.md` 048).
 
+### What the outbox cost
+
+This is the measurement 048 built the harness to make possible, and it separates the
+outbox's two halves. `OUTBOX_ENABLED=false` runs the drain without the dispatcher:
+
+```bash
+OUTBOX_ENABLED=false docker compose run --rm --build load
+```
+
+| | hold p99, contention | purchase p99 | iterations |
+|---|---|---|---|
+| Before the outbox (three runs) | 41.1 / 41.9 / 50.2 ms | 44.2 / 55.5 / 60.5 ms | 425,299 |
+| Drain only | 48.4 ms | 57.4 ms | 398,048 |
+| Drain and dispatcher | 78.2 ms | 141.4 ms | 304,071 |
+
+**The half that cannot be turned off is nearly free; the half that can is the whole
+cost.** Writing an outbox row inside every seat transaction lands inside the spread
+three pre-outbox runs produced. Running the dispatcher alongside the API adds 62% to
+hold p99 and 146% to purchase p99 — not because it writes to the hot path, but because
+it puts a second workload on the database the hot path is contending on.
+
+The prediction going in was the opposite, and the refusal counts say why: only about
+15,000 of 304,000 iterations write anything at all, because a refused hold throws
+before it ever reaches a save. The write path was never where the volume was.
+
+**The more important result:** with the dispatcher off, 21,948 events piled up
+undelivered and the run still sold 500 of 500 seats with no oversell. Delivery is late;
+nothing is wrong. That is the same rule the expiry sweep lives under, demonstrated under
+sustained load rather than in a unit test. `DECISIONS.md` 056 has the full numbers and
+the caveats — one laptop, one run per configuration, and a baseline whose own p99 spread
+was 22%.
+
 The knobs are environment variables, because k6 ignores `--vus` when a script
 defines scenarios:
 
@@ -238,9 +289,9 @@ nothing to a reader of the repo.
 
 ## Status
 
-**End of Load-In.** Inventory is complete and proven end to end — aggregate, ports,
-adapters, four use cases, HTTP surface, migrations, and a concurrency test that
-passes. It is the deep module and it is done.
+**Load-In closed; Soundcheck started.** Inventory is complete and proven end to end —
+aggregate, ports, adapters, four use cases, HTTP surface, migrations, a concurrency
+test that passes, and now an outbox. It is the deep module and it is done.
 
 Catalog is implemented and flat: entities, schema, migration and CRUD routes, with
 no layering ceremony anywhere in it. Orders is implemented and flat too, and it is
@@ -256,31 +307,43 @@ is the one of the two that can be given back. A sale that does not complete rele
 the authorisation, so a customer is never charged for an order they did not get.
 Notifications and Identity do not exist.
 
-The honest gap: a gateway call that times out is recorded, not resolved. The attempt
-keeps its idempotency key so a retry asks the same question rather than a second one,
-but nothing yet reconciles an authorisation that may or may not have landed. That
-needs the outbox, which is the next phase (`DECISIONS.md` 031).
+**The outbox is built, and Notifications is the fifth module** (`DECISIONS.md` 051–055).
+Every seat transition is drained into `inventory.outbox_messages` inside the seat's own
+transaction, and a dispatcher delivers it at-least-once. Notifications consumes `SeatSoldV1`
+and is the first module reached by an event rather than by a request — it has no routes, so
+it has an `Add` seam and no `Map` one.
 
-The one piece of a later phase that is here already is the load harness, and it came
-before the outbox on purpose. The outbox writes into the same transaction as every
-seat write, so a baseline taken afterwards could never say what it cost
-(`DECISIONS.md` 048).
+Two of those entries are worth reading before changing anything here. **052** records a
+duplicate-write bug that the design avoids only because the drain clears a seat's events
+after a successful save: the context is scoped, so a four-seat checkout would otherwise
+publish the first seat's hold four times. **051** states the ordering guarantee precisely —
+per transaction, not globally — because an outbox that looks like it orders everything is one
+somebody will trust too far.
 
-Deliberately absent, by roadmap phase rather than oversight: the outbox and the
-expired-hold sweep, MediatR, MassTransit, SignalR, observability and any
+The load harness came before all of it on purpose. The outbox writes into the same
+transaction as every seat write, so a baseline taken afterwards could never say what it cost
+(`DECISIONS.md` 048); three pre-outbox runs establish the spread and **056** records the
+delta.
+
+The honest gap: a gateway call that times out is still recorded rather than resolved. The
+attempt keeps its idempotency key so a retry asks the same question rather than a second one,
+but nothing yet reconciles an authorisation that may or may not have landed. 031 parked that
+behind the outbox, which now exists — so it is unblocked rather than deferred.
+
+Deliberately absent, by roadmap phase rather than oversight: the Strangler Fig extraction of
+Payments, the expired-hold sweep, MediatR, MassTransit, SignalR, observability and any
 deployment story.
 
-Nothing is open inside the phase itself any more. The last gap — `ENCORE001` inspecting
-only direct `PackageReference` items, so infrastructure arriving transitively through a
+Nothing is open inside Load-In. The last gap — `ENCORE001` inspecting only direct
+`PackageReference` items, so infrastructure arriving transitively through a
 `ProjectReference` sailed past it — is closed, along with three others found while
 closing it: framework references went unchecked, and `Encore.Shared` and the contracts
 assemblies had no guard at all despite being where a back-door dependency would actually
-arrive. Everything else on the list above belongs to a later phase, and Payments arriving
-during Load-In rather than at Soundcheck means some of the next one is already banked.
+arrive. Everything else on the list above belongs to a later phase.
 
 | Phase | Weeks | Focus |
 |---|---|---|
-| **Load-In** | 1–3 | Modular monolith, DDD tactical patterns, TDD foundation |
-| Soundcheck | 4–6 | Extract Payments and Notifications via Strangler Fig + Outbox |
+| Load-In | 1–3 | Modular monolith, DDD tactical patterns, TDD foundation |
+| **Soundcheck** | 4–6 | Extract Payments and Notifications via Strangler Fig + Outbox |
 | Showtime | 7–10 | Inventory concurrency, load testing, chaos experiments |
 | On Tour | 11–12+ | Cloud deploy, observability, write-up |

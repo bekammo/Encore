@@ -2331,3 +2331,387 @@ and this entry did not move it.
      single number has to be changed in nine places; and whether /health should say which
      server and version it reached, since "wrong Postgres" and "no Postgres" currently look
      nothing alike but neither is visible until something throws. -->
+
+---
+
+## 051 — The outbox row carries two identities, and promises less than it looks like it does
+
+`inventory.outbox_messages` holds an event's published name, its payload as `jsonb`, and
+the bookkeeping a delivery needs. Two of its columns are identities, and the difference
+between them is most of this entry.
+
+**`Id` is a sequence and orders rows. `MessageId` is a GUID and identifies an event.** They
+are separate because `Id` is not safe to publish and `MessageId` is no use for ordering.
+Postgres assigns `Id` at INSERT while transactions commit in whatever order they finish, so
+two rows can be committed in the opposite order to their ids — which means a consumer
+tracking "the last id I saw" would skip rows written by a transaction that started earlier
+and landed later. That is the classic outbox bug, and it is silent: the skipped event is
+never redelivered, because nothing remembers it was missed.
+
+**So the guarantee this design actually makes is per-transaction.** The events raised by one
+save are inserted together, get consecutive ids, and reach handlers in that order — which is
+exactly the property 007 needs, since a lazy reclaim raises `SeatReleased(Expired)` and
+`SeatHeld` inside one write and the log is worthless if those two arrive the wrong way round.
+Across transactions there is no promise, and the dispatcher sidesteps the question entirely by
+claiming on `ProcessedAt IS NULL` rather than on a high-water mark (053). Writing the limit
+down is the point: an ordering guarantee nobody stated is one somebody will assume is stronger
+than it is.
+
+**All three events are published, not just `SeatSold`.** Only `SeatSold` has a consumer (055),
+so publishing the other two costs an INSERT on the hottest path in the system — a hold under
+contention writes a row every time, and the baseline puts that at roughly 116 holds a second.
+`SeatSold` alone would be materially cheaper. It loses to 007's argument, the same one
+`SeatReleaseReason` was added under: **an append-only log is the one place YAGNI has an
+asymmetric cost.** A consumer can be added later; history cannot. The share of holds that lapse
+rather than convert is the number that says whether five minutes is the right window, and it is
+unanswerable for every hold written before the row existed. The cost is the thing 048 built a
+baseline to measure, so it gets measured rather than argued about (056).
+
+**Processed rows are marked, not deleted.** The table therefore only grows, which is fine for
+inserts and would not be fine for an index over the whole of it — so
+`ix_outbox_messages_unprocessed` is filtered to `"ProcessedAt" IS NULL` and indexes only the
+backlog, which in a healthy system is nearly empty whatever the table's size. Same mechanism as
+`ux_payments_order_live` and `ux_orders_client_event_pending`, used here for cost rather than
+for uniqueness. **A retention sweep is deliberately not built**: nothing here currently has an
+opinion about how long an event is worth keeping, and inventing ninety days now would be the
+same guess wearing a policy's clothing that 048 refused to make about a p99.
+
+**`jsonb` rather than `text`, and it is a real trade rather than a default.** `text` is cheaper
+to write and this is the hot path. `jsonb` wins because a stuck message is diagnosed by querying
+into its payload, and a payload nobody can query is a blob with a timestamp beside it — the
+integration tests already lean on that, scoping their assertions with `JsonContains`. It also
+refuses malformed JSON at the INSERT rather than at the consumer.
+
+**No `xmin`, which every other table here carries.** Those tables have two writers meeting on a
+row. This one does not: the dispatcher claims with `FOR UPDATE SKIP LOCKED`, so a row is handed
+to exactly one reader and a second reader is given a different one. A concurrency token would
+guard a race the claim has already made unreachable.
+
+**`MessageId` is indexed but not unique.** Uniqueness here would be a constraint checked on
+every insert on the hottest write path, guarding against a bug in the drain rather than against
+anything a user can do. The index that has to be unique is the *consumer's*, because that is
+where a duplicate does damage — which is where 055 puts it.
+
+<!-- Expand later: whether the retention sweep should arrive alongside the expired-hold sweep in
+     Phase 7, given both are cleanup jobs whose timing must never be load-bearing; and whether a
+     dead-letter count belongs on /health, since nothing currently surfaces a message that has
+     stopped being retried. -->
+
+---
+
+## 052 — The drain clears on success, and 044 was wrong to call that optional
+
+044 settled that `InventoryDbContext.SaveChanges` owns the drain, and left a question in its
+closing note: "whether the override should also call `ClearDomainEvents()`, given the handlers
+already clear defensively before each attempt". It reads as a tidiness question. It is not.
+**Without it there is a duplicate-write bug reachable from the checkout path that exists
+today.**
+
+**The mechanism.** `InventoryDbContext` is scoped, and a four-seat checkout drives four
+`HoldAsync` calls through one instance of it — 044 says so itself, in the paragraph explaining
+why the repository cannot own the drain. Each handler calls `seat.ClearDomainEvents()` before
+*its own* transition, which scrubs the seat it is about to touch and nothing else. So after seat
+one saves, seat one stays tracked with its `SeatHeld` still on the instance; when seat two
+saves, the drain walks the tracker, finds seat one still holding an event, and writes it again.
+Seat one's hold is published four times, seat two's three times, and so on — ten rows for four
+holds.
+
+**The handlers cannot fix this and it is not their job to.** By the time seat two is being held,
+seat one is somebody else's aggregate as far as that handler is concerned. The component that
+walks every tracked aggregate is the only one positioned to know which ones it has drained —
+which is the argument 044 used to put the drain here rather than in the repository. It simply
+did not follow it one step further.
+
+**After the base call, never before.** A rejected save must leave the events on the instance so
+the retry can re-raise over them, which is what the handlers' defensive clear is for. Clearing
+first would throw away the record of an attempt that never happened and leave the retry
+publishing nothing.
+
+**This is the second half of a pair, and 044 recorded only the first.** It named the hazard that
+stale `Added` outbox rows survive a rejected save into the retry; that one is handled at the top
+of the drain by detaching them. This is its mirror image — events surviving a *successful* save
+into the next one. Both are "state left behind by one save leaking into another", and a drain
+that handles one and not the other is half-built.
+
+`Hold_WhenSeveralSeatsAreHeldOnOneContext_ShouldWriteEachEventExactlyOnce` is the test. Delete
+the clear and it reports ten rows where it wants four.
+
+**047 gets its answer too.** It recorded that `Seat.ClearDomainEvents`'s summary named a drain
+with no caller, and rewrote it to describe the three callers that existed. There are now four,
+the fourth is the one the original sentence was reaching for, and the summary says what each is
+for.
+
+**044 stands as written**, as every entry does. What is corrected is narrower than its argument:
+the question it left open had only one available answer, and calling it open invited somebody to
+answer it the other way.
+
+<!-- Expand later: whether the handlers' defensive clear still earns its place now that the drain
+     clears on success, or whether the retry path could rely on the override alone — they
+     overlap, and the overlap is currently load-bearing in exactly one direction. -->
+
+---
+
+## 053 — The dispatcher: what it claims, what it retries, and the order it deliberately does not keep
+
+`OutboxDispatcher` is the repo's first `BackgroundService`. It polls, claims a batch, delivers
+it, and records what happened.
+
+**`BackgroundService`, not `IHostedLifecycleService`.** The four migrators use the lifecycle
+interface because they must finish before Kestrel opens the socket (013). Nothing here has that
+requirement — a message that waits a second while the host starts has lost nothing — and a loop
+that never ends would block startup forever if it ran in `StartingAsync`.
+
+**`FOR UPDATE SKIP LOCKED`, for a second instance that does not exist yet.** Rows another
+dispatcher holds are passed over rather than waited on, so two hosts drain one table in parallel
+and neither delivers the other's message. There is one host today. This is the cheap half of the
+cloud deploy On Tour wants, and a claim query that could not be run twice would have to be
+rewritten then rather than extended — which is the test 001 sets for whether optionality is
+worth paying for.
+
+**Claimed on `ProcessedAt IS NULL`, never on a high-water mark**, for 051's reason: ids are
+assigned at INSERT and commits do not follow suit, so a cursor skips rows silently. Filtering on
+the column the delivery itself writes cannot.
+
+**Raw SQL, because EF Core cannot express a locking clause** — and the locking clause is the
+entire point of the query. An adapter is where raw SQL belongs; nothing above the port learns
+that this is Postgres. The string is a compile-time constant built from
+`InventoryPersistence.Schema`, so the schema cannot drift out of step and no input reaches it.
+
+**A failing message backs off and lets the queue move past it.** Exponential from two seconds,
+capped at five minutes, and past five attempts the row falls out of the claim predicate entirely
+and sits there as a dead letter — readable, no longer consuming attempts, not deleted.
+
+**The cost of that is stated rather than glossed: a failing message is overtaken.** The
+alternative is blocking the queue behind it, which preserves a global ordering across
+transactions that 051 explains this design never promised, at the price of one bad row stopping
+every good one. Choosing that would be spending a real outage to protect a guarantee nobody has.
+
+**The loop catches everything.** A tick that throws — a database that went away, a claim that
+deadlocked — logs and waits rather than ending the service. An uncaught exception in
+`ExecuteAsync` ends a `BackgroundService` silently and stops delivery for the life of the
+process, which is the one outcome worse than a slow outbox.
+
+**Nothing about seat correctness depends on any of this**, and that is checked rather than
+claimed: `ConcurrentHoldTests`, `ConcurrentSellTests` and `ConcurrentHoldCapTests` never register
+a dispatcher and pass unchanged. It is 007's criterion for the expiry sweep, pointed at
+publication — *if a test cannot pass with it disabled, it has become load-bearing and the design
+is broken.*
+
+**`Inventory:Outbox:Enabled` defaults to true, and the migrator's flag defaults to false.** The
+same question with opposite answers, because the risks are opposite: a migrator that ran by
+default would rewrite a database as a side effect of booting, while a dispatcher that did not run
+by default would silently stop delivering. A default is only safe relative to what goes wrong
+when it is wrong.
+
+**No MediatR, and no reflection either.** `OutboxEventCatalog.Register<T>` closes over the generic
+at registration, so each entry is an ordinary delegate by the time a message arrives and the
+compiler has already checked that the payload type and the handler interface agree. The
+alternative — resolving a `Type` from the row and calling `MakeGenericMethod` — pays for that on
+every message and fails at run time when it is wrong. An unregistered name throws rather than
+being skipped, so a misconfigured event becomes a dead letter somebody can see instead of an
+event that silently never arrives.
+
+<!-- Expand later: whether the poll should become LISTEN/NOTIFY once delivery latency is
+     something anybody measures, and whether a dead-lettered message wants a way back — nothing
+     can currently retry one without an UPDATE by hand. -->
+
+---
+
+## 054 — What crosses the wire is a contract, not a domain record
+
+`SeatHeld` stays in `Inventory.Domain`. `SeatHeldV1` is a new record in `Inventory.Contracts`,
+and `SeatEventPublication` is the one place that maps between them.
+
+**The cheaper design was `JsonSerializer.Serialize(domainEvent)`**, and it is genuinely cheaper:
+three records and a translation method would not exist. It loses because it makes `Seat`'s field
+names a published wire format. Renaming a field inside the aggregate would then be a breaking
+change to every consumer — including rows already sitting in the outbox, which would describe
+fields that no longer exist and could not be read by the code that was meant to read them. That
+is 003's argument, which says a port speaks the module's language and never the adapter's,
+pointed at the payload instead of at a signature.
+
+**This is optionality that will actually be spent, which is the test 001 sets.** Soundcheck
+exists to move a module out of process. The moment Inventory is its own service the payload is a
+genuine contract between two deployables, and the cost of having treated it as one from the
+start is three records.
+
+**The reason enum becomes a string.** An enum crossing a boundary is an integer, and an integer
+means something only while both ends agree on member order — so inserting a member into
+`SeatReleaseReason` would silently re-label every row already written. `"cancelled"` and
+`"expired"` cannot drift that way. Same family of trap as `ux_orders_client_event_pending`
+filtering on the literal `"Status" = 0` (027), and here it is avoidable rather than merely pinned
+by a test.
+
+**The name is chosen, not derived.** `inventory.seat.sold.v1` rather than a CLR type name,
+because a type name drags the namespace and the assembly into the contract, and a repo that
+renames a folder should not break its own consumers. The `.v1` is the versioning story and it is
+deliberately cheap: a breaking payload change gets a new name and a new record beside the old
+one, and the dispatcher carries both until the last consumer moves. Rows already written keep
+meaning what they meant.
+
+**An unmapped domain event throws at the first save that raises it.** A fourth `IDomainEvent`
+with no entry in `SeatEventPublication` fails loudly in development rather than being silently
+dropped — an event raised, never published and gone for good, which is precisely the failure an
+outbox exists to prevent. 008 makes the same call about unhandled refusal reasons: better a loud
+failure now than a plausible wrong answer later.
+
+**The names live in the contracts assembly as `static readonly`, not `const`**, for 020's exact
+reason — a `const` is copied into the consumer at compile time, which is a curiosity in one
+process and a real bug the day this is served over HTTP.
+
+<!-- Expand later: whether the contracts should carry a schema of some kind once a consumer
+     exists that this repo does not compile, and whether a V2 should arrive as a new record or by
+     making V1's fields nullable — the second is cheaper and the first is honest. -->
+
+---
+
+## 055 — Notifications is the fifth module, and the first with nothing to map
+
+A flat module — `Models/`, `Data/`, and no `Endpoints/` — that consumes `SeatSoldV1` and writes a
+row. It is the first consumer of anything this system publishes, and it exists so the dispatcher
+has somewhere to dispatch.
+
+**Why it is here at all, rather than an outbox with no consumer.** 029 refused domain events for
+`Payment` on the grounds that "events with no consumer would be the ceremony 001 argues against".
+The same objection lands on a dispatcher that delivers to nobody: it would be machinery proving
+nothing, and every claim about at-least-once delivery, deduplication and ordering would be
+untestable end to end. One real consumer is the smallest thing that makes the mechanism honest.
+
+**It is flat, and it stays flat.** One handler, one table, no invariant spanning rows, nothing
+that will ever be substituted. `Notification` is a POCO with public setters like `Order`, not a
+factory-constructed state machine like `Payment` — 029's test is whether a type has rules
+decidable from its own row, and this has none. It is written once and never transitions.
+
+**There is no `MapNotificationsModule`, and that asymmetry is the interesting part.**
+`CLAUDE.md` describes the seam as an `Add`/`Map` pair, and this module has only the first half
+because it serves no routes: its entire inbound surface is a handler resolved from the container
+by another module's dispatcher. A `Map` method that mapped nothing would exist to complete a
+pattern rather than to do anything. **Chosen rather than found** — the rule describes four
+modules that all serve HTTP, and this is the first that does not.
+
+**It carries no `FrameworkReference` on `Microsoft.AspNetCore.App` either**, which every other
+module does. It needs `IHostedLifecycleService` for its migrator and `IConfiguration` for its
+connection string, and those are two small abstraction packages; taking the whole web framework
+to get them would put Kestrel and the middleware pipeline on the compile surface of a module that
+will never serve a request.
+
+**The read side is missing on purpose, and this is 033's trigger being honoured rather than
+spent.** A `GET /notifications` is private data, so by 033 it carries `X-Client-Id` — which would
+be the **fourth** copy of `ClientIdEndpointFilter`. 033 named that exact number and named the
+exit: *"a small web-only shared assembly that `Inventory.Domain` does not reference — not a drawer
+in Shared."* Writing the fourth copy anyway would quietly spend a trigger that was recorded
+specifically so it would not be spent quietly, and building the shared assembly in the same change
+as the outbox would be two arguments in one commit. So the route waits, and until then this module
+is exercised the way Payments' write side already is — by integration tests rather than by a
+request anybody can send. 033 accepted that cost explicitly; this is the same cost for the same
+reason.
+
+**Idempotency is a unique index on `MessageId`, and the handler's catch is a courtesy.** Delivery
+is at-least-once, so this module will eventually be handed one event twice. A read-then-write check
+is one that two concurrent deliveries both pass — the same argument 030 makes about
+`ux_payments_order_live`, and `Handle_WhenTwoDeliveriesRace_ShouldRecordOneNotification` is the
+test that would fail if somebody replaced the index with a check. The violation is caught by
+constraint name and narrowly: catching every `DbUpdateException` would file a dropped connection
+under "already handled" and mark a message delivered when it was not, which is the mistake 010
+records the Redis adapter avoiding by translating only two exception types.
+
+**Two timestamps, kept apart.** `OccurredAt` is copied from the event, for 021's reason — this
+module records an answer another module gave, and a second clock reading would be a second
+authority over when the sale happened. `CreatedAt` is read here. The gap between them is the
+outbox's delivery latency, which is the one number this table can report and nothing else in the
+system can.
+
+<!-- Expand later: whether the web-only shared assembly is worth building on its own or should
+     wait until something else wants it too, and whether a notification should carry a rendered
+     message once any channel exists to send one — it currently records that a client should be
+     told something without any opinion about the words. -->
+
+---
+
+## 056 — What the outbox cost, and the half that costs it
+
+048 took a baseline before the outbox so its cost would be a subtraction rather than a
+single unattributable number. This is that subtraction. It also corrects the expectation I
+went in with, which was wrong in an instructive direction.
+
+**Three configurations, same machine, same parameters** (50 VUs on 5 seats for 60s, then
+100 VUs on 500 seats for 60s). Times are milliseconds.
+
+| | hold p99, contention | hold p99, sale | purchase p99 | iterations |
+|---|---|---|---|---|
+| Before the outbox (three runs) | 41.1 / 41.9 / 50.2 | 33.8 / 34.2 / 41.8 | 44.2 / 55.5 / 60.5 | 425,299 |
+| Drain only, dispatcher off | 48.4 | 47.4 | 57.4 | 398,048 |
+| Drain and dispatcher | 78.2 | 66.0 | 141.4 | 304,071 |
+
+**The headline: the half that cannot be turned off is nearly free, and the half that can is
+the whole cost.**
+
+**The drain lands inside the baseline's own spread on two of the three latencies.** Hold p99
+under contention (48.4) and purchase p99 (57.4) both sit within the 41–50 and 44–60 ranges
+three pre-outbox runs produced. Hold p99 on the sale path (47.4) is the exception and sits
+about 13% above the top of its range. Throughput falls about 6%. So writing one extra row
+inside every seat transaction — the thing that makes the sale and the announcement of the
+sale inseparable — costs approximately nothing measurable at this load.
+
+**The dispatcher is where the money goes.** Turning it on moves hold p99 from 48.4 to 78.2
+(+62%), purchase p99 from 57.4 to 141.4 (+146%), and costs 24% of throughput.
+
+**I expected the opposite of what happened, and the wrong prediction is worth recording.**
+Going in, the obvious worry was the INSERT on the hot path: a hold under contention writes a
+row every time, and the baseline puts that at over a hundred holds a second. That turned out
+not to matter, for a reason the refusal counts make obvious in hindsight — **only about
+15,000 of 304,000 iterations write anything at all.** A refused hold throws inside
+`Seat.Hold` before `SaveAsync` is ever reached, so the overwhelming majority of flash-sale
+traffic never touches the drain. The write path was never where the volume was.
+
+**Where it actually goes.** The dispatcher shares one Postgres instance and one connection
+pool with the API, and each delivered message costs three round trips against that shared
+resource: the `SELECT ... FOR UPDATE SKIP LOCKED` claim, the consumer's own INSERT, and the
+UPDATE that marks the row. Fifteen thousand messages over two minutes is not a large number
+in isolation; it is a large number when it is competing with the request path for the
+database the request path is contending on. The outbox did not slow the hot path down by
+writing to it. It slowed it down by putting a second workload next to it.
+
+**What that suggests, and what it does not.** The dispatcher is the tunable half — batch
+size, poll interval, a connection pool of its own, or moving it out of the API process
+entirely, which is where Soundcheck is heading anyway. None of those touch the drain. The
+one thing that must not happen is "optimising" the outbox by weakening the atomicity, since
+the atomicity is the entire product.
+
+**A second result fell out of the same run, and it is the more important one.** With the
+dispatcher off, **21,948 events accumulated undelivered** — and the run still sold 500 of
+500 seats with no oversell and no unexpected response. 007's criterion says that if a test
+cannot pass with the background job disabled, the job has become load-bearing and the design
+is broken. Until now that was demonstrated by unit and integration tests. It is now
+demonstrated under sustained load against a real Kestrel, a real Postgres and a real Redis,
+with a backlog two thousand times the size of anything the tests produce. Delivery is late;
+nothing is wrong.
+
+**Delivery was also complete when it was enabled.** 15,334 rows written, 15,334 processed,
+none pending, none retried, and `notifications.notifications` holding exactly 500 rows for
+exactly 500 seats sold. At roughly 128 events per second against a batch of 50 that loops
+immediately when full, the dispatcher never fell behind — so the backlog stayed empty and
+051's argument for the partial index held rather than being tested.
+
+**`OUTBOX_ENABLED` is now a compose variable**, so this experiment is repeatable rather than
+a thing that happened once. The drain has no equivalent flag and will not get one: turning
+off the half that has to be atomic would not be a measurement, it would be a different
+system.
+
+**What this is not.** One laptop, one run per configuration, no CI. The baseline's own p99
+spread across three identical runs was 22%, which is the right yardstick for how much of any
+single difference to believe — it comfortably covers the drain's numbers and comfortably
+fails to cover the dispatcher's. Treat the first as "no measurable cost" and the second as
+"a real effect whose size is approximate".
+
+**Still no latency threshold, and 048's trigger is met but no longer sufficient.** 048 said
+three runs on one machine would establish the spread and a threshold could then be set just
+outside it. Three runs happened and the spread is known — but there are now three
+configurations of this system rather than one, and an SLO asserted before choosing which one
+ships would be measuring a system nobody has decided to run. The trigger moves: set the
+threshold once the dispatcher's arrangement is settled.
+
+<!-- Expand later: whether the dispatcher wants its own connection pool or its own process,
+     and which of the two the extraction makes free; and whether a run with the dispatcher on
+     but no consumer registered would separate the claim-and-mark cost from the consumer's
+     INSERT, which this pair of runs cannot. -->

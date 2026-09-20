@@ -25,6 +25,7 @@ COPY src/Encore.Shared/Encore.Shared.csproj                                     
 COPY src/Encore.Modules.Catalog/Encore.Modules.Catalog.csproj                         src/Encore.Modules.Catalog/
 COPY src/Encore.Modules.Orders/Encore.Modules.Orders.csproj                           src/Encore.Modules.Orders/
 COPY src/Encore.Modules.Payments/Encore.Modules.Payments.csproj                       src/Encore.Modules.Payments/
+COPY src/Encore.Modules.Notifications/Encore.Modules.Notifications.csproj             src/Encore.Modules.Notifications/
 COPY src/Encore.Modules.Catalog.Contracts/Encore.Modules.Catalog.Contracts.csproj     src/Encore.Modules.Catalog.Contracts/
 COPY src/Encore.Modules.Payments.Contracts/Encore.Modules.Payments.Contracts.csproj   src/Encore.Modules.Payments.Contracts/
 COPY src/Encore.Modules.Inventory/Encore.Modules.Inventory.csproj                     src/Encore.Modules.Inventory/

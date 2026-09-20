@@ -12,8 +12,15 @@
        layer, so it stays internal — but it is also the part most worth testing,
        since it decides ~18 responses and a wrong one is invisible until a client
        hits it. Testing it directly beats standing up a host to infer it. -->
+  <!-- The integration tests reach the outbox's internals for the same reason: the
+       dispatcher and the domain-to-contract translation are implementation details
+       that nothing outside this module may name, and they are also where the
+       at-least-once guarantees actually live. Driving one dispatcher tick directly
+       beats starting a hosted service and waiting, which would make a test about a
+       delivery mechanism fail in exactly the way a broken delivery mechanism does. -->
   <ItemGroup>
     <InternalsVisibleTo Include="Encore.Modules.Inventory.UnitTests" />
+    <InternalsVisibleTo Include="Encore.Modules.Inventory.IntegrationTests" />
   </ItemGroup>
 
   <ItemGroup>
