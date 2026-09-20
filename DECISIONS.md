@@ -1921,3 +1921,60 @@ which component will own the drain when it arrives.
 <!-- Expand later: whether the override should also be where ClearDomainEvents() is called,
      given the handlers already clear defensively before each attempt, and whether a second
      aggregate should arrive with the marker interface rather than after it. -->
+
+---
+
+## 045 — `Payment` gets `Seat`'s two guards
+
+039's closing note asked "whether Payments' own transition methods want the same guard, given
+that `Payment` takes `utcNow` the same way and is protected today only by every caller
+happening to be a handler". They do. `Payment.Create`, `Authorize`, `Decline`, `TimeOut`,
+`Retry`, `Capture` and `Void` now all check `utcNow.Kind`, and `Create` refuses an empty
+`id`, `orderId` or `clientId` the way `Seat.Create` has since 038. `Seat` is untouched.
+
+**This was a documentation bug before it was a code bug.** The class remark on `Payment` has
+said "Time is a parameter, never a reading — as it is for `Seat`" since 029, and the half of
+that sentence after the dash was not true: `Seat` had checked what arrived since 039 and
+`Payment` had not. A comment claiming a guarantee the type does not provide is worse than no
+comment, because it is exactly what a reader checks instead of the code — 041's argument
+about stale open notes, pointed at a class remark. The remark now says what is enforced.
+
+**What the gap actually cost.** Two of the seven methods write their instant to a
+`timestamptz` column, so a non-UTC value reaching those surfaced at the Npgsql boundary as a
+provider error several layers from the caller. The other five write to `AttemptedAt` or
+`ResolvedAt` on a row that may not be saved in the same breath, or to neither — so a `Local`
+instant could be recorded, read back as UTC and quietly misreport when money moved, with
+nothing failing anywhere. That second case is the one worth closing.
+
+**The guard goes before the idempotent return, not after.** `Capture` and `Void` return early
+when they are already in their terminal state. Putting the check after that return would
+report a caller's bad clock only sometimes, depending on state the caller cannot see, which
+is not a precondition so much as a lottery. `Seat.Hold` guards ahead of its own idempotent
+same-client path for the same reason, and two tests pin it here.
+
+**In `Create` the checks read in parameter order**, so the identity guards come first and the
+`utcNow` guard last — while the transition methods guard the instant first, because there it
+is the significant precondition and the state guard follows it. That is `Seat`'s arrangement
+in both places, not a new one.
+
+**The guard method is duplicated, and this one is not 024's kind of duplication.** The
+`ClientIdEndpointFilter` copies cannot be shared because `Encore.Shared` holds zero packages
+and an `IEndpointFilter` would drag `Microsoft.AspNetCore.App` through the door
+`Inventory.Domain` depends on. Nothing like that applies here: the guard is seven lines of
+BCL, and `Encore.Shared` could host it tomorrow. It is duplicated because sharing it means
+changing `Seat`, which this change was scoped out of, and because 019 is clear that Shared
+carries contracts every module agrees on rather than whatever two modules happen to have in
+common. **Chosen rather than found** — no existing rule covers a pure-BCL helper wanted by
+two aggregates, and this picks copying for now. If a third aggregate wants it, that is the
+trigger to promote it next to `IDomainEvent` rather than write it a third time.
+
+**What it costs.** Nothing in production can reach either guard. `InProcessOrderPayments` is
+the only production caller and it takes its instant from
+`TimeProvider.GetUtcNow().UtcDateTime` and its ids from a bound request. The value is
+entirely in the tests, the reconciliation path 031 still needs, and the bulk or seed code
+that does not exist yet — which is 005's "tired teammate" argument and the reason a factory
+is worth having at all.
+
+<!-- Expand later: whether the guard belongs in Encore.Shared beside IDomainEvent once a
+     third caller wants it, and whether Order should get the identity guards too given it is
+     a POCO with public setters and no factory to put them in. -->

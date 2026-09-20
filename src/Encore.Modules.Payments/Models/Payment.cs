@@ -33,7 +33,10 @@ namespace Encore.Modules.Payments.Models;
 /// and they can be added the day the outbox arrives. See 029.
 /// </para>
 /// <para>
-/// Time is a parameter, never a reading — as it is for <c>Seat</c>.
+/// Time is a parameter, never a reading — as it is for <c>Seat</c>, and since
+/// 045 every method that takes one checks that what arrived is UTC, exactly as
+/// <c>Seat</c> has since 039. That sentence used to be a claim about callers;
+/// it is now a precondition of this type.
 /// </para>
 /// </remarks>
 public sealed class Payment
@@ -71,12 +74,19 @@ public sealed class Payment
     /// else through a transition below.
     /// </summary>
     /// <remarks>
-    /// The three guards are argument checks rather than domain refusals: a
-    /// non-positive amount, a currency that is not a three-letter code and a blank
-    /// idempotency key are all incoherent requests rather than states of the
-    /// world, so they throw the BCL exceptions a caller would expect. The values
-    /// arrive from an order that copied them from an event, which validated them
-    /// at the HTTP edge — this is the belt to that's braces, and it is cheap.
+    /// Every guard here is an argument check rather than a domain refusal: an
+    /// empty identity, a non-positive amount, a currency that is not a
+    /// three-letter code, a blank idempotency key and a non-UTC instant are all
+    /// incoherent requests rather than states of the world, so they throw the BCL
+    /// exceptions a caller would expect. The values arrive from an order that
+    /// copied them from an event, which validated them at the HTTP edge — this is
+    /// the belt to that's braces, and it is cheap.
+    /// <para>
+    /// They read in parameter order, which is why the <paramref name="utcNow"/>
+    /// check comes last here while the transition methods guard it first: there,
+    /// it is the significant precondition and the state guard follows it, as in
+    /// <c>Seat</c>.
+    /// </para>
     /// </remarks>
     /// <param name="id">Identity for the attempt, assigned by the caller.</param>
     /// <param name="orderId">The order being paid for.</param>
@@ -97,6 +107,26 @@ public sealed class Payment
         string idempotencyKey,
         DateTime utcNow)
     {
+        // DECISIONS 045, taking 038 to the other factory-constructed type. An
+        // empty Guid is not an identity: an attempt with one cannot be addressed,
+        // an attempt against order Guid.Empty belongs to no order, and one owed by
+        // client Guid.Empty is owed by nobody. All three are states no rule ever
+        // approved, reachable through the one door 029 built to prevent them.
+        if (id == Guid.Empty)
+        {
+            throw new ArgumentException("A payment's id must not be empty.", nameof(id));
+        }
+
+        if (orderId == Guid.Empty)
+        {
+            throw new ArgumentException("A payment must belong to an order.", nameof(orderId));
+        }
+
+        if (clientId == Guid.Empty)
+        {
+            throw new ArgumentException("A payment must be owed by a client.", nameof(clientId));
+        }
+
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(amount);
 
         if (currency is not { Length: 3 })
@@ -110,6 +140,8 @@ public sealed class Payment
             throw new ArgumentException(
                 "An idempotency key is required.", nameof(idempotencyKey));
         }
+
+        GuardUtc(utcNow);
 
         return new Payment(id, orderId, clientId, amount, currency, idempotencyKey, utcNow);
     }
@@ -219,6 +251,7 @@ public sealed class Payment
     public void Authorize(string gatewayReference, DateTime utcNow)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(gatewayReference);
+        GuardUtc(utcNow);
         GuardPending();
 
         Status = PaymentStatus.Authorized;
@@ -232,6 +265,7 @@ public sealed class Payment
     /// <exception cref="PaymentTransitionException">The attempt is no longer pending.</exception>
     public void Decline(DateTime utcNow)
     {
+        GuardUtc(utcNow);
         GuardPending();
 
         Status = PaymentStatus.Declined;
@@ -250,6 +284,7 @@ public sealed class Payment
     /// <exception cref="PaymentTransitionException">The attempt is no longer pending.</exception>
     public void TimeOut(DateTime utcNow)
     {
+        GuardUtc(utcNow);
         GuardPending();
 
         Status = PaymentStatus.TimedOut;
@@ -270,6 +305,8 @@ public sealed class Payment
     /// <exception cref="PaymentTransitionException">The attempt did get an answer.</exception>
     public void Retry(DateTime utcNow)
     {
+        GuardUtc(utcNow);
+
         if (Status is not PaymentStatus.TimedOut)
         {
             throw new PaymentTransitionException(Id, PaymentTransitionReason.NotTimedOut);
@@ -292,6 +329,8 @@ public sealed class Payment
     /// <exception cref="PaymentTransitionException">There is no live authorisation.</exception>
     public void Capture(DateTime utcNow)
     {
+        GuardUtc(utcNow);
+
         if (Status is PaymentStatus.Captured)
         {
             return;
@@ -317,6 +356,8 @@ public sealed class Payment
     /// </exception>
     public void Void(DateTime utcNow)
     {
+        GuardUtc(utcNow);
+
         if (Status is PaymentStatus.Voided)
         {
             return;
@@ -331,6 +372,42 @@ public sealed class Payment
 
         Status = PaymentStatus.Voided;
         ResolvedAt = utcNow;
+    }
+
+    /// <summary>
+    /// Every method that takes the current instant takes it as a parameter, and
+    /// that instant must be UTC. This is where that contract is checked rather
+    /// than assumed. See <c>DECISIONS.md</c> 045, which is 039 applied here.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Here rather than in <c>InProcessOrderPayments</c>.</b> The adapter gets
+    /// its instant from <c>TimeProvider.GetUtcNow().UtcDateTime</c>, which cannot
+    /// return anything else, so a check there would be tautological where it sits
+    /// and would protect nothing from this type's other callers — the unit tests,
+    /// and the reconciliation path 031 still needs. The mistake arrives at the
+    /// aggregate, so the precondition belongs on the methods whose contract it is.
+    /// </para>
+    /// <para>
+    /// <b><see cref="DateTimeKind.Unspecified"/> is refused alongside
+    /// <see cref="DateTimeKind.Local"/>.</b> A wall clock with no zone is a
+    /// different instant in London and in Los Angeles, so quietly reading it as
+    /// UTC would be a guess wearing the costume of a conversion.
+    /// </para>
+    /// <para>
+    /// <see cref="ArgumentException"/>, not <see cref="PaymentTransitionException"/>:
+    /// a non-UTC instant is a bug in the caller, not a refusal about the state of
+    /// the world, and the reason enum is a closed set.
+    /// </para>
+    /// </remarks>
+    private static void GuardUtc(DateTime utcNow)
+    {
+        if (utcNow.Kind is not DateTimeKind.Utc)
+        {
+            throw new ArgumentException(
+                $"utcNow must be a UTC instant; its Kind was {utcNow.Kind}. Time enters this system once, through TimeProvider.GetUtcNow().UtcDateTime.",
+                nameof(utcNow));
+        }
     }
 
     private void GuardPending()

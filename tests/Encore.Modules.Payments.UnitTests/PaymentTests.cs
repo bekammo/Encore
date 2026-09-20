@@ -417,4 +417,180 @@ public class PaymentTests
     [InlineData(PaymentStatus.Voided, false)]
     public void IsLive_ShouldMatchTheIndexFilter(PaymentStatus status, bool expected) =>
         Assert.Equal(expected, InStatus(status).IsLive);
+
+    // -- Identity ---------------------------------------------------------
+
+    /// <summary>
+    /// DECISIONS 045, which is 038 applied to this type. 029's case for the
+    /// factory is that a payment cannot be conjured into a state no rule approved,
+    /// and an empty Guid is exactly such a state reached through that door: an
+    /// attempt with no id cannot be addressed and collides on the primary key with
+    /// the next one, an attempt against no order has nothing to be a payment for,
+    /// and one owed by nobody cannot be scoped to a caller — which is the check
+    /// every read path in this module makes.
+    /// </summary>
+    [Fact]
+    public void Create_WhenIdIsEmpty_ShouldThrow()
+    {
+        var exception = Assert.Throws<ArgumentException>(() =>
+            Payment.Create(Guid.Empty, OrderId, ClientId, Amount, Currency, Key, T0));
+
+        Assert.Equal("id", exception.ParamName);
+    }
+
+    [Fact]
+    public void Create_WhenOrderIdIsEmpty_ShouldThrow()
+    {
+        var exception = Assert.Throws<ArgumentException>(() =>
+            Payment.Create(PaymentId, Guid.Empty, ClientId, Amount, Currency, Key, T0));
+
+        Assert.Equal("orderId", exception.ParamName);
+    }
+
+    [Fact]
+    public void Create_WhenClientIdIsEmpty_ShouldThrow()
+    {
+        var exception = Assert.Throws<ArgumentException>(() =>
+            Payment.Create(PaymentId, OrderId, Guid.Empty, Amount, Currency, Key, T0));
+
+        Assert.Equal("clientId", exception.ParamName);
+    }
+
+    // -- utcNow must be UTC -------------------------------------------------
+
+    /// <summary>
+    /// DECISIONS 045, which is 039 applied to this type. Every method here takes
+    /// the current instant as a parameter, which makes "this is a UTC instant" a
+    /// precondition of each of them rather than a convention upstream.
+    /// <see cref="DateTimeKind.Unspecified"/> is refused alongside
+    /// <see cref="DateTimeKind.Local"/>: a wall clock with no zone is a different
+    /// instant in London and in Los Angeles, so treating it as UTC would be a guess.
+    /// </summary>
+    /// <remarks>
+    /// Before these guards the mistake surfaced at the Npgsql boundary, several
+    /// layers from the caller that made it, as a provider error about a
+    /// timestamptz — and only for the two fields that reach a column. Now it
+    /// surfaces here, naming the parameter.
+    /// </remarks>
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    public void Create_WhenUtcNowIsNotUtc_ShouldThrow(DateTimeKind kind)
+    {
+        var exception = Assert.Throws<ArgumentException>(() =>
+            Payment.Create(PaymentId, OrderId, ClientId, Amount, Currency, Key, NotUtc(kind)));
+
+        Assert.Equal("utcNow", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    public void Authorize_WhenUtcNowIsNotUtc_ShouldThrow(DateTimeKind kind)
+    {
+        var payment = Pending();
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            payment.Authorize(GatewayReference, NotUtc(kind)));
+
+        Assert.Equal("utcNow", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    public void Decline_WhenUtcNowIsNotUtc_ShouldThrow(DateTimeKind kind)
+    {
+        var payment = Pending();
+
+        var exception = Assert.Throws<ArgumentException>(() => payment.Decline(NotUtc(kind)));
+
+        Assert.Equal("utcNow", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    public void TimeOut_WhenUtcNowIsNotUtc_ShouldThrow(DateTimeKind kind)
+    {
+        var payment = Pending();
+
+        var exception = Assert.Throws<ArgumentException>(() => payment.TimeOut(NotUtc(kind)));
+
+        Assert.Equal("utcNow", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    public void Retry_WhenUtcNowIsNotUtc_ShouldThrow(DateTimeKind kind)
+    {
+        var payment = TimedOut();
+
+        var exception = Assert.Throws<ArgumentException>(() => payment.Retry(NotUtc(kind)));
+
+        Assert.Equal("utcNow", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    public void Capture_WhenUtcNowIsNotUtc_ShouldThrow(DateTimeKind kind)
+    {
+        var payment = Authorized();
+
+        var exception = Assert.Throws<ArgumentException>(() => payment.Capture(NotUtc(kind)));
+
+        Assert.Equal("utcNow", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    public void Void_WhenUtcNowIsNotUtc_ShouldThrow(DateTimeKind kind)
+    {
+        var payment = Authorized();
+
+        var exception = Assert.Throws<ArgumentException>(() => payment.Void(NotUtc(kind)));
+
+        Assert.Equal("utcNow", exception.ParamName);
+    }
+
+    /// <summary>
+    /// The two idempotent transitions guard the instant <i>before</i> their early
+    /// return, which is the ordering <c>Seat.Hold</c> uses and the only one worth
+    /// having: a caller passing a local clock has the same bug whether or not the
+    /// attempt happens to be settled already. Guarding after the return would
+    /// report that bug only sometimes, depending on state the caller cannot see.
+    /// </summary>
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    public void Capture_WhenAlreadyCaptured_ShouldStillRejectANonUtcInstant(DateTimeKind kind)
+    {
+        var payment = Captured();
+
+        var exception = Assert.Throws<ArgumentException>(() => payment.Capture(NotUtc(kind)));
+
+        Assert.Equal("utcNow", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    public void Void_WhenAlreadyVoided_ShouldStillRejectANonUtcInstant(DateTimeKind kind)
+    {
+        var payment = Voided();
+
+        var exception = Assert.Throws<ArgumentException>(() => payment.Void(NotUtc(kind)));
+
+        Assert.Equal("utcNow", exception.ParamName);
+    }
+
+    /// <summary>
+    /// The same wall-clock reading as <see cref="Later"/>, wearing the wrong Kind.
+    /// Same numbers, so a test that fails does so because of the Kind and nothing
+    /// else.
+    /// </summary>
+    private static DateTime NotUtc(DateTimeKind kind) => DateTime.SpecifyKind(Later, kind);
 }
