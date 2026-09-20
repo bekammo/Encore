@@ -15,3 +15,8 @@
 docker-compose.yml
 .gitignore
 .gitattributes
+
+# The load harness is mounted into the k6 container at run time and is never built
+# into an image. Its summaries are measurements that grow with every run, and
+# uploading them to the daemon as build context is pure cost.
+load/

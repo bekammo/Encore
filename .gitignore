@@ -27,3 +27,10 @@ appsettings.*.local.json
 ## publish it.
 STATUS_*.md
 CLAUDE.md
+
+## Load testing — the harness ships, its measurements do not.
+##
+## A summary is one machine's numbers on one day. It is worth keeping locally to
+## compare against the next run, and worth nothing to a reader of the repo, who
+## cannot tell it apart from a claim about how the system performs generally.
+load/results/

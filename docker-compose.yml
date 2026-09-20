@@ -76,6 +76,39 @@ services:
       Inventory__MigrateOnStartup: "true"
       Payments__MigrateOnStartup: "true"
 
+  # The load harness. k6 in a container rather than NBomber in a project: this
+  # way the rig adds no PackageReference, no fifth test project and nothing the
+  # ENCORE001-003 rules have to reason about. `docker compose run --rm --build
+  # load` is the whole interface, and it brings postgres, redis and a freshly
+  # built api up on the way — the same shape `tests` already established.
+  #
+  # `--build` is not optional here, for a sharper version of the reason it is not
+  # optional for `tests`. The api image is compiled from source, so a run without
+  # it measures whatever was compiled last time. A stale test run is a false pass;
+  # a stale baseline is worse, because a baseline exists to be compared against
+  # later and a wrong one silently misattributes every change made after it.
+  #
+  # The tag is pinned rather than `latest`. A measurement rig that changes
+  # underneath you between runs cannot answer the question it exists to answer.
+  load:
+    profiles: ["load"]
+    image: grafana/k6:2.2.0
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./load:/scripts:ro
+      # Summaries land here, one JSON file per run, so two runs can be compared
+      # without anyone having kept the terminal output. Gitignored: these are
+      # measurements of one machine on one day, not part of the repo.
+      - ./load/results:/results
+    environment:
+      ENCORE_BASE_URL: "http://api:8080"
+    # The knobs are environment variables rather than flags, because k6 ignores
+    # --vus and --duration when a script defines scenarios, and this one does:
+    #   docker compose run --rm --build -e CONTENTION_VUS=200 load
+    entrypoint: ["k6", "run", "/scripts/flash-sale.js"]
+
   # The test suite, run on Linux rather than on the host. Behind a profile, so
   # `docker compose up -d` still means "just the dependencies" and this never
   # starts by accident; `docker compose run --rm tests` is the whole interface.

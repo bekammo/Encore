@@ -167,6 +167,42 @@ Arguments append, so the usual filters work:
 docker compose run --rm tests --filter "FullyQualifiedName~SeatTests"
 ```
 
+## Running the load test
+
+```bash
+docker compose run --rm --build load
+```
+
+That brings up Postgres, Redis and a freshly built API image, then drives k6 at it
+over HTTP. `--build` is not optional: the API image is compiled from source, and a
+run without it reports last time's binaries as though they were today's.
+
+Two scenarios, one after the other rather than at once, because they answer
+different questions:
+
+| Scenario | Shape | What it shows |
+|---|---|---|
+| `contention` | 50 clients, 5 seats, hold then release immediately | The hot path at full pressure. The pool never drains, so every request meets a seat somebody else wants. |
+| `flash_sale` | 100 clients, 500 seats, hold then purchase | Inventory draining the way it would on sale day, with the refusal mix shifting from `already_held` to `already_sold`. |
+
+Two of its thresholds are assertions rather than reporting, and either one fails
+the run: **no oversell** — successful purchases can never exceed the seats that
+exist — and **no unexpected responses**, where a 409 is the system working and a
+500 or a timeout is not. There is deliberately no latency threshold yet; an SLO
+invented before the first measurement is a guess wearing a test's clothing
+(`DECISIONS.md` 048).
+
+The knobs are environment variables, because k6 ignores `--vus` when a script
+defines scenarios:
+
+```bash
+docker compose run --rm --build -e CONTENTION_VUS=200 -e SALE_SEATS=2000 load
+```
+
+Each run writes a JSON summary to `load/results/`, which is gitignored — one
+laptop's numbers on one day are worth comparing against the next run and worth
+nothing to a reader of the repo.
+
 ## Status
 
 **End of Load-In.** Inventory is complete and proven end to end — aggregate, ports,
@@ -191,6 +227,11 @@ The honest gap: a gateway call that times out is recorded, not resolved. The att
 keeps its idempotency key so a retry asks the same question rather than a second one,
 but nothing yet reconciles an authorisation that may or may not have landed. That
 needs the outbox, which is the next phase (`DECISIONS.md` 031).
+
+The one piece of a later phase that is here already is the load harness, and it came
+before the outbox on purpose. The outbox writes into the same transaction as every
+seat write, so a baseline taken afterwards could never say what it cost
+(`DECISIONS.md` 048).
 
 Deliberately absent, by roadmap phase rather than oversight: the outbox and the
 expired-hold sweep, MediatR, MassTransit, SignalR, observability and any

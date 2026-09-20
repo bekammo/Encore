@@ -2095,3 +2095,92 @@ is merely out of date.
      frozen, now that one of them holds a quotation that no longer matches the tree, and
      whether 044's question about the override calling ClearDomainEvents is better answered
      by the drain not needing it at all. -->
+
+---
+
+## 048 — The load harness arrives before the outbox, and it is k6
+
+Two decisions here: that measurement comes next, ahead of the phase the roadmap says
+is next, and that the thing doing the measuring is a container rather than a project.
+
+**Why before the outbox, which is what Soundcheck actually asks for.** The outbox writes
+rows into the same transaction as every seat write. It lands directly on the hot path —
+the one this project exists to argue about — and it lands there permanently. Measure
+afterwards and there is one number, with no way to say what the outbox cost; measure
+first and the outbox's cost is a subtraction anyone can check. A baseline taken after the
+change it is meant to bracket is not a baseline, and this is the last moment it can be
+taken cheaply. 004 already set the precedent for working out of phase order when the
+ordering is arbitrary and the reason is not: Payments arrived during Load-In because
+Strangler Fig needs something to strangle.
+
+**It also finishes a commit that is already in the tree.** The api image and the `load`
+compose profile were added so "a load harness has something to point at", and until now
+nothing pointed at it. A target with no harness is the same unspent kind of work as a
+purity rule with no test, which is what 036 through 042 spent themselves closing.
+
+**What was actually missing, stated precisely.** `ConcurrentHoldTests` is not weak and is
+not replaced: fifty tasks, one seat, exactly one winner, no Redis lock anywhere in the
+test, so it proves correctness rests on `xmin` alone. What it cannot say is what the hold
+path *costs*. There is no number anywhere in this repo — not a p99, not a throughput
+figure, not the point where the Redis lock stops reducing contention and starts being
+another round trip. The claim the project leads with was, until this entry, entirely
+qualitative.
+
+**k6 over NBomber, and the reason is the purity rules rather than taste.** NBomber is the
+.NET answer and would have been the more natural-looking choice in a C# repo. It also
+means a fifth test project, a `PackageReference`, and a new assembly that
+`Encore.ArchitectureTests` and `ENCORE001`-`003` now have to have an opinion about — a
+load harness is not domain code, not a module, and not a test project, so every existing
+rule would need a carve-out written for it. k6 in a container needs none of that: the
+script is not in the solution, not in the build, and not in the reference graph. The cost
+is a second language in the repo for one file, and that the harness can only reach the
+system over HTTP. The second is not really a cost. The deployed surface is the only
+surface a real flash sale can touch, and a harness that could call `HoldSeatCommandHandler`
+directly would be measuring something no customer can reach.
+
+**One threshold is an assertion; the rest are declarations.** `seats_sold` counts 200s
+from `/purchase`, and the threshold is `count<=SALE_SEATS`. That is the oversell
+invariant, expressed where it has never been expressed before — under sustained load
+against a real Kestrel, a real Postgres and a real Redis rather than against fifty tasks
+in one process. If it ever trips, k6 exits non-zero and the run fails, exactly as a unit
+test would. `unexpected_responses==0` is the second real assertion: a 500 or a timeout is
+a fault, while a 409 is the system working. Everything else in the `thresholds` block is
+`>=0` and always passes — k6 only surfaces a tagged submetric in the summary if a
+threshold names it, so those lines exist to make the refusal breakdown and the per-phase
+latency visible, and they assert nothing.
+
+**The counter is a count of distinct seats only because of how the script is written**,
+which is worth recording because it is load-bearing and invisible. Re-purchasing a seat
+you already bought is an idempotent success (007), so a client that retried would be
+counted twice and could fake an oversell. Every iteration therefore uses a client id
+nobody else uses, buys at most once, and retries nothing.
+
+**No latency threshold, deliberately.** There is no p99 target here, because inventing one
+before the first run would mean either a number so loose it can never fail or a number
+that fails for reasons nobody can interpret. An SLO asserted before a measurement is a
+guess wearing a test's clothing. **The trigger for adding one:** three runs on the same
+machine with the same parameters, at which point the spread is known and a threshold set
+just outside it means something.
+
+**Two scenarios, sequenced rather than simultaneous.** `contention` puts every client on
+five seats and releases immediately, so the pool never drains and pressure stays at
+maximum for the whole window — the hot-path number. `flash_sale` puts them on a real seat
+map and buys, so inventory drains and the refusal mix shifts from `already_held` to
+`already_sold` the way it would on sale day. Run together, neither latency figure could be
+attributed to either shape, so the second starts five seconds after the first ends.
+
+**Scoped out on purpose: the order path.** `POST /orders` and `/confirm` are the fuller
+flash sale, and they are also where the simulated gateway's declines and timeouts live
+(032). Mixing a fake gateway's latency into the first seat-contention baseline would
+produce a number that measures the simulation. That scenario is the obvious next one, and
+it wants the baseline this entry establishes before it is worth running.
+
+**The summaries are gitignored.** One machine, one day, no CI to produce them consistently
+— published in the repo they would read as a claim about how the system performs, which
+is not a claim a laptop can make. The harness ships; the numbers stay local until there is
+somewhere honest to run them.
+
+<!-- Expand later: whether the p99 threshold should be set from the first three runs or
+     wait for CI to produce them on consistent hardware, and whether the order-path
+     scenario belongs in this same script or in a second one given it measures a different
+     system. -->
