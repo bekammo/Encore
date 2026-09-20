@@ -130,7 +130,12 @@ public sealed class Seat
     /// <summary>Events raised by transitions on this aggregate, in order.</summary>
     public IReadOnlyList<IDomainEvent> DomainEvents => _domainEvents;
 
-    /// <summary>Drops the recorded events once they have been handed to the outbox.</summary>
+    /// <summary>
+    /// Drops the recorded events. Every caller today is an application handler
+    /// scrubbing a rejected attempt before it retries — not a drain, because
+    /// nothing reads <see cref="DomainEvents"/> yet. Whether the outbox drain
+    /// also calls this when it arrives is open; see <c>DECISIONS.md</c> 008 and 044.
+    /// </summary>
     public void ClearDomainEvents() => _domainEvents.Clear();
 
     /// <summary>

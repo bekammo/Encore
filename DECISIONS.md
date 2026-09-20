@@ -2042,3 +2042,56 @@ behaviour. Left alone, deliberately.
 <!-- Expand later: whether the expired-hold sweep should take a seat lock at all when it
      arrives, given it writes rows nobody is contending for by definition, and whether
      SeatLocks is where a per-resource TTL would go if the sweep wants a longer one. -->
+
+---
+
+## 047 — Correcting 045, and the summary that described a drain nobody wrote
+
+Two statements went into the tree describing things that are not in it. Neither is a bug —
+no behaviour changes here, and only one comment moves — but both are the kind of note that
+sends a reader looking for a counterpart that was never written, which is the failure 041
+argued is worse than having no note at all.
+
+**`ClearDomainEvents` was documented as the drain's method, and the drain has no caller.**
+`Seat.ClearDomainEvents` read *"Drops the recorded events once they have been handed to the
+outbox."* Nothing has ever handed them anywhere. Every call site is an application handler
+scrubbing a rejected attempt *before* its transition — the discipline 008 introduced and 044
+describes at length — so the summary named the one caller that does not exist and omitted
+the three that do. Whoever wrote the drain against that sentence would have gone looking for
+an existing post-save call to join, found none, and had to re-derive the timing from the
+handlers anyway. The summary now says what the callers actually do, and records the outbox's
+use of it as open rather than as settled.
+
+**This does not close 044's note, which asked a different question.** 044 left open whether
+the override should *also* call `ClearDomainEvents` once the drain exists, given the handlers
+already clear defensively before each attempt. That is still open and still worth asking.
+What is settled is narrower: the summary was describing a timing that no code uses.
+
+**045 claimed a `Seat` arrangement in two places where `Seat` only has one.** It says the
+identity guards coming before the `utcNow` guard in `Payment.Create`, and the `utcNow` guard
+coming first in the transition methods, are together *"`Seat`'s arrangement in both places,
+not a new one."* The transitions half is exactly right: `Seat.Hold`, `Release` and `Sell` all
+guard the instant, then the state. The factory half has nothing to mirror — `Seat.Create(Guid
+id, Guid eventId)` takes no clock at all, so there is no ordering there to copy. The rule
+`Payment.Create` actually follows is parameter order, which is a good rule and the one the
+code comment gives. **045 stands as written, as every entry does**; this is the entry saying
+that one clause of it cites a precedent the file does not contain.
+
+**No code changed for that second one, and that is the part worth recording.** The comment in
+`Payment.Create` was checked and is accurate: its "as in `Seat`" attaches to the clause about
+the transition methods, not to the factory, so it claims only the thing that is true. The
+overclaim is in this log's summary of the change, not in the change. Editing the code to
+match a wrong entry would have been the worse of the two available mistakes, and the reflex
+to do it is exactly what an append-only log has to be read carefully enough to resist.
+
+**The dated audit snapshot is left alone.** `STATUS_2026-09-18.md` quotes the
+`EfSeatRepository` TODO that 044 deleted, and cites line numbers that have since moved. It is
+a snapshot with a date in its name, and a snapshot that gets corrected stops being a record
+of what was true on its date. Left stale deliberately — but the convention is worth stating
+once, because nothing in the repo currently distinguishes a file that is frozen from one that
+is merely out of date.
+
+<!-- Expand later: whether dated snapshot files want a one-line header declaring themselves
+     frozen, now that one of them holds a quotation that no longer matches the tree, and
+     whether 044's question about the override calling ClearDomainEvents is better answered
+     by the drain not needing it at all. -->
