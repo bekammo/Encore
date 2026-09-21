@@ -158,19 +158,45 @@ public class AssemblyReferenceTests
     /// The host owns no business logic and talks to no database. DECISIONS 014 and
     /// 017 both partly rest on this, and <c>Program.cs</c> states it in a comment.
     /// </summary>
-    [Fact]
-    public void Host_ShouldNameNoPersistenceOrCacheAssembly()
+    [Theory]
+    [InlineData("Encore.Api")]
+    [InlineData("Encore.Payments.Api")]
+    public void Host_ShouldNameNoPersistenceOrCacheAssembly(string host)
     {
         string[] forbidden = ["Microsoft.EntityFrameworkCore", "Npgsql", "StackExchange.Redis"];
 
         var leaked = EncoreTree
-            .ReferencedNames("Encore.Api")
+            .ReferencedNames(host)
             .Where(name => forbidden.Any(prefix => name.StartsWith(prefix, StringComparison.Ordinal)))
             .ToList();
 
         Assert.True(
             leaked.Count == 0,
-            $"Encore.Api composes modules and runs the web server; persistence and caching belong behind a module's seam. Found: {string.Join(", ", leaked)}");
+            $"{host} composes modules and runs the web server; persistence and caching belong behind a module's seam. Found: {string.Join(", ", leaked)}");
+    }
+
+    /// <summary>
+    /// The host list and the projects that actually are hosts agree.
+    /// </summary>
+    /// <remarks>
+    /// The theories above are hand-written lists, and DECISIONS 061 added a second
+    /// host to every one of them. A third would inherit none of these rules silently,
+    /// so this reads the Web SDK out of the csprojs and fails when the two disagree
+    /// in either direction.
+    /// </remarks>
+    [Fact]
+    public void TheHostListShouldMatchTheProjectsUsingTheWebSdk()
+    {
+        var webProjects = EncoreTree.SourceProjects()
+            .Where(project => string.Equals(
+                (string?)project.Value.Root?.Attribute("Sdk"),
+                "Microsoft.NET.Sdk.Web",
+                StringComparison.Ordinal))
+            .Select(project => project.Key)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+
+        Assert.Equal(EncoreTree.Hosts.Order(StringComparer.Ordinal), webProjects);
     }
 
     /// <summary>

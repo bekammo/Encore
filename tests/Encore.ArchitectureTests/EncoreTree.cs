@@ -37,6 +37,7 @@ internal static class EncoreTree
     internal static readonly string[] AllAssemblies =
     [
         "Encore.Api",
+        "Encore.Payments.Api",
         "Encore.Shared",
         "Encore.Modules.Catalog",
         "Encore.Modules.Catalog.Contracts",
@@ -52,6 +53,21 @@ internal static class EncoreTree
 
     /// <summary>The shared persistence building block. DECISIONS 058.</summary>
     internal const string SharedPersistence = "Encore.Modules.Shared.Persistence";
+
+    /// <summary>
+    /// Every host. Two since DECISIONS 061 extracted Payments, and the rules about
+    /// hosts are rules about all of them.
+    /// </summary>
+    /// <remarks>
+    /// A list rather than the string <c>"Encore.Api"</c> spelled into each test,
+    /// because the failure mode of the old spelling is silent: a second host
+    /// inherits none of the first one's rules and nothing says so.
+    /// </remarks>
+    internal static readonly string[] Hosts =
+    [
+        "Encore.Api",
+        "Encore.Payments.Api"
+    ];
 
     /// <summary>
     /// The projects allowed the BCL and nothing else — the five that declare

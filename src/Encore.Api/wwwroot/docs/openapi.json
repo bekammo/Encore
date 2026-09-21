@@ -13,7 +13,8 @@
     { "name": "catalog", "description": "Venues and events. Read-mostly CRUD, public, no client identity." },
     { "name": "inventory", "description": "Seats. The contended module: hold, release, purchase." },
     { "name": "orders", "description": "Checkout. Prices through Catalog, holds through Inventory, charges through Payments." },
-    { "name": "payments", "description": "Read-only. Orders drives payment, because Orders knows what is owed." }
+    { "name": "payments", "description": "Read-only. Orders drives payment, because Orders knows what is owed." },
+    { "name": "payments-service", "description": "Service-to-service only. Orders calls these when Payments runs as its own process; no customer can reach them. DECISIONS 061." }
   ],
   "components": {
     "securitySchemes": {
@@ -22,6 +23,12 @@
         "in": "header",
         "name": "X-Client-Id",
         "description": "A GUID identifying the calling client. NOT authentication — it is unverified and anyone may change it. Paste any GUID here to try the seat, order and payment routes."
+      },
+      "ServiceToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Service-Token",
+        "description": "The shared secret between Orders and Payments. This one IS authentication, and it is the only thing guarding a call that can move money. Not a customer credential — the /internal routes take no X-Client-Id at all."
       }
     },
     "schemas": {
@@ -153,11 +160,44 @@
           "attemptedAt": { "type": "string", "format": "date-time" },
           "resolvedAt": { "type": ["string", "null"], "format": "date-time" }
         }
+      },
+      "AuthorizeAttemptRequest": {
+        "type": "object",
+        "description": "What Orders sends to open or reuse an authorisation. The client id is in the body rather than a header: the caller is Orders reporting a fact about the order, not a customer asserting who it is.",
+        "required": ["orderId", "clientId", "amount", "currency"],
+        "properties": {
+          "orderId": { "type": "string", "format": "uuid" },
+          "clientId": { "type": "string", "format": "uuid" },
+          "amount": { "type": "number" },
+          "currency": { "type": "string", "description": "ISO 4217." }
+        }
+      },
+      "OrderAttemptRequest": {
+        "type": "object",
+        "description": "Keyed by order rather than by payment, because IOrderPayments is: the module owns which attempt an order currently means, and the one-live-attempt index picks it out.",
+        "required": ["orderId", "clientId"],
+        "properties": {
+          "orderId": { "type": "string", "format": "uuid" },
+          "clientId": { "type": "string", "format": "uuid" }
+        }
+      },
+      "PaymentOutcomeResponse": {
+        "type": "object",
+        "description": "A successful service call. Branch on `outcome`, never on the status code — several statuses share a code, and the string is the half that is one-to-one with the contract vocabulary.",
+        "required": ["outcome", "paymentId"],
+        "properties": {
+          "outcome": { "type": "string", "enum": ["authorized", "already_captured", "captured", "voided"] },
+          "paymentId": { "type": "string", "format": "uuid" }
+        }
       }
     },
     "responses": {
       "BadClientId": {
         "description": "The X-Client-Id header is missing or is not a GUID. No `reason`: the request is malformed rather than refused.",
+        "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
+      },
+      "BadServiceToken": {
+        "description": "The X-Service-Token header is missing, malformed or wrong. One refusal for all three, with `reason` service_token_invalid: telling an unauthenticated caller which of those it got tells it how to get closer.",
         "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
       }
     },
@@ -400,6 +440,52 @@
         "responses": {
           "200": { "description": "Every attempt against that order, including superseded ones.", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/PaymentResponse" } } } } },
           "400": { "$ref": "#/components/responses/BadClientId" }
+        }
+      }
+    },
+    "/internal/payments/authorize": {
+      "post": {
+        "tags": ["payments-service"],
+        "summary": "Opens or reuses this order's authorisation.",
+        "description": "Idempotent per order: a repeat for an order that already has a live attempt returns that attempt rather than opening a second one, which is what makes a retry after a dropped response safe. Requires X-Service-Token; carries no X-Client-Id.",
+        "security": [{ "ServiceToken": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AuthorizeAttemptRequest" } } } },
+        "responses": {
+          "200": { "description": "authorized, or already_captured.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentOutcomeResponse" } } } },
+          "401": { "$ref": "#/components/responses/BadServiceToken" },
+          "402": { "description": "declined.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "409": { "description": "concurrent_attempt_in_flight.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "504": { "description": "timed_out. The attempt is recorded and the reconciler will settle it.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/internal/payments/capture": {
+      "post": {
+        "tags": ["payments-service"],
+        "summary": "Takes the funds this order's attempt is holding.",
+        "description": "Idempotent: capturing an already-captured attempt answers captured rather than failing.",
+        "security": [{ "ServiceToken": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderAttemptRequest" } } } },
+        "responses": {
+          "200": { "description": "captured.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentOutcomeResponse" } } } },
+          "401": { "$ref": "#/components/responses/BadServiceToken" },
+          "409": { "description": "no_authorization.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "504": { "description": "timed_out. The order is left awaiting capture and the next confirm resolves it.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/internal/payments/void": {
+      "post": {
+        "tags": ["payments-service"],
+        "summary": "Releases what this order's attempt is holding.",
+        "description": "Idempotent: voiding an already-voided attempt answers no_authorization rather than failing. A captured attempt refuses, because the money has already moved.",
+        "security": [{ "ServiceToken": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderAttemptRequest" } } } },
+        "responses": {
+          "200": { "description": "voided.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentOutcomeResponse" } } } },
+          "401": { "$ref": "#/components/responses/BadServiceToken" },
+          "409": { "description": "already_captured, or no_authorization.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "504": { "description": "timed_out.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
         }
       }
     }

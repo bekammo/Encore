@@ -66,6 +66,7 @@ a superseding entry gets added instead.
 - [058](#058--five-copied-migrators-become-one-and-the-project-that-may-not-name-a-module) — Five copied migrators become one, and the project that may not name a module
 - [059](#059--the-hand-written-openapi-document-gets-the-test-049-asked-for) — The hand-written OpenAPI document gets the test 049 asked for
 - [060](#060--the-log-gets-an-index-and-the-index-gets-a-test) — The log gets an index, and the index gets a test
+- [061](#061--payments-becomes-a-service-and-033-survives-it) — Payments becomes a service, and 033 survives it
 
 ---
 
@@ -3090,3 +3091,115 @@ reads the real tree, and failed in the container with `FileNotFoundException:
 So `!DECISIONS.md` un-ignores it and `tests/Dockerfile` copies it in — last, on its own line,
 because it changes on almost every commit and that is the cheapest layer to invalidate. The
 `api` image does not get it: the host does not read the log.
+
+---
+
+## 061 — Payments becomes a service, and 033 survives it
+
+Soundcheck's remaining outcome. Payments now runs as its own host, and Orders reaches
+it over HTTP through the same `IOrderPayments` it was already calling through the
+container. The interface did not change. Nothing inside Payments changed. That is the
+claim the modular monolith has been making since 001, and this is the entry where it
+either held or it did not.
+
+**The seam was already written for this, and that is most of why it was cheap.**
+`IOrderPayments` is keyed by order rather than by payment, so the caller never held an
+id that only made sense in the other process. The idempotency that makes a retry safe
+comes from the one-live-attempt index and from reusing the row, not from anything the
+caller remembers — so `AuthorizeAsync` called twice for an order answers with the same
+attempt whether it crossed a process boundary or not. And `TimedOut` already existed,
+because a gateway can fail to answer; the vocabulary for "this may or may not have
+happened" was in the contract before there was a network to need it.
+
+### 033 is not reversed, and the distinction is the whole design
+
+033 refused a `POST /payments` because **a client that can charge itself has walked
+around the order flow entirely.** It could authorise money against an order it does not
+own, or against no order at all, and Payments has no principled way to refuse because it
+does not know what a checkout is.
+
+That argument is about a *customer*, and it is untouched. What the extraction needs is a
+*service* surface, and the two are kept apart by four things rather than by intent:
+
+- A separate seam. `MapPaymentsServiceApi` is not called by `MapPaymentsModule`, so a
+  host has to ask for the write side by name.
+- A separate path. `/internal/payments/*`, which is one rule for an ingress to refuse.
+- A different credential. These routes carry no `X-Client-Id` at all; they carry
+  `X-Service-Token`, and `ServiceTokenEndpointFilter` refuses anything else with a 401.
+  A caller holding a client id and nothing else gets 401, and
+  `PaymentServiceEndpointsTests` asserts exactly that.
+- No default. `MapPaymentsServiceApi` throws at startup when `Payments:ServiceToken` is
+  unset, because a token with a fallback is a token everybody has and the failure mode
+  is an open authorise endpoint.
+
+**A shared secret is the floor.** There is no Identity module, so this is what is
+available. It is compared in fixed time, and it is the seam that gets replaced when
+Identity arrives or when the deployment grows mTLS — the routes do not change. Calling
+it good enough forever would be wrong; calling it insufficient to start would have
+meant blocking this phase on a later one.
+
+### The caller branches on `reason`, never on the status code
+
+Several statuses share a code — 409 covers both a lost race and a missing authorisation
+— so the codes are for proxies and humans and the string is the half that is one-to-one
+with the contract's vocabulary. Successes carry `outcome` in a plain body; refusals carry
+`reason` in problem+json, which is the shape 049 gave every refusal in this codebase.
+Two suites pin the two ends: `HttpOrderPaymentsTests` that the adapter reads these
+bodies, `PaymentServiceEndpointsTests` that the endpoints emit them. Neither is worth
+much alone.
+
+**An unreadable answer is a timeout.** A 502, a truncated body, an outcome string this
+version does not know, a connection refused, a service that never replies — all of them
+become `TimedOut`. That is not a shrug. It is the one status whose handling is already
+correct for "the money may or may not be held": the order stays `Pending`, no seat is
+sold, and the next confirm asks again under the same key. `Declined` would be a guess
+that loses a sale; `Authorized` would be a guess that sells seats against funds nobody
+holds. The one failure deliberately **not** mapped this way is a rejected token, which
+throws — it is configuration, it will not fix itself by being retried, and every
+subsequent call fails identically, so the first one should say so loudly.
+
+### What the extraction does not do yet
+
+**The database did not move.** `payments-api` owns the same `payments` schema in the same
+Postgres. The process boundary moved; the data boundary did not. Splitting it is a
+separate change with its own decision, and doing both at once would leave neither
+reviewable — the interesting failure in this one is a wire format, and the interesting
+failure in that one is a migration.
+
+**The reconciler must run in exactly one process, and nothing enforces that.** Two sweeps
+over one table would both ask the gateway about the same timed-out attempt, and 057's
+argument is that the answer is acted on exactly once. Today that is a compose setting —
+`Payments__Reconciliation__Enabled` is true on `payments-api` and false on
+`api-strangled` — and a comment. It wants a real lease before anything runs twice for
+real.
+
+**No Polly, and not as an oversight.** A retry policy in the adapter would be actively
+wrong: `CheckoutService` already treats a timeout as a state rather than as a failure, and
+a transparent retry would turn one ambiguous answer into several without telling anyone.
+The client's timeout is the whole policy.
+
+**Both arrangements still run.** `docker compose --profile load up` is the monolith,
+unchanged; `--profile strangled up` is the pair. That is deliberate and it is what makes
+the next measurement possible — 056's format applied to a third configuration, which is
+the obvious next piece of work and is not in this entry.
+
+### Two hosts now, and the rules noticed
+
+`Encore.Payments.Api` composes one module and holds no packages of its own, exactly as
+`Encore.Api` does. Three architecture tests were spelling `"Encore.Api"` into themselves
+and would have let a second host inherit none of the first one's rules silently; they now
+read `EncoreTree.Hosts`, and `TheHostListShouldMatchTheProjectsUsingTheWebSdk` fails when
+that list and the csprojs disagree. A fourth test says hosts may not reference each other:
+they meet over HTTP and at no other point, which is the difference between a Strangler Fig
+and a mess.
+
+**059 earned its keep during this change.** The service group was first written as
+`MapGroup(Prefix)` with a constant, which its route reader cannot resolve — so the three
+routes were being compared as `/authorize` rather than `/internal/payments/authorize`, and
+the drift test would have passed while documenting nothing. Its fourth test, the one that
+counts registrations against readable registrations, caught it. The prefix is now a
+literal and `PaymentsServiceApiTests` pins it against the constant the client is given.
+
+<!-- Expand later: whether the payments schema moves to its own database and what that
+     does to the reconciler's lease; whether the service token survives Identity or is
+     replaced by it; and what the third load configuration measures. -->

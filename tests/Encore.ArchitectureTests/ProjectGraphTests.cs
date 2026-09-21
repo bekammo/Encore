@@ -141,17 +141,42 @@ public class ProjectGraphTests
     /// dependency and an ordering edge are different things, and only the first
     /// is what this rule forbids.
     /// </remarks>
-    [Fact]
-    public void NoProjectShouldDeclareAProjectReferenceToTheHost()
+    [Theory]
+    [InlineData("Encore.Api")]
+    [InlineData("Encore.Payments.Api")]
+    public void NoProjectShouldDeclareAProjectReferenceToAHost(string host)
     {
         var offenders = EncoreTree.SourceProjects()
-            .Where(project => EncoreTree.DeclaredProjectReferences(project.Value).Contains("Encore.Api"))
+            .Where(project => EncoreTree.DeclaredProjectReferences(project.Value).Contains(host))
             .Select(project => project.Key)
             .ToList();
 
         Assert.True(
             offenders.Count == 0,
-            $"The host composes the modules; nothing may depend on it. Found: {string.Join(", ", offenders)}");
+            $"A host composes modules; nothing may depend on one. Found a reference to {host} from: {string.Join(", ", offenders)}");
+    }
+
+    /// <summary>
+    /// A host composes modules; it does not compose another host. DECISIONS 061.
+    /// </summary>
+    /// <remarks>
+    /// The Payments host and the monolith both serve Payments, and the thing that
+    /// makes that a Strangler Fig rather than a mess is that neither knows the other
+    /// exists. They meet over HTTP and at no other point.
+    /// </remarks>
+    [Fact]
+    public void NoHostShouldReferenceAnotherHost()
+    {
+        var offenders = EncoreTree.Hosts
+            .SelectMany(host => EncoreTree
+                .Hosts
+                .Where(other => other != host && Declared(host).Contains(other))
+                .Select(other => $"{host} -> {other}"))
+            .ToList();
+
+        Assert.True(
+            offenders.Count == 0,
+            $"Hosts meet over HTTP, not through the project graph. Found: {string.Join(", ", offenders)}");
     }
 
     private static IReadOnlyList<string> Declared(string project)

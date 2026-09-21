@@ -27,6 +27,7 @@ expect to be challenged, is in [DECISIONS.md](DECISIONS.md).
 Encore.sln
 ├── src/
 │   ├── Encore.Api                          ASP.NET Core minimal API host
+│   ├── Encore.Payments.Api                 the Payments service — one module, its own process
 │   ├── Encore.Shared                       cross-cutting contracts, zero packages
 │   ├── Encore.Modules.Shared.Persistence   startup migrator + schema wiring, names no module
 │   ├── Encore.Modules.Catalog              flat CRUD
@@ -349,9 +350,27 @@ means Payments getting an outbox of its own, and it collides with 027's choice t
 order by the next confirm rather than by a background job — two arguments that deserve their own
 change rather than a ride inside this one.
 
-Deliberately absent, by roadmap phase rather than oversight: the Strangler Fig extraction of
-Payments, the expired-hold sweep, MediatR, MassTransit, SignalR, observability and any
-deployment story.
+**Payments is extracted** (`DECISIONS.md` 061), which closes Soundcheck's remaining outcome.
+It runs as its own host, `Encore.Payments.Api`, and Orders reaches it over HTTP through the
+same `IOrderPayments` it was already calling through the container — the interface did not
+change and nothing inside Payments changed, which is the claim the modular monolith has been
+making since 001. Two settings do the strangling: `Orders:Payments:BaseAddress` makes Orders
+resolve the HTTP adapter instead of the in-process one, and `Orders:Payments:ServiceToken`
+hands it the credential the service demands.
+
+The write side reached this way is a separate seam on a separate path with a different
+credential — `/internal/payments/*`, guarded by `X-Service-Token` and mounted only by
+`MapPaymentsServiceApi`. That is what keeps 033 true: it refused a customer-facing write
+surface because a client that can charge itself has walked around the order flow, and a
+caller holding a client id still gets a 401 here. Both arrangements run side by side:
+`docker compose --profile load up` is the monolith, `--profile strangled up` is the pair.
+
+Two things the extraction deliberately did not do. The `payments` schema did not move — the
+process boundary went first and the data boundary is its own change. And the reconciler must
+run in exactly one process, which is a compose setting today rather than a lease.
+
+Deliberately absent, by roadmap phase rather than oversight: the expired-hold sweep, MediatR,
+MassTransit, SignalR, observability and any deployment story.
 
 Nothing is open inside Load-In. The last gap — `ENCORE001` inspecting only direct
 `PackageReference` items, so infrastructure arriving transitively through a

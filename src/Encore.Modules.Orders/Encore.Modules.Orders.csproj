@@ -40,6 +40,11 @@
     <InternalsVisibleTo Include="Encore.Modules.Orders.IntegrationTests" />
   </ItemGroup>
 
+  <!-- No PackageReference for IHttpClientFactory, and that is worth a line. The
+       adapter that talks to Payments once it is its own service (DECISIONS 061) uses
+       a typed client, and Microsoft.Extensions.Http ships inside the ASP.NET Core
+       shared framework this module already references. Adding it explicitly is an
+       NU1510 build error, not a redundancy the SDK tolerates. -->
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.4">

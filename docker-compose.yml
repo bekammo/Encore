@@ -113,6 +113,79 @@ services:
       # cannot switch it off cannot demonstrate that. DECISIONS 057.
       Payments__Reconciliation__Enabled: "${RECONCILER_ENABLED:-true}"
 
+  # Payments as its own process. DECISIONS 061.
+  #
+  # Behind the `strangled` profile, so `docker compose --profile load up` still
+  # brings up the monolith exactly as it was and the extraction costs an existing
+  # workflow nothing. `docker compose --profile strangled up -d --wait` brings up
+  # this service and an `api` pointed at it.
+  #
+  # It owns the same `payments` schema in the same database, and that is honest
+  # about where this phase has got to: the process boundary moved first, the data
+  # boundary has not. Splitting the database is a separate change with its own
+  # decision to record, and doing both at once would leave neither reviewable.
+  payments-api:
+    profiles: ["strangled"]
+    build:
+      context: .
+      dockerfile: src/Encore.Payments.Api/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+    environment:
+      ConnectionStrings__Payments: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      Payments__MigrateOnStartup: "true"
+      # The only thing guarding a call that can move money. A compose file is not a
+      # secret store and this value is not a secret — it is a local development
+      # token, checked in on purpose so that `up` works, and the mechanism it
+      # exercises is the one that matters. A deployment supplies its own.
+      Payments__ServiceToken: "${PAYMENTS_SERVICE_TOKEN:-local-development-token}"
+      # This process owns the reconciler, and it is the only one that may. Two
+      # sweeps over one table would both ask the gateway about the same timed-out
+      # attempt, and DECISIONS 057's whole argument is that the answer is acted on
+      # exactly once. The `api-strangled` service below turns its own off.
+      Payments__Reconciliation__Enabled: "true"
+
+  # The monolith with Payments cut out of it. Same image as `api`, different
+  # configuration — which is the claim the Strangler Fig makes and the reason this
+  # is a second service rather than an edit to the first: both arrangements have to
+  # be runnable side by side to be compared.
+  api-strangled:
+    profiles: ["strangled"]
+    build:
+      context: .
+      dockerfile: src/Encore.Api/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      payments-api:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      ConnectionStrings__Catalog: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      ConnectionStrings__Orders: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      ConnectionStrings__Inventory: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      ConnectionStrings__Payments: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      ConnectionStrings__Notifications: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      ConnectionStrings__Redis: "redis:6379"
+      Catalog__MigrateOnStartup: "true"
+      Orders__MigrateOnStartup: "true"
+      Inventory__MigrateOnStartup: "true"
+      Payments__MigrateOnStartup: "false"
+      Notifications__MigrateOnStartup: "true"
+      Inventory__Outbox__Enabled: "${OUTBOX_ENABLED:-true}"
+      # The two settings that do the strangling. The first makes Orders resolve
+      # HttpOrderPayments instead of the in-process adapter; the second hands it the
+      # token the service will demand.
+      Orders__Payments__BaseAddress: "http://payments-api:8080/internal/payments"
+      Orders__Payments__ServiceToken: "${PAYMENTS_SERVICE_TOKEN:-local-development-token}"
+      # Off here, on in payments-api. See the note there.
+      Payments__Reconciliation__Enabled: "false"
   # The load harness. k6 in a container rather than NBomber in a project: this
   # way the rig adds no PackageReference, no fifth test project and nothing the
   # ENCORE001-003 rules have to reason about. `docker compose run --rm --build

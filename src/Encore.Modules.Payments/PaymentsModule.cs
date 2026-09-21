@@ -88,10 +88,53 @@ public static class PaymentsModule
         }
     }
 
-    /// <summary>Maps the module's HTTP surface.</summary>
+    /// <summary>Maps the module's customer-facing HTTP surface.</summary>
+    /// <remarks>
+    /// Read-only, and deliberately so: DECISIONS 033. The write side is
+    /// <see cref="MapPaymentsServiceApi"/>, which this does not call and which no
+    /// customer can reach.
+    /// </remarks>
     public static IEndpointRouteBuilder MapPaymentsModule(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapPaymentEndpoints();
+        return endpoints;
+    }
+
+    /// <summary>
+    /// Maps the service API that Orders calls when Payments is out of process.
+    /// DECISIONS 061.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A second seam rather than a flag on the first, because the two surfaces have
+    /// different audiences and different authentication, and a host should have to
+    /// say which of them it is opening. The Payments host calls both; the monolith
+    /// calls only <see cref="MapPaymentsModule"/> unless it is deliberately standing
+    /// in for the Payments service.
+    /// </para>
+    /// <para>
+    /// <b>Missing configuration throws rather than defaults.</b> A service token with
+    /// a fallback value is a service token everybody has, and the failure mode of
+    /// getting this wrong is an open authorise endpoint. Refusing to start is the
+    /// cheapest possible way to find out.
+    /// </para>
+    /// </remarks>
+    public static IEndpointRouteBuilder MapPaymentsServiceApi(
+        this IEndpointRouteBuilder endpoints,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        var token = configuration["Payments:ServiceToken"];
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            throw new InvalidOperationException(
+                "Payments:ServiceToken must be set to map the Payments service API. "
+                + "It is the only thing authenticating a call that can move money.");
+        }
+
+        endpoints.MapPaymentServiceEndpoints(token);
         return endpoints;
     }
 }
