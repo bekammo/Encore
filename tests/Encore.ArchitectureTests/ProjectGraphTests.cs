@@ -65,6 +65,72 @@ public class ProjectGraphTests
     }
 
     /// <summary>
+    /// The shared persistence project declares no <c>ProjectReference</c> at all.
+    /// DECISIONS 058.
+    /// </summary>
+    /// <remarks>
+    /// The load-bearing half of 058. This project carries EF Core and Npgsql
+    /// deliberately, so every edge <i>out</i> of it is a route by which those
+    /// arrive somewhere they are forbidden. Zero outbound edges is what makes the
+    /// direction of the dependency a fact rather than a habit.
+    /// </remarks>
+    [Fact]
+    public void SharedPersistence_ShouldDeclareNoProjectReference()
+    {
+        var references = Declared(EncoreTree.SharedPersistence);
+
+        Assert.True(
+            references.Count == 0,
+            $"{EncoreTree.SharedPersistence} must declare zero ProjectReference items — modules name it, it names nothing. Found: {string.Join(", ", references)}");
+    }
+
+    /// <summary>
+    /// Nothing zero-dependency may reference the shared persistence project.
+    /// DECISIONS 058.
+    /// </summary>
+    /// <remarks>
+    /// The other half of the same rule, asserted from the far end. It matters most
+    /// for <c>Encore.Shared</c>: that is <c>Encore.Modules.Inventory.Domain</c>'s
+    /// only <c>ProjectReference</c>, so EF Core arriving there arrives on the
+    /// Domain's compile surface. ENCORE003 would catch it at build time; this says
+    /// which rule was broken and why, rather than leaving a reader to work out what
+    /// <c>Npgsql</c> is doing in a closure listing.
+    /// </remarks>
+    [Theory]
+    [InlineData("Encore.Shared")]
+    [InlineData("Encore.Modules.Catalog.Contracts")]
+    [InlineData("Encore.Modules.Inventory.Contracts")]
+    [InlineData("Encore.Modules.Payments.Contracts")]
+    [InlineData("Encore.Modules.Inventory.Domain")]
+    public void ZeroDependencyProject_ShouldNotReferenceSharedPersistence(string project)
+    {
+        Assert.DoesNotContain(EncoreTree.SharedPersistence, Declared(project));
+    }
+
+    /// <summary>
+    /// The set the previous theory covers is the set that actually opts in.
+    /// </summary>
+    /// <remarks>
+    /// A theory over a hand-written list stops being a rule the moment a sixth
+    /// project declares <c>EncoreZeroDependency</c> and nobody adds a row. This
+    /// reads the property out of the csprojs and fails when the two disagree, in
+    /// both directions.
+    /// </remarks>
+    [Fact]
+    public void TheZeroDependencyListShouldMatchTheProjectsThatDeclareIt()
+    {
+        var declaring = EncoreTree.SourceProjects()
+            .Where(project => project.Value
+                .Descendants("EncoreZeroDependency")
+                .Any(element => string.Equals(element.Value.Trim(), "true", StringComparison.OrdinalIgnoreCase)))
+            .Select(project => project.Key)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+
+        Assert.Equal(EncoreTree.ZeroDependencyProjects.Order(StringComparer.Ordinal), declaring);
+    }
+
+    /// <summary>
     /// Nothing under <c>src/</c> may depend on the host.
     /// </summary>
     /// <remarks>

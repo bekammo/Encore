@@ -12,6 +12,13 @@
 
 # Not source, and no reason to rebuild the image when they change.
 *.md
+
+# Except this one, which stopped being documentation and became an input.
+# DECISIONS 060 gave the log an index and a test that compares the two, so the
+# suite reads DECISIONS.md at run time and the test image has to contain it.
+# Without this line the four DecisionLogTests fail in the container with
+# FileNotFoundException while passing on the host, which reads the real tree.
+!DECISIONS.md
 docker-compose.yml
 .gitignore
 .gitattributes

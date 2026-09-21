@@ -49,4 +49,13 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
+  <!-- The startup migrator and the Npgsql/history-table wiring, shared since
+       DECISIONS 058. The edge runs this way and only this way: a module names
+       this project, and this project names nothing at all — least of all a
+       module. It carries EF Core and Npgsql on purpose, which is exactly why
+       nothing zero-dependency is allowed to reach it. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Encore.Modules.Shared.Persistence\Encore.Modules.Shared.Persistence.csproj" />
+  </ItemGroup>
+
 </Project>

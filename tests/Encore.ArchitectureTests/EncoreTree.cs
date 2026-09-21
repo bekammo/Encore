@@ -46,6 +46,29 @@ internal static class EncoreTree
         "Encore.Modules.Payments.Contracts",
         "Encore.Modules.Inventory",
         "Encore.Modules.Inventory.Contracts",
+        "Encore.Modules.Inventory.Domain",
+        "Encore.Modules.Shared.Persistence"
+    ];
+
+    /// <summary>The shared persistence building block. DECISIONS 058.</summary>
+    internal const string SharedPersistence = "Encore.Modules.Shared.Persistence";
+
+    /// <summary>
+    /// The projects allowed the BCL and nothing else — the five that declare
+    /// <c>EncoreZeroDependency</c> in their csproj.
+    /// </summary>
+    /// <remarks>
+    /// Named as a set because DECISIONS 058 turns on them as one: none may reach
+    /// <see cref="SharedPersistence"/>, which carries EF Core and Npgsql on
+    /// purpose. <c>Encore.Shared</c> is the one that matters most, being the
+    /// Domain's only <c>ProjectReference</c> and therefore the back door.
+    /// </remarks>
+    internal static readonly string[] ZeroDependencyProjects =
+    [
+        "Encore.Shared",
+        "Encore.Modules.Catalog.Contracts",
+        "Encore.Modules.Inventory.Contracts",
+        "Encore.Modules.Payments.Contracts",
         "Encore.Modules.Inventory.Domain"
     ];
 

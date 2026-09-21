@@ -1,18 +1,27 @@
+using Encore.Modules.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Payments.Data;
 
 /// <summary>
-/// The one place that says how a <see cref="PaymentsDbContext"/> is wired to
-/// Postgres. The twin of <c>OrdersPersistence</c>, and for the same reason.
+/// The one place that says how a <see cref="PaymentsDbContext"/> is wired to Postgres.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Three callers must agree — the module's DI registration, the design-time
 /// factory <c>dotnet ef</c> uses, and the integration tests — and what they must
 /// agree about most is the migrations history table. A disagreement there is the
 /// nastiest kind available: each would read a different table to decide which
 /// migrations had been applied, so the tooling and the running app would hold
 /// different beliefs about the schema and neither would report an error.
+/// </para>
+/// <para>
+/// Since DECISIONS 058 the <i>shape</i> of that wiring lives in
+/// <see cref="ModulePersistence"/> and this type keeps the two things that are
+/// Payments' own: the schema name and the vocabulary its callers use. The schema
+/// is the one thing in the old copied code that was never inert, which is why it
+/// stays declared here rather than becoming a row in a table somewhere else.
+/// </para>
 /// </remarks>
 public static class PaymentsPersistence
 {
@@ -25,9 +34,7 @@ public static class PaymentsPersistence
     public static DbContextOptionsBuilder UsePaymentsNpgsql(
         this DbContextOptionsBuilder builder,
         string connectionString) =>
-        builder.UseNpgsql(
-            connectionString,
-            npgsql => npgsql.MigrationsHistoryTable("__EFMigrationsHistory", Schema));
+        builder.UseModuleNpgsql(connectionString, Schema);
 
     /// <summary>
     /// The typed overload, so callers building a
@@ -37,9 +44,6 @@ public static class PaymentsPersistence
     public static DbContextOptionsBuilder<TContext> UsePaymentsNpgsql<TContext>(
         this DbContextOptionsBuilder<TContext> builder,
         string connectionString)
-        where TContext : DbContext
-    {
-        ((DbContextOptionsBuilder)builder).UsePaymentsNpgsql(connectionString);
-        return builder;
-    }
+        where TContext : DbContext =>
+        builder.UseModuleNpgsql(connectionString, Schema);
 }

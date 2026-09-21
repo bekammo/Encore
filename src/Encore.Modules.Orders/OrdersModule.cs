@@ -1,5 +1,6 @@
 using Encore.Modules.Orders.Data;
 using Encore.Modules.Orders.Endpoints;
+using Encore.Modules.Shared.Persistence;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,7 +37,7 @@ public static class OrdersModule
         // Off unless asked for, exactly as the other modules. See DECISIONS 013.
         if (configuration.GetValue<bool>("Orders:MigrateOnStartup"))
         {
-            services.AddHostedService<OrdersMigrator>();
+            services.AddModuleMigrator<OrdersDbContext>("Orders");
         }
 
         return services;

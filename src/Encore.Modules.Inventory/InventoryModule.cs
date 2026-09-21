@@ -7,6 +7,7 @@ using Encore.Modules.Inventory.Contracts;
 using Encore.Modules.Inventory.Contracts.Events;
 using Encore.Modules.Inventory.Endpoints;
 using Encore.Modules.Inventory.Ports;
+using Encore.Modules.Shared.Persistence;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -89,7 +90,7 @@ public static class InventoryModule
         // environment this is happens to be the host's business, not Inventory's.
         if (configuration.GetValue<bool>("Inventory:MigrateOnStartup"))
         {
-            services.AddHostedService<InventoryMigrator>();
+            services.AddModuleMigrator<InventoryDbContext>("Inventory");
         }
 
         AddOutbox(services, configuration);

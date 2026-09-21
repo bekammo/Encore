@@ -4,6 +4,69 @@ An append-only log of the choices in Encore that are worth defending, and the
 reasoning at the time. Entries are not rewritten when circumstances change —
 a superseding entry gets added instead.
 
+## Index
+
+- [001](#001--why-inventory-is-hexagonal-and-the-other-modules-arent) — Why Inventory is hexagonal and the other modules aren't
+- [002](#002--inventorys-domain-is-its-own-project-not-a-folder) — Inventory's domain is its own project, not a folder
+- [003](#003--ports-speak-the-modules-language-never-the-adapters) — Ports speak the module's language, never the adapter's
+- [004](#004--orders-and-payments-are-real-modules-not-permanent-stubs) — Orders and Payments are real modules, not permanent stubs
+- [005](#005--aggregates-are-constructed-by-factory-never-by-public-constructor) — Aggregates are constructed by factory, never by public constructor
+- [006](#006--the-hold-cap-is-a-policy-not-an-invariant) — The hold cap is a policy, not an invariant
+- [007](#007--the-seat-state-machine) — The seat state machine
+- [008](#008--refusals-are-return-values-not-exceptions-above-the-aggregate) — Refusals are return values, not exceptions, above the aggregate
+- [009](#009--the-repository-defeats-efs-identity-map-on-reload) — The repository defeats EF's identity map on reload
+- [010](#010--a-lock-that-can-say-i-dont-know-and-two-locks-with-different-authority) — A lock that can say "I don't know", and two locks with different authority
+- [011](#011--every-seat-command-carries-its-event-id-checked-and-never-trusted) — Every seat command carries its event id, checked and never trusted
+- [012](#012--seats-are-created-in-bulk-by-a-use-case-with-generated-ids) — Seats are created in bulk, by a use case, with generated ids
+- [013](#013--migrations-are-explicit-by-default-and-automatic-only-in-development) — Migrations are explicit by default and automatic only in development
+- [014](#014--inventorys-http-surface-actions-one-status-rule-and-a-claimed-identity) — Inventory's HTTP surface: actions, one status rule, and a claimed identity
+- [015](#015--the-test-suite-runs-in-a-container-because-the-host-will-not-run-it) — The test suite runs in a container, because the host will not run it
+- [016](#016--money-is-a-decimal-and-a-currency-code-not-a-value-object) — Money is a decimal and a currency code, not a value object
+- [017](#017--one-migrator-per-module-not-one-step-in-the-host) — One migrator per module, not one step in the host
+- [018](#018--catalogs-http-surface-and-two-rules-it-settles-for-everyone) — Catalog's HTTP surface, and two rules it settles for everyone
+- [019](#019--catalog-gets-a-contracts-assembly-too-and-why-that-is-not-ceremony) — Catalog gets a contracts assembly too, and why that is not ceremony
+- [020](#020--the-contracts-assembly-may-carry-one-number) — The contracts assembly may carry one number
+- [021](#021--the-order-state-model-and-who-is-allowed-to-decide-an-order-has-expired) — The order state model, and who is allowed to decide an order has expired
+- [022](#022--orders-http-surface-and-the-service-that-has-no-port) — Orders' HTTP surface, and the service that has no port
+- [023](#023--a-partial-checkout-writes-nothing-releases-nothing-and-tells-you-everything) — A partial checkout writes nothing, releases nothing, and tells you everything
+- [024](#024--the-client-id-filter-is-copied-into-orders-not-shared) — The client id filter is copied into Orders, not shared
+- [025](#025--a-repeated-seat-id-is-refused-not-de-duplicated) — A repeated seat id is refused, not de-duplicated
+- [026](#026--the-on-sale-gate-and-why-sales-stay-open-after-the-show-starts) — The on-sale gate, and why sales stay open after the show starts
+- [027](#027--payments-arrives-and-what-that-changes-about-everything-else) — Payments arrives, and what that changes about everything else
+- [028](#028--authorise-sell-capture--and-void-when-the-sale-does-not-complete) — Authorise, sell, capture — and void when the sale does not complete
+- [029](#029--payment-has-a-state-machine-and-stays-in-a-flat-module) — `Payment` has a state machine, and stays in a flat module
+- [030](#030--one-live-attempt-per-order-and-what-live-means) — One live attempt per order, and what "live" means
+- [031](#031--a-timed-out-gateway-call-is-recorded-not-resolved) — A timed-out gateway call is recorded, not resolved
+- [032](#032--the-simulated-gateway-and-one-simplification-worth-admitting) — The simulated gateway, and one simplification worth admitting
+- [033](#033--payments-http-surface-is-read-only) — Payments' HTTP surface is read-only
+- [034](#034--cancelling-releases-the-seats) — Cancelling releases the seats
+- [035](#035--the-working-agreement-changes-build-first-explain-after) — The working agreement changes: build first, explain after
+- [036](#036--load-ins-last-gap-the-purity-guard-becomes-three-rules-in-one-file) — Load-In's last gap: the purity guard becomes three rules in one file
+- [037](#037--the-architecture-test-and-why-it-has-no-architecture-test-library) — The architecture test, and why it has no architecture-test library
+- [038](#038--seatcreate-rejects-an-empty-id) — `Seat.Create` rejects an empty id
+- [039](#039--utcnow-must-be-utc-and-the-aggregate-is-where-that-is-checked) — `utcNow` must be UTC, and the aggregate is where that is checked
+- [040](#040--the-expiry-boundary-the-reclaim-edge-and-what-a-no-op-release-leaves-behind) — The expiry boundary, the reclaim edge, and what a no-op release leaves behind
+- [041](#041--correcting-007-sell-already-tells-a-non-holder-the-truth) — Correcting 007: `Sell` already tells a non-holder the truth
+- [042](#042--xmin-leaves-the-three-migrations) — `xmin` leaves the three migrations
+- [043](#043--load-in-is-closed) — Load-In is closed
+- [044](#044--the-outbox-drain-belongs-to-the-unit-of-work-not-to-the-repository) — The outbox drain belongs to the unit of work, not to the repository
+- [045](#045--payment-gets-seats-two-guards) — `Payment` gets `Seat`'s two guards
+- [046](#046--the-three-seat-handlers-share-one-lock-vocabulary) — The three seat handlers share one lock vocabulary
+- [047](#047--correcting-045-and-the-summary-that-described-a-drain-nobody-wrote) — Correcting 045, and the summary that described a drain nobody wrote
+- [048](#048--the-load-harness-arrives-before-the-outbox-and-it-is-k6) — The load harness arrives before the outbox, and it is k6
+- [049](#049--correcting-014s-one-shape-and-an-openapi-document-that-is-not-a-package) — Correcting 014's "one shape", and an OpenAPI document that is not a package
+- [050](#050--the-host-side-postgres-port-moves-to-55432) — The host-side Postgres port moves to 55432
+- [051](#051--the-outbox-row-carries-two-identities-and-promises-less-than-it-looks-like-it-does) — The outbox row carries two identities, and promises less than it looks like it does
+- [052](#052--the-drain-clears-on-success-and-044-was-wrong-to-call-that-optional) — The drain clears on success, and 044 was wrong to call that optional
+- [053](#053--the-dispatcher-what-it-claims-what-it-retries-and-the-order-it-deliberately-does-not-keep) — The dispatcher: what it claims, what it retries, and the order it deliberately does not keep
+- [054](#054--what-crosses-the-wire-is-a-contract-not-a-domain-record) — What crosses the wire is a contract, not a domain record
+- [055](#055--notifications-is-the-fifth-module-and-the-first-with-nothing-to-map) — Notifications is the fifth module, and the first with nothing to map
+- [056](#056--what-the-outbox-cost-and-the-half-that-costs-it) — What the outbox cost, and the half that costs it
+- [057](#057--reconciliation-the-gateway-is-asked-what-it-did-and-a-timeout-stops-being-permanent) — Reconciliation: the gateway is asked what it did, and a timeout stops being permanent
+- [058](#058--five-copied-migrators-become-one-and-the-project-that-may-not-name-a-module) — Five copied migrators become one, and the project that may not name a module
+- [059](#059--the-hand-written-openapi-document-gets-the-test-049-asked-for) — The hand-written OpenAPI document gets the test 049 asked for
+- [060](#060--the-log-gets-an-index-and-the-index-gets-a-test) — The log gets an index, and the index gets a test
+
 ---
 
 ## 001 — Why Inventory is hexagonal and the other modules aren't
@@ -2902,3 +2965,128 @@ and `ReferenceFor` is deliberately one-way.
      Orders some other way, which is the 029/027 pair above; and whether a reconciled hold should
      ever be captured rather than voided, which only becomes a question if some future path can
      time out an authorisation after seats are already sold. -->
+
+---
+
+## 058 — Five copied migrators become one, and the project that may not name a module
+
+017 accepted about sixty duplicated lines per module — the startup migrator, the
+Npgsql/history-table wiring — on a specific and good argument: the code is inert, it
+does not change, and "a bug in one copy cannot be a bug in another". The alternative
+on the table then was a host-level migration step, which would have to name every
+module's context and so would put EF Core into `Encore.Api`, costing it the
+zero-package property it keeps on purpose. Refusing that was right.
+
+What 017 did not separate is that *sharing an implementation* and *sharing a step* are
+two different things, and only the second was the one it objected to. `ModuleMigrator<TContext>`
+shares the first and not the second. Each module still registers its own instance, over
+its own context, behind its own `{Module}:MigrateOnStartup` flag, and carries it away
+when it is extracted. Nothing moved into the host, which still does not know that a
+module has a database.
+
+**The type parameter is the whole of the change.** What differed between the five copies
+was the context type and a string in a log message; both are now arguments. That is
+what makes this different from a drawer: the shared code has no module's name in it, and
+cannot acquire one without the test below going red.
+
+**Three rules, each asserted rather than asked for.**
+
+- It may **name no module and no `.Contracts` assembly**
+  (`AssemblyReferenceTests.SharedPersistence_ShouldNameNoModuleOrContractsAssembly`). This
+  is 017's strongest objection, kept answered. The day this assembly names `Catalog`, the
+  argument for its existence has gone whatever the code looks like.
+- It declares **no `ProjectReference` at all**, and **nothing zero-dependency may reference
+  it** (`ProjectGraphTests.SharedPersistence_ShouldDeclareNoProjectReference` and
+  `ZeroDependencyProject_ShouldNotReferenceSharedPersistence`). It carries EF Core and
+  Npgsql on purpose, so every edge out of it is a route by which those reach somewhere they
+  are forbidden. `Encore.Shared` is the one that matters: it is the Domain's only
+  `ProjectReference`, so EF Core arriving there arrives on the Domain's compile surface.
+  ENCORE003 would catch that at build time; this names the rule that was broken instead of
+  leaving a reader to work out what `Npgsql` is doing in a closure listing.
+- The host still does not name it
+  (`AssemblyReferenceTests.Host_ShouldNotNameTheSharedPersistenceAssembly`), which is 017's
+  refusal of a host-level step, still standing.
+
+The theory over the zero-dependency list is itself checked against the csprojs
+(`TheZeroDependencyListShouldMatchTheProjectsThatDeclareIt`), because a theory over a
+hand-written list stops being a rule the moment a sixth project opts in and nobody adds a
+row.
+
+**A module keeps its own vocabulary.** Catalog still exposes `UseCatalogNpgsql` and still
+declares the string `"catalog"`. Only the shape moved. The schema name is the one thing in
+the copied code that was never inert, and leaving it where the module declares it keeps a
+module's schema a fact about that module rather than a row in a table somewhere else.
+
+**This is not a licence to create a sibling.** The test for a candidate is still 017's, with
+one clause added: the code has to be inert, *and* sharing it must not require the shared
+project to learn a module's name. `ClientIdEndpointFilter` fails the second and stays copied
+three times (024), as does anything carrying a module's vocabulary — a result mapper, an
+endpoint filter, a request pipeline. This supersedes 017 on this one point and leaves the
+rest of it standing.
+
+**No `FrameworkReference` on it, deliberately.** Notifications has no routes and pays no web
+framework to get `IHostedLifecycleService` (055); a project every module references is the
+last place to hand one back. The hosting abstractions are all this needs.
+
+---
+
+## 059 — The hand-written OpenAPI document gets the test 049 asked for
+
+049 chose to maintain `src/Encore.Api/wwwroot/docs/openapi.json` by hand rather than
+reintroduce Swashbuckle or `Microsoft.AspNetCore.OpenApi`, which 014 had refused, and was
+explicit that this had a real cost: nothing fails when a route changes and the document does
+not. That cost is now paid by a test rather than by a reader noticing.
+
+`OpenApiDocumentTests` reads the mapped routes out of the endpoint sources — resolving
+`MapGroup` prefixes so a group's children are compared at their full paths — and the
+documented routes out of the JSON, and fails **in both directions**. A route added without a
+document entry is a failure; so is a documented path nothing maps, so deleting a route
+reddens as loudly as adding one. The rule for a contributor is one line: **add, rename or
+remove a route and update the document in the same change.**
+
+**A route it cannot read is the failure mode that matters**, because such a route is missing
+from *both* sides of the comparison and therefore passes. So a fourth test counts every
+`.MapGet(`/`.MapPost(`/… and every `.MapGroup(` against the number the reading regexes
+matched, and fails when those disagree. A registration written in some shape this suite
+cannot parse is then a red test naming the file, rather than a silent hole.
+
+Comments are stripped before either count, so a `MapPost` written in prose — and there are
+several, this log included — cannot be mistaken for a registration.
+
+This does not generate the document and is not a step towards generating it. It checks the
+one property a hand-written document loses first, which is agreement about which routes
+exist. Request and response shapes are still maintained by hand and still unchecked.
+
+---
+
+## 060 — The log gets an index, and the index gets a test
+
+Sixty entries is past the point where a reader can find one by scrolling, and 035 moved the
+reasoning out of conversation and into this file, which makes finding an entry the common
+operation rather than a rare one. So there is an index at the top.
+
+An index that is maintained by hand is the same class of problem 059 just fixed one floor
+down, and it rots the same way: an entry gets added, the index does not, and the gap is
+invisible because both halves still look fine on their own. `DecisionLogTests` compares the
+two and fails when they disagree — an entry with no index line, an index line naming an entry
+that does not exist or giving it a title it does not have, and the order of the two lists
+against each other.
+
+It also checks the numbering runs from `001` without gaps, which is the one property an
+append-only log cannot repair later, and that every index anchor matches the slug its heading
+actually generates — because a link that silently goes nowhere is exactly the failure an index
+exists to prevent.
+
+The tests read `DECISIONS.md` as text. That makes this file a build artefact in the sense that
+it can fail the suite, which is deliberate: the log is load-bearing under 035's working
+agreement, and a load-bearing document nothing checks is a document that drifts.
+
+**It is also now literally a build input, and that cost a run to find.** `.dockerignore`
+excluded `*.md` on the stated premise that markdown is "not source, and no reason to rebuild
+the image when they change" — true of every markdown file in the repo until this entry made
+one of them a thing the suite reads. The four `DecisionLogTests` passed on the host, which
+reads the real tree, and failed in the container with `FileNotFoundException:
+/src/DECISIONS.md`, which is the split that makes this kind of thing expensive to diagnose.
+So `!DECISIONS.md` un-ignores it and `tests/Dockerfile` copies it in — last, on its own line,
+because it changes on almost every commit and that is the cheapest layer to invalidate. The
+`api` image does not get it: the host does not read the log.

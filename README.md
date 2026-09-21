@@ -28,6 +28,7 @@ Encore.sln
 ├── src/
 │   ├── Encore.Api                          ASP.NET Core minimal API host
 │   ├── Encore.Shared                       cross-cutting contracts, zero packages
+│   ├── Encore.Modules.Shared.Persistence   startup migrator + schema wiring, names no module
 │   ├── Encore.Modules.Catalog              flat CRUD
 │   ├── Encore.Modules.Catalog.Contracts    its public face — zero packages, zero refs
 │   ├── Encore.Modules.Orders               flat CRUD + the checkout
@@ -62,6 +63,15 @@ exist only on the far side of the ports.
 `Encore.Shared` holds exactly two things, and that is the shape of the rule: `IDomainEvent`,
 and `IIntegrationEventHandler<T>` — how a module is told that something happened elsewhere.
 Both are pure BCL, so the assembly the domain depends on stays as empty as it was.
+
+`Encore.Modules.Shared.Persistence` is the one place the five modules share code, and the
+rules on it are the interesting part. It holds `ModuleMigrator<TContext>` and the
+Npgsql/history-table wiring — what every module used to carry a copy of — and the type
+parameter is the whole of what used to differ. It is forbidden to name a module or a
+contracts assembly, it declares no `ProjectReference` at all, and nothing zero-dependency
+may reference it: it carries EF Core and Npgsql on purpose, and `Encore.Shared` reaching it
+would put EF Core on the domain's compile surface. Each module still registers its own
+migrator behind its own flag, so extraction still takes one line. See `DECISIONS.md` 058.
 
 ## What Inventory actually does
 

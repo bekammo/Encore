@@ -2,6 +2,7 @@ using Encore.Modules.Payments.Contracts;
 using Encore.Modules.Payments.Data;
 using Encore.Modules.Payments.Endpoints;
 using Encore.Modules.Payments.Simulation;
+using Encore.Modules.Shared.Persistence;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -46,7 +47,7 @@ public static class PaymentsModule
 
         if (configuration.GetValue<bool>("Payments:MigrateOnStartup"))
         {
-            services.AddHostedService<PaymentsMigrator>();
+            services.AddModuleMigrator<PaymentsDbContext>("Payments");
         }
 
         AddReconciliation(services, configuration);

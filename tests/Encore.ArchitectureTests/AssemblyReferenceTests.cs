@@ -174,6 +174,50 @@ public class AssemblyReferenceTests
     }
 
     /// <summary>
+    /// The shared persistence project may not name a module or a contracts
+    /// assembly. DECISIONS 058, answering 017's strongest objection.
+    /// </summary>
+    /// <remarks>
+    /// 017 refused to share this code because a shared migrator would have to know
+    /// every module's context, which is a drawer with five modules' names in it.
+    /// 058 only supersedes that because the type parameter took the module's name
+    /// out of the shared code entirely. This is the test that keeps it out: the
+    /// day this assembly names <c>Catalog</c>, the argument for its existence has
+    /// gone, whatever the code looks like.
+    /// </remarks>
+    [Fact]
+    public void SharedPersistence_ShouldNameNoModuleOrContractsAssembly()
+    {
+        var forbidden = EncoreTree.ModuleAssemblies
+            .Concat(EncoreTree.ContractsAssemblies)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var named = EncoreTree
+            .ReferencedNames(EncoreTree.SharedPersistence)
+            .Where(forbidden.Contains)
+            .ToList();
+
+        Assert.True(
+            named.Count == 0,
+            $"{EncoreTree.SharedPersistence} knows what a DbContext and a schema are and may not know that a module exists. Found: {string.Join(", ", named)}");
+    }
+
+    /// <summary>
+    /// Sharing an implementation is not the same as sharing a step. DECISIONS 058,
+    /// leaving 017's refusal of a host-level migrator standing.
+    /// </summary>
+    /// <remarks>
+    /// Each module still registers its own migrator, over its own context, behind
+    /// its own <c>{Module}:MigrateOnStartup</c> flag, and carries it away when it
+    /// is extracted. The host still does not know that a module has a database —
+    /// which is what <see cref="Host_ShouldNameNoPersistenceOrCacheAssembly"/> says
+    /// about EF Core and this says about the thing that wraps it.
+    /// </remarks>
+    [Fact]
+    public void Host_ShouldNotNameTheSharedPersistenceAssembly() =>
+        Assert.DoesNotContain(EncoreTree.SharedPersistence, EncoreTree.ReferencedNames("Encore.Api"));
+
+    /// <summary>
     /// The namespace-level assertion DECISIONS 002 anticipated.
     /// </summary>
     [Fact]
