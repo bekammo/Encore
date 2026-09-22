@@ -3,6 +3,7 @@ using Encore.Modules.Payments.Data;
 using Encore.Modules.Payments.Models;
 using Encore.Modules.Payments.Simulation;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Testcontainers.PostgreSql;
 
@@ -38,21 +39,41 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
 
     private DbContextOptions<PaymentsDbContext> _options = null!;
 
+    /// <summary>
+    /// How the gateway reaches its ledger. Since <c>DECISIONS.md</c> 066 what it has
+    /// already answered is a row rather than a field, so a gateway needs a way to
+    /// open a context of its own.
+    /// </summary>
+    private ServiceProvider _provider = null!;
+    private IServiceScopeFactory _scopes = null!;
+
     /// <inheritdoc />
     public async Task InitializeAsync()
     {
         await _postgres.StartAsync();
 
+        var connectionString = _postgres.GetConnectionString();
+
         _options = new DbContextOptionsBuilder<PaymentsDbContext>()
-            .UsePaymentsNpgsql(_postgres.GetConnectionString())
+            .UsePaymentsNpgsql(connectionString)
             .Options;
 
         await using var context = new PaymentsDbContext(_options);
         await context.Database.MigrateAsync();
+
+        var services = new ServiceCollection();
+        services.AddDbContext<PaymentsDbContext>(builder => builder.UsePaymentsNpgsql(connectionString));
+
+        _provider = services.BuildServiceProvider();
+        _scopes = _provider.GetRequiredService<IServiceScopeFactory>();
     }
 
     /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    public async Task DisposeAsync()
+    {
+        await _provider.DisposeAsync();
+        await _postgres.DisposeAsync();
+    }
 
     // -- Authorize --------------------------------------------------------
 
@@ -344,6 +365,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
         new InProcessOrderPayments(
             new PaymentsDbContext(_options),
             new SimulatedPaymentGateway(
+                _scopes,
                 Options.Create(new PaymentSimulationOptions
                 {
                     DeclineRate = declineRate,

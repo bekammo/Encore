@@ -1,6 +1,7 @@
 using Encore.Modules.Catalog.Contracts;
 using Encore.Modules.Catalog.Data;
 using Encore.Modules.Catalog.Endpoints;
+using Encore.Modules.Shared.Persistence;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -37,7 +38,7 @@ public static class CatalogModule
         // host's business, not Catalog's.
         if (configuration.GetValue<bool>("Catalog:MigrateOnStartup"))
         {
-            services.AddHostedService<CatalogMigrator>();
+            services.AddModuleMigrator<CatalogDbContext>("Catalog");
         }
 
         return services;

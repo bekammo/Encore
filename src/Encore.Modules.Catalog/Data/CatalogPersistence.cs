@@ -1,3 +1,4 @@
+using Encore.Modules.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Catalog.Data;
@@ -7,12 +8,21 @@ namespace Encore.Modules.Catalog.Data;
 /// Postgres. The twin of <c>InventoryPersistence</c>, and for the same reason.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Three callers must agree — the module's DI registration, the design-time
 /// factory <c>dotnet ef</c> uses, and the integration tests — and what they must
 /// agree about most is the migrations history table. A disagreement there is the
 /// nastiest kind available: each would read a different table to decide which
 /// migrations had been applied, so the tooling and the running app would hold
 /// different beliefs about the schema and neither would report an error.
+/// </para>
+/// <para>
+/// Since DECISIONS 058 the <i>shape</i> of that wiring lives in
+/// <see cref="ModulePersistence"/> and this type keeps the two things that are
+/// Catalog's own: the schema name and the vocabulary its callers use. The schema
+/// is the one thing in the old copied code that was never inert, which is why it
+/// stays declared here rather than becoming a row in a table somewhere else.
+/// </para>
 /// </remarks>
 public static class CatalogPersistence
 {
@@ -22,18 +32,10 @@ public static class CatalogPersistence
     /// <summary>
     /// Points a context at Postgres with this module's conventions applied.
     /// </summary>
-    /// <remarks>
-    /// The history table lives in the module's own schema rather than in
-    /// <c>public</c>, which is EF's default. That default would leave Catalog's
-    /// tables self-contained but its record of which migrations had run sitting
-    /// in a schema shared with every other module (DECISIONS 013).
-    /// </remarks>
     public static DbContextOptionsBuilder UseCatalogNpgsql(
         this DbContextOptionsBuilder builder,
         string connectionString) =>
-        builder.UseNpgsql(
-            connectionString,
-            npgsql => npgsql.MigrationsHistoryTable("__EFMigrationsHistory", Schema));
+        builder.UseModuleNpgsql(connectionString, Schema);
 
     /// <summary>
     /// The typed overload, so callers building a
@@ -43,9 +45,6 @@ public static class CatalogPersistence
     public static DbContextOptionsBuilder<TContext> UseCatalogNpgsql<TContext>(
         this DbContextOptionsBuilder<TContext> builder,
         string connectionString)
-        where TContext : DbContext
-    {
-        ((DbContextOptionsBuilder)builder).UseCatalogNpgsql(connectionString);
-        return builder;
-    }
+        where TContext : DbContext =>
+        builder.UseModuleNpgsql(connectionString, Schema);
 }

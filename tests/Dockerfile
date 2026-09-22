@@ -24,7 +24,9 @@ WORKDIR /src
 # ten-second loop and a two-minute one.
 COPY Directory.Build.props Directory.Build.targets Encore.sln ./
 COPY src/Encore.Api/Encore.Api.csproj                                          src/Encore.Api/
+COPY src/Encore.Payments.Api/Encore.Payments.Api.csproj                        src/Encore.Payments.Api/
 COPY src/Encore.Shared/Encore.Shared.csproj                                    src/Encore.Shared/
+COPY src/Encore.Modules.Shared.Persistence/Encore.Modules.Shared.Persistence.csproj src/Encore.Modules.Shared.Persistence/
 COPY src/Encore.Modules.Catalog/Encore.Modules.Catalog.csproj                  src/Encore.Modules.Catalog/
 COPY src/Encore.Modules.Orders/Encore.Modules.Orders.csproj                    src/Encore.Modules.Orders/
 COPY src/Encore.Modules.Payments/Encore.Modules.Payments.csproj                src/Encore.Modules.Payments/
@@ -48,6 +50,12 @@ RUN dotnet restore
 
 COPY src/ src/
 COPY tests/ tests/
+
+# The decision log is a test input, not documentation, since DECISIONS 060: the
+# suite reads it and compares its index against its headings. Last, and on its
+# own line, because it changes on almost every commit and this is the cheapest
+# layer in the file to invalidate.
+COPY DECISIONS.md ./
 
 # -warnaserror here as well as on the host: a warning that only one of the two
 # rejects is a warning nobody sees.

@@ -37,6 +37,7 @@ internal static class EncoreTree
     internal static readonly string[] AllAssemblies =
     [
         "Encore.Api",
+        "Encore.Payments.Api",
         "Encore.Shared",
         "Encore.Modules.Catalog",
         "Encore.Modules.Catalog.Contracts",
@@ -46,6 +47,44 @@ internal static class EncoreTree
         "Encore.Modules.Payments.Contracts",
         "Encore.Modules.Inventory",
         "Encore.Modules.Inventory.Contracts",
+        "Encore.Modules.Inventory.Domain",
+        "Encore.Modules.Shared.Persistence"
+    ];
+
+    /// <summary>The shared persistence building block. DECISIONS 058.</summary>
+    internal const string SharedPersistence = "Encore.Modules.Shared.Persistence";
+
+    /// <summary>
+    /// Every host. Two since DECISIONS 061 extracted Payments, and the rules about
+    /// hosts are rules about all of them.
+    /// </summary>
+    /// <remarks>
+    /// A list rather than the string <c>"Encore.Api"</c> spelled into each test,
+    /// because the failure mode of the old spelling is silent: a second host
+    /// inherits none of the first one's rules and nothing says so.
+    /// </remarks>
+    internal static readonly string[] Hosts =
+    [
+        "Encore.Api",
+        "Encore.Payments.Api"
+    ];
+
+    /// <summary>
+    /// The projects allowed the BCL and nothing else — the five that declare
+    /// <c>EncoreZeroDependency</c> in their csproj.
+    /// </summary>
+    /// <remarks>
+    /// Named as a set because DECISIONS 058 turns on them as one: none may reach
+    /// <see cref="SharedPersistence"/>, which carries EF Core and Npgsql on
+    /// purpose. <c>Encore.Shared</c> is the one that matters most, being the
+    /// Domain's only <c>ProjectReference</c> and therefore the back door.
+    /// </remarks>
+    internal static readonly string[] ZeroDependencyProjects =
+    [
+        "Encore.Shared",
+        "Encore.Modules.Catalog.Contracts",
+        "Encore.Modules.Inventory.Contracts",
+        "Encore.Modules.Payments.Contracts",
         "Encore.Modules.Inventory.Domain"
     ];
 

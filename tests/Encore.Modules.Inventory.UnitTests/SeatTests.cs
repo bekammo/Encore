@@ -542,6 +542,170 @@ public class SeatTests
         Assert.Empty(seat.DomainEvents);
     }
 
+    // -- ExpireHold -------------------------------------------------------
+
+    /// <summary>
+    /// The transition the background sweep drives, and the same one <see
+    /// cref="Seat.Hold"/> performs on itself when it reclaims a lapsed hold.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// DECISIONS 062. It exists so that cleanup can produce exactly the state and
+    /// exactly the event a lazy reclaim would have produced, rather than a bulk
+    /// UPDATE producing the state and silently dropping the event.
+    /// </para>
+    /// <para>
+    /// The property every test below is really protecting is that this method
+    /// <i>decides nothing</i>. It refuses every seat whose hold has not actually
+    /// lapsed, so a sweep that selects the wrong candidate writes nothing — which
+    /// is what keeps the sweep from acquiring the authority 007 denies it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void ExpireHold_WhenHoldHasLapsed_ShouldMakeTheSeatAvailable()
+    {
+        var seat = HeldBy(ClientA, T0);
+
+        Assert.True(seat.ExpireHold(AfterHold));
+
+        Assert.Equal(SeatStatus.Available, seat.Status);
+        Assert.Null(seat.HeldByClientId);
+        Assert.Null(seat.HoldExpiresAt);
+    }
+
+    [Fact]
+    public void ExpireHold_WhenHoldHasLapsed_ShouldRaiseReleasedExpiredForTheLapsedHolder()
+    {
+        var seat = HeldBy(ClientA, T0);
+
+        seat.ExpireHold(AfterHold);
+
+        var released = Assert.IsType<SeatReleased>(Assert.Single(seat.DomainEvents));
+        Assert.Equal(ClientA, released.ClientId);
+        Assert.Equal(SeatReleaseReason.Expired, released.Reason);
+        Assert.Equal(AfterHold, released.OccurredAt);
+    }
+
+    /// <summary>
+    /// The one that makes the sweep cleanup rather than policy: a live hold is
+    /// none of its business, and it says so by doing nothing at all.
+    /// </summary>
+    [Fact]
+    public void ExpireHold_WhenHoldIsStillLive_ShouldChangeNothing()
+    {
+        var seat = HeldBy(ClientA, T0);
+
+        Assert.False(seat.ExpireHold(WithinHold));
+
+        Assert.Equal(SeatStatus.Held, seat.Status);
+        Assert.Equal(ClientA, seat.HeldByClientId);
+        Assert.Equal(T0.AddMinutes(5), seat.HoldExpiresAt);
+        Assert.Empty(seat.DomainEvents);
+    }
+
+    [Fact]
+    public void ExpireHold_WhenSeatIsAvailable_ShouldChangeNothing()
+    {
+        var seat = Available();
+
+        Assert.False(seat.ExpireHold(AfterHold));
+
+        Assert.Equal(SeatStatus.Available, seat.Status);
+        Assert.Empty(seat.DomainEvents);
+    }
+
+    /// <summary>
+    /// A sold seat is refused with <see langword="false"/> rather than an
+    /// exception, unlike every other transition on this aggregate.
+    /// </summary>
+    /// <remarks>
+    /// The sweep selects candidates with one query and acts on them one at a
+    /// time, so a seat can be sold in between — and a sale is the sweep getting
+    /// the outcome it wanted, not an error to report. The other three methods
+    /// throw because a caller asked for something the rules forbid; this one is
+    /// not asking for anything.
+    /// </remarks>
+    [Fact]
+    public void ExpireHold_WhenSeatIsSold_ShouldChangeNothingRatherThanThrow()
+    {
+        var seat = SoldTo(ClientA);
+
+        Assert.False(seat.ExpireHold(AfterHold));
+
+        Assert.Equal(SeatStatus.Sold, seat.Status);
+        Assert.Equal(ClientA, seat.HeldByClientId);
+        Assert.Empty(seat.DomainEvents);
+    }
+
+    /// <summary>
+    /// The same exclusive boundary the rest of the aggregate uses (007, 040),
+    /// asserted here too because a sweep is the one caller that will meet it
+    /// constantly rather than by accident.
+    /// </summary>
+    [Fact]
+    public void ExpireHold_AtExactlyTheExpiryInstant_ShouldExpire()
+    {
+        var seat = HeldBy(ClientA, T0);
+
+        Assert.True(seat.ExpireHold(AtExpiry));
+    }
+
+    [Fact]
+    public void ExpireHold_OneTickBeforeExpiry_ShouldChangeNothing()
+    {
+        var seat = HeldBy(ClientA, T0);
+
+        Assert.False(seat.ExpireHold(JustBeforeExpiry));
+    }
+
+    /// <summary>
+    /// Idempotent, which is what lets two sweeps run over the same row without
+    /// the second one announcing a release that already happened.
+    /// </summary>
+    [Fact]
+    public void ExpireHold_WhenCalledTwice_ShouldRaiseOneEvent()
+    {
+        var seat = HeldBy(ClientA, T0);
+
+        Assert.True(seat.ExpireHold(AfterHold));
+        Assert.False(seat.ExpireHold(AfterHold));
+
+        Assert.Single(seat.DomainEvents);
+    }
+
+    /// <summary>
+    /// The equivalence the whole design rests on: whether the sweep got there
+    /// first or the next client did, the log reads the same and says it once.
+    /// </summary>
+    /// <remarks>
+    /// Without this, "the sweep is cleanup only" is a claim about timing. With
+    /// it, it is a claim about outcomes — the two orderings are observationally
+    /// identical, which is why disabling the sweep cannot change an invariant.
+    /// </remarks>
+    [Fact]
+    public void ExpireHold_ThenHoldByAnotherClient_ShouldLeaveTheSameLogAsALazyReclaim()
+    {
+        var swept = HeldBy(ClientA, T0);
+        swept.ExpireHold(AfterHold);
+        swept.Hold(ClientB, AfterHold);
+
+        var lazy = HeldBy(ClientA, T0);
+        lazy.Hold(ClientB, AfterHold);
+
+        Assert.Equal(lazy.Status, swept.Status);
+        Assert.Equal(lazy.HeldByClientId, swept.HeldByClientId);
+        Assert.Equal(lazy.HoldExpiresAt, swept.HoldExpiresAt);
+
+        Assert.Equal(
+            lazy.DomainEvents.Select(e => e.GetType().Name),
+            swept.DomainEvents.Select(e => e.GetType().Name));
+
+        var sweptRelease = Assert.IsType<SeatReleased>(swept.DomainEvents[0]);
+        var lazyRelease = Assert.IsType<SeatReleased>(lazy.DomainEvents[0]);
+        Assert.Equal(lazyRelease.ClientId, sweptRelease.ClientId);
+        Assert.Equal(lazyRelease.Reason, sweptRelease.Reason);
+    }
+
     // -- utcNow must be UTC -------------------------------------------------
 
     /// <summary>
@@ -588,6 +752,24 @@ public class SeatTests
         var seat = HeldBy(ClientA, T0);
 
         var exception = Assert.Throws<ArgumentException>(() => seat.Sell(ClientA, NotUtc(kind)));
+
+        Assert.Equal("utcNow", exception.ParamName);
+    }
+
+    /// <summary>
+    /// The sweep reads its instant from <c>TimeProvider</c> like the handlers do,
+    /// so this guard is as tautological at its one call site as the other three
+    /// are — and it is here for 039's reason, which is that the precondition
+    /// belongs to the method rather than to whoever happens to call it today.
+    /// </summary>
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    public void ExpireHold_WhenUtcNowIsNotUtc_ShouldThrow(DateTimeKind kind)
+    {
+        var seat = HeldBy(ClientA, T0);
+
+        var exception = Assert.Throws<ArgumentException>(() => seat.ExpireHold(NotUtc(kind)));
 
         Assert.Equal("utcNow", exception.ParamName);
     }

@@ -79,6 +79,24 @@ namespace Encore.Modules.Payments.Data.Migrations
 
                     b.ToTable("payments", "payments");
                 });
+
+            modelBuilder.Entity("Encore.Modules.Payments.Simulation.GatewayLedgerEntry", b =>
+                {
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<int>("Outcome")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("RecordedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("IdempotencyKey")
+                        .HasName("pk_gateway_ledger");
+
+                    b.ToTable("gateway_ledger", "payments");
+                });
 #pragma warning restore 612, 618
         }
     }

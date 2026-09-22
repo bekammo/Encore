@@ -188,10 +188,13 @@ public sealed class Seat
         // this is the moment it is reclaimed; record that the old hold ended
         // before recording the new one, or the log shows two consecutive claims
         // with no way to tell when the first stopped being true.
-        if (Status is SeatStatus.Held && HeldByClientId is { } lapsedHolder)
-        {
-            Raise(new SeatReleased(Id, EventId, lapsedHolder, SeatReleaseReason.Expired, utcNow));
-        }
+        //
+        // Delegated rather than written out, so there is exactly one place that
+        // knows what a lapsed hold's ending looks like. The fields it nulls are
+        // overwritten two lines below, which is wasted work worth paying for: the
+        // alternative is a second copy of the reclaim, and the risk 007 names is
+        // exactly the sweep and the lazy path drifting apart (062).
+        ExpireHold(utcNow);
 
         var expiresAt = utcNow + HoldDuration;
 
@@ -200,6 +203,65 @@ public sealed class Seat
         HoldExpiresAt = expiresAt;
 
         Raise(new SeatHeld(Id, EventId, clientId, expiresAt, utcNow));
+    }
+
+    /// <summary>
+    /// Ends a hold that has already lapsed, leaving the seat available and the
+    /// lapse recorded. Does nothing to a seat whose hold is still live.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is not a fourth rule; it is the one <see cref="Hold"/> already
+    /// applied, given a name.</b> A lapsed hold has always ended with
+    /// <see cref="SeatReleased"/> carrying <see cref="SeatReleaseReason.Expired"/>
+    /// — until now that only happened when a new holder turned up to trigger it.
+    /// The background sweep needs the same ending with no new holder, and the
+    /// alternative was a bulk UPDATE producing the state change while silently
+    /// dropping the event, which would leave a hold in the log looking
+    /// indefinitely live. See <c>DECISIONS.md</c> 062.
+    /// </para>
+    /// <para>
+    /// <b>It decides nothing, and that is what keeps the sweep cleanup only.</b>
+    /// Whether a hold has lapsed is still <see cref="EffectiveStatusAt"/>'s answer
+    /// and nobody else's, so a sweep that acts on a stale candidate — a seat sold
+    /// or re-held since its query ran — writes nothing and raises nothing. 007
+    /// forbids a second copy of the lapsed-hold rule precisely because that is how
+    /// a timer quietly acquires authority over an invariant; this is how the sweep
+    /// asks the aggregate instead of deciding for itself.
+    /// </para>
+    /// <para>
+    /// <b>It returns a <see cref="bool"/> rather than throwing</b>, alone among the
+    /// transitions here. The other three answer a caller who asked for something,
+    /// so a refusal is news. This one is a caller offering to tidy up, and "there
+    /// was nothing to tidy" — including because the seat sold in the meantime — is
+    /// an ordinary outcome rather than an error anybody should have to catch.
+    /// </para>
+    /// </remarks>
+    /// <param name="utcNow">The instant to judge the lapse against.</param>
+    /// <returns>Whether a lapsed hold was actually ended.</returns>
+    public bool ExpireHold(DateTime utcNow)
+    {
+        GuardUtc(utcNow);
+
+        // Held-but-lapsed and nothing else. A sold seat falls out on the first
+        // clause, which is why this needs no GuardNotSold.
+        if (Status is not SeatStatus.Held || EffectiveStatusAt(utcNow) is not SeatStatus.Available)
+        {
+            return false;
+        }
+
+        var lapsedHolder = HeldByClientId;
+
+        Status = SeatStatus.Available;
+        HeldByClientId = null;
+        HoldExpiresAt = null;
+
+        if (lapsedHolder is { } holder)
+        {
+            Raise(new SeatReleased(Id, EventId, holder, SeatReleaseReason.Expired, utcNow));
+        }
+
+        return true;
     }
 
     /// <summary>

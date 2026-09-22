@@ -91,6 +91,17 @@ internal sealed class InProcessOrderPayments(
         {
             await _payments.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
+        catch (DbUpdateConcurrencyException)
+        {
+            // The reconciler settled this timed-out attempt while the retry above
+            // was being assembled, so the row this was about to reopen is already
+            // resolved. Must be caught before the clause below, which is for a
+            // different failure on a base type of this one — and caught at all
+            // because PaymentReconciler is the first writer of these rows that is
+            // not a request. Retriable, and honestly so: the next confirm finds no
+            // live attempt and starts a clean one.
+            return AuthorizePaymentResponse.ConcurrentAttemptInFlight;
+        }
         catch (DbUpdateException ex) when (IsDuplicateLiveAttempt(ex))
         {
             // Two confirms for one order, racing. The index said no, which is the

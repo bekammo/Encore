@@ -370,6 +370,17 @@ public class SellSeatCommandHandlerTests
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Selling does not consult the hold cap.");
 
+        /// <summary>
+        /// The sweep's query, and no handler makes it. Throwing rather than
+        /// returning an empty list, so a handler that quietly grew a dependency on
+        /// the sweep's candidate list fails a test instead of passing one.
+        /// </summary>
+        public Task<IReadOnlyList<Guid>> FindExpiredHoldsAsync(
+            DateTime utcNow,
+            int limit,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("The request path does not sweep expired holds.");
+
         /// <summary>Seats already exist on this path; creating them is a different use case.</summary>
         public Task AddRangeAsync(
             IReadOnlyCollection<Seat> seats,

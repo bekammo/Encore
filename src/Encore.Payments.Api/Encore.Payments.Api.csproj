@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!-- The Payments host. The far side of the Strangler Fig: one module, composed
+       and served on its own, so Orders can reach it over HTTP instead of through
+       the container. DECISIONS 061.
+
+       It is a second host rather than a second solution or a second repository.
+       Payments is still built, tested and versioned with everything else; what
+       changed is only where it runs. That is the cheap half of extraction, and it
+       is the half this phase is about — a separate repository buys independent
+       release cadence and costs an atomic refactor, and nothing here needs the
+       first badly enough to pay the second. -->
+
+  <!-- ENCORE001 only, exactly as Encore.Api. A host holds no packages of its own;
+       ASP.NET Core arrives from the Web SDK and EF Core transitively through the
+       module it composes, which is what a host is for. -->
+  <PropertyGroup>
+    <EncoreNoDirectPackages>true</EncoreNoDirectPackages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Encore.Modules.Payments\Encore.Modules.Payments.csproj" />
+    <!-- Declared rather than taken transitively through the module: this host names
+         IReadinessCheck itself for /health/ready (070), and a reference you rely on
+         is a reference you write down. -->
+    <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

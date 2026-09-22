@@ -96,6 +96,10 @@ namespace Encore.Modules.Inventory.Adapters.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("HoldExpiresAt")
+                        .HasDatabaseName("ix_seats_expiring_holds")
+                        .HasFilter("\"Status\" = 1");
+
                     b.HasIndex("EventId", "HeldByClientId", "Status")
                         .HasDatabaseName("ix_seats_event_client_status");
 

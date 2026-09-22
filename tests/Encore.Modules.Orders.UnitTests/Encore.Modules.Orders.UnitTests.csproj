@@ -26,6 +26,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Encore.Modules.Orders\Encore.Modules.Orders.csproj" />
+    <!-- Payments as well, and this is the only test project with both. The
+         Strangler Fig switch is a property of the two modules composed together:
+         each of them registers IOrderPayments, and which registration survives is
+         the entire question. A test that can only see one of them cannot ask it,
+         which is why nothing caught 061's inert switch. DECISIONS 063. -->
+    <ProjectReference Include="..\..\src\Encore.Modules.Payments\Encore.Modules.Payments.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -5,8 +5,8 @@ whose real subject is *where* architecture is worth paying for.
 
 ## The shape of it
 
-Four modules behind one ASP.NET Core host. Three of them are deliberately
-plain, and one is deliberately not:
+Five modules, four of them deliberately plain and one deliberately not — and,
+since the Payments extraction, two ASP.NET Core hosts rather than one:
 
 | Module | Shape | Why |
 |---|---|---|
@@ -21,13 +21,22 @@ for optionality, and it is only worth paying where the optionality will actually
 be spent. The reasoning behind every choice here, including the ones I would
 expect to be challenged, is in [DECISIONS.md](DECISIONS.md).
 
+The second host is `Encore.Payments.Api`: the same Payments module, composed
+through the same seam, plus the three `/internal/payments/*` routes the monolith
+does not map. Orders reaches it over HTTP when `Orders:Payments:BaseAddress` is
+set and in-process when it is not — one configuration key, and the reason the
+extraction was cheap. It was also inert for four days before a chaos run noticed
+(`DECISIONS.md` 061 and 063).
+
 ## Layout
 
 ```
 Encore.sln
 ├── src/
 │   ├── Encore.Api                          ASP.NET Core minimal API host
+│   ├── Encore.Payments.Api                 the Payments service — one module, its own process
 │   ├── Encore.Shared                       cross-cutting contracts, zero packages
+│   ├── Encore.Modules.Shared.Persistence   startup migrator + schema wiring, names no module
 │   ├── Encore.Modules.Catalog              flat CRUD
 │   ├── Encore.Modules.Catalog.Contracts    its public face — zero packages, zero refs
 │   ├── Encore.Modules.Orders               flat CRUD + the checkout
@@ -63,6 +72,15 @@ exist only on the far side of the ports.
 and `IIntegrationEventHandler<T>` — how a module is told that something happened elsewhere.
 Both are pure BCL, so the assembly the domain depends on stays as empty as it was.
 
+`Encore.Modules.Shared.Persistence` is the one place the five modules share code, and the
+rules on it are the interesting part. It holds `ModuleMigrator<TContext>` and the
+Npgsql/history-table wiring — what every module used to carry a copy of — and the type
+parameter is the whole of what used to differ. It is forbidden to name a module or a
+contracts assembly, it declares no `ProjectReference` at all, and nothing zero-dependency
+may reference it: it carries EF Core and Npgsql on purpose, and `Encore.Shared` reaching it
+would put EF Core on the domain's compile surface. Each module still registers its own
+migrator behind its own flag, so extraction still takes one line. See `DECISIONS.md` 058.
+
 ## What Inventory actually does
 
 The seat is the whole problem. `Seat` is the aggregate root and the sole
@@ -80,6 +98,12 @@ converting a hold is always a single-row write.
 - **Expiry is lazy first.** A row reading `Held` whose `HoldExpiresAt` has passed
   is logically available on every read and write path, whatever the column says.
   A background sweep is cleanup only, and its timing is never load-bearing.
+  `ExpiredHoldSweeper` tidies the rows and `ExpiryWithoutTheSweepTests` is the
+  falsification — no sweeper, no Redis, and a lapsed hold is still reclaimed, still
+  unsellable by its lapsed holder, and still freeing the client's hold cap. The
+  sweep goes through the aggregate rather than issuing a bulk UPDATE, so a hold
+  nobody ever came back for still ends with a `SeatReleased(Expired)` in the log
+  (`DECISIONS.md` 062).
 - **Hold duration is five minutes, owned by the aggregate.** Callers pass
   `utcNow`, never an absolute expiry — a caller-supplied expiry would let anyone
   reach a state the rules never approved.
@@ -287,6 +311,43 @@ Each run writes a JSON summary to `load/results/`, which is gitignored — one
 laptop's numbers on one day are worth comparing against the next run and worth
 nothing to a reader of the repo.
 
+## Breaking it on purpose
+
+```bash
+bash load/chaos.sh
+```
+
+Four faults, one run each, against the extracted configuration. k6 drives the traffic
+and asserts the invariants; it has no access to the Docker daemon and never breaks
+anything. `load/chaos.sh` owns the timeline, stops the containers, takes the locks, and
+reads the aftermath out of Postgres into one report. Faults are injected in the *gaps*
+between scenario windows, and each fault that asks a question about a number runs a
+control window of identical shape beside the broken one.
+
+What the four runs showed (`DECISIONS.md` 064 has the tables and the caveats):
+
+- **Payments stopped.** Every invariant held: no order confirmed, every confirm read
+  `payment_timed_out`, no 5xx, and the 133 orders left `pending` map one-to-one onto the
+  133 seats still held. The cost is that a stopped container swallows connections rather
+  than refusing them, so every confirm pays the full ten-second client timeout.
+- **Two reconcilers over one table.** No attempt was settled twice, 82 sweeps lost the
+  race on `xmin` and wrote nothing, and no order ever had more than one live attempt. But
+  the process that had never authorised anything settled 379 attempts as `abandoned`,
+  because the simulated gateway kept its answered keys in memory per process. The lease
+  061 wants was not the first thing missing — **the gateway's memory is a table since
+  `DECISIONS.md` 066**, because an ordinary restart was enough to produce the same
+  failure with one reconciler.
+- **Redis stopped.** No oversell either side, and holds kept being won with no lock in
+  sight — the claim that correctness comes from `xmin` alone, demonstrated under 250 VUs.
+  A hold costs about 85 times more without it, because discovering the lock is
+  unavailable waits out a five-second client timeout twice.
+- **The dispatcher stalled.** A twenty-second consumer outage produced a backlog of 2,200
+  messages, a delivery-latency tail of 20,631 ms, a request path that did not notice
+  (hold p99 23.6 ms) and no faults at all. Late is not wrong, measured.
+
+Reports land in `load/results/` beside the summaries, and are gitignored for the same
+reason.
+
 ## Status
 
 **Load-In closed; Soundcheck started.** Inventory is complete and proven end to end —
@@ -325,14 +386,69 @@ transaction as every seat write, so a baseline taken afterwards could never say 
 (`DECISIONS.md` 048); three pre-outbox runs establish the spread and **056** records the
 delta.
 
-The honest gap: a gateway call that times out is still recorded rather than resolved. The
-attempt keeps its idempotency key so a retry asks the same question rather than a second one,
-but nothing yet reconciles an authorisation that may or may not have landed. 031 parked that
-behind the outbox, which now exists — so it is unblocked rather than deferred.
+Reconciliation closed the gap this section used to describe. A gateway call that times out is no
+longer merely recorded: `PaymentReconciler` sweeps attempts that have been timed out for longer
+than a seat hold, asks the gateway what it actually did with the key the row is carrying, and
+settles them — releasing funds that turn out to be held, recording a refusal that was made but
+never heard, abandoning an attempt that never arrived, and writing nothing at all when the lookup
+itself gets no answer. Until it existed a timed-out attempt was live forever, which meant the
+order it belonged to could not be paid for by anybody, ever. `DECISIONS.md` 057.
 
-Deliberately absent, by roadmap phase rather than oversight: the Strangler Fig extraction of
-Payments, the expired-hold sweep, MediatR, MassTransit, SignalR, observability and any
-deployment story.
+The honest gap that remains is the other half of 029: `Payment` still raises no domain events, so
+when the sweep releases an authorisation, nothing tells the order it was released. Announcing it
+means Payments getting an outbox of its own, and it collides with 027's choice to resolve an
+order by the next confirm rather than by a background job — two arguments that deserve their own
+change rather than a ride inside this one.
+
+**An audit closed seven more** (`DECISIONS.md` 065–071), and what it found is worth
+stating plainly, because none of it was a broken test. The simulated gateway's memory
+became a table, so a restart can no longer make the reconciler settle a live
+authorisation as abandoned — the failure fault 1 produced by accident. Two defaults
+nobody had chosen were chosen: connection pool sizes, which is why the *healthy* window
+of a chaos run was full of `53300: sorry, too many clients already`, and Redis's command
+timeouts, which is why losing the lock cost 85× rather than a little. The expired-hold
+sweep got the partial index its query always wanted. The outbox dispatcher's delivery got
+a deadline, because until then the claim transaction stayed open for as long as the
+slowest consumer felt like taking — twenty seconds, in fault 4. Delivered outbox rows now
+have a retention window, and `/health/ready` asks each module whether it can actually
+work instead of answering `{"status":"ok"}` from a constant. And the OpenAPI document now
+says which routes the host serving it does not answer, with a test that walks the call
+graph from each host's `Program.cs` to check it.
+
+The audit's first finding was not in the code at all: this file and `CLAUDE.md` had both
+gone on describing a single-host monolith for four days after there were two hosts
+(`DECISIONS.md` 065).
+
+**The extraction was inert for four days, and a chaos run found it** (`DECISIONS.md` 063).
+`OrdersModule` used `services.Replace` to swap in the HTTP adapter and argued in a comment
+that this made the outcome independent of registration order. It does not: `Replace`
+removes the *first existing* registration and appends, and `Program.cs` registers Orders
+before Payments, so the in-process adapter was appended afterwards and last-wins gave it
+every payment. Both ends of the wire had tests and both stayed green; nothing tested that
+the wire was connected, because no test project referenced both modules. Payments now
+registers with `TryAddScoped` and `StranglerSwitchTests` pins all four combinations.
+
+**Payments is extracted** (`DECISIONS.md` 061), which closes Soundcheck's remaining outcome.
+It runs as its own host, `Encore.Payments.Api`, and Orders reaches it over HTTP through the
+same `IOrderPayments` it was already calling through the container — the interface did not
+change and nothing inside Payments changed, which is the claim the modular monolith has been
+making since 001. Two settings do the strangling: `Orders:Payments:BaseAddress` makes Orders
+resolve the HTTP adapter instead of the in-process one, and `Orders:Payments:ServiceToken`
+hands it the credential the service demands.
+
+The write side reached this way is a separate seam on a separate path with a different
+credential — `/internal/payments/*`, guarded by `X-Service-Token` and mounted only by
+`MapPaymentsServiceApi`. That is what keeps 033 true: it refused a customer-facing write
+surface because a client that can charge itself has walked around the order flow, and a
+caller holding a client id still gets a 401 here. Both arrangements run side by side:
+`docker compose --profile load up` is the monolith, `--profile strangled up` is the pair.
+
+Two things the extraction deliberately did not do. The `payments` schema did not move — the
+process boundary went first and the data boundary is its own change. And the reconciler must
+run in exactly one process, which is a compose setting today rather than a lease.
+
+Deliberately absent, by roadmap phase rather than oversight: the expired-hold sweep, MediatR,
+MassTransit, SignalR, observability and any deployment story.
 
 Nothing is open inside Load-In. The last gap — `ENCORE001` inspecting only direct
 `PackageReference` items, so infrastructure arriving transitively through a

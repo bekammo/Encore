@@ -55,6 +55,54 @@ public sealed class OutboxOptions
     public int BatchSize { get; set; } = 50;
 
     /// <summary>
+    /// How long one handler may take before its message is failed and the queue
+    /// moves on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This exists because delivery happens inside the claim transaction</b>, and
+    /// until <c>DECISIONS.md</c> 069 nothing bounded how long that transaction could
+    /// stay open. 064's fourth fault held the consumer's table under
+    /// <c>ACCESS EXCLUSIVE</c> for twenty seconds and the dispatcher waited all
+    /// twenty — with fifty seat-schema rows locked and a transaction open against the
+    /// database the request path shares, which is how a cleanup job quietly starts
+    /// holding back vacuum on the hottest table in the system.
+    /// </para>
+    /// <para>
+    /// A handler that overruns is failed, backed off and retried like any other
+    /// failure. That is the right reading: a consumer that cannot answer in two
+    /// seconds is not healthy, and the outbox's promise is that late is not wrong —
+    /// not that late is free.
+    /// </para>
+    /// <para>
+    /// It is enforced on the system timer rather than <see cref="TimeProvider"/>,
+    /// deliberately. This is a wall-clock guard on an external call, and a test
+    /// holding a fake clock still wants its handler to be given real time.
+    /// </para>
+    /// </remarks>
+    public TimeSpan DeliveryTimeout { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// The longest one tick will keep delivering before committing what it has.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The other half of 069's bound, and the one that makes the first half add up:
+    /// fifty messages each allowed two seconds is a hundred-second transaction,
+    /// which is no better than the unbounded one it replaced. When this elapses the
+    /// tick stops delivering, commits the messages it did deliver and returns; the
+    /// rest were never touched, so they are simply claimed again on the next tick.
+    /// </para>
+    /// <para>
+    /// Five seconds is a starting point, like everything else here. It bounds how
+    /// long a row can be held away from a second dispatcher and how long the
+    /// transaction can hold back vacuum, and it is deliberately far below the
+    /// twenty-second stall 064 measured.
+    /// </para>
+    /// </remarks>
+    public TimeSpan MaxBatchDuration { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// How many failures before a message stops being retried.
     /// </summary>
     /// <remarks>

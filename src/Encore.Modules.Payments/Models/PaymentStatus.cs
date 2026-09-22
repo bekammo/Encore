@@ -7,7 +7,7 @@ namespace Encore.Modules.Payments.Models;
 /// <para>
 /// The division that matters is not terminal-versus-not, it is
 /// <see cref="Payment.IsLive"/>: whether this attempt could still be holding or
-/// have taken the customer's money. Four of these six are live, and the partial
+/// have taken the customer's money. Four of these seven are live, and the partial
 /// unique index in <c>PaymentConfiguration</c> filters on exactly that set to
 /// guarantee an order is never charged twice. The reasoning is
 /// <c>DECISIONS.md</c> 030.
@@ -63,5 +63,31 @@ public enum PaymentStatus
     /// The authorisation was released without being captured. Terminal, and not
     /// live: no money moved and none will.
     /// </summary>
-    Voided = 5
+    Voided = 5,
+
+    /// <summary>
+    /// Reconciliation established that the gateway never received this attempt, so
+    /// nothing was ever held and nothing ever will be. Terminal, and not live.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why this is not <see cref="Declined"/>.</b> Both are terminal endings that
+    /// moved no money, but a decline is an answer the gateway gave and this is the
+    /// absence of one. Collapsing them would tell a customer their card was refused
+    /// when it was never asked — which is the mistake <c>DECISIONS.md</c> 031
+    /// rejected when it refused to treat a timeout as a decline, arriving one step
+    /// later.
+    /// </para>
+    /// <para>
+    /// <b>Why this is not <see cref="Voided"/> either.</b> A void releases an
+    /// authorisation that existed. There was none here, and a row saying otherwise
+    /// would send anybody chasing it to the gateway for a reference that does not
+    /// exist.
+    /// </para>
+    /// <para>
+    /// Reached only from <see cref="TimedOut"/>, and only by
+    /// <see cref="Payment.ResolveAsAbandoned"/>. See <c>DECISIONS.md</c> 057.
+    /// </para>
+    /// </remarks>
+    Abandoned = 6
 }

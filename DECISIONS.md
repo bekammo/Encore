@@ -4,6 +4,80 @@ An append-only log of the choices in Encore that are worth defending, and the
 reasoning at the time. Entries are not rewritten when circumstances change —
 a superseding entry gets added instead.
 
+## Index
+
+- [001](#001--why-inventory-is-hexagonal-and-the-other-modules-arent) — Why Inventory is hexagonal and the other modules aren't
+- [002](#002--inventorys-domain-is-its-own-project-not-a-folder) — Inventory's domain is its own project, not a folder
+- [003](#003--ports-speak-the-modules-language-never-the-adapters) — Ports speak the module's language, never the adapter's
+- [004](#004--orders-and-payments-are-real-modules-not-permanent-stubs) — Orders and Payments are real modules, not permanent stubs
+- [005](#005--aggregates-are-constructed-by-factory-never-by-public-constructor) — Aggregates are constructed by factory, never by public constructor
+- [006](#006--the-hold-cap-is-a-policy-not-an-invariant) — The hold cap is a policy, not an invariant
+- [007](#007--the-seat-state-machine) — The seat state machine
+- [008](#008--refusals-are-return-values-not-exceptions-above-the-aggregate) — Refusals are return values, not exceptions, above the aggregate
+- [009](#009--the-repository-defeats-efs-identity-map-on-reload) — The repository defeats EF's identity map on reload
+- [010](#010--a-lock-that-can-say-i-dont-know-and-two-locks-with-different-authority) — A lock that can say "I don't know", and two locks with different authority
+- [011](#011--every-seat-command-carries-its-event-id-checked-and-never-trusted) — Every seat command carries its event id, checked and never trusted
+- [012](#012--seats-are-created-in-bulk-by-a-use-case-with-generated-ids) — Seats are created in bulk, by a use case, with generated ids
+- [013](#013--migrations-are-explicit-by-default-and-automatic-only-in-development) — Migrations are explicit by default and automatic only in development
+- [014](#014--inventorys-http-surface-actions-one-status-rule-and-a-claimed-identity) — Inventory's HTTP surface: actions, one status rule, and a claimed identity
+- [015](#015--the-test-suite-runs-in-a-container-because-the-host-will-not-run-it) — The test suite runs in a container, because the host will not run it
+- [016](#016--money-is-a-decimal-and-a-currency-code-not-a-value-object) — Money is a decimal and a currency code, not a value object
+- [017](#017--one-migrator-per-module-not-one-step-in-the-host) — One migrator per module, not one step in the host
+- [018](#018--catalogs-http-surface-and-two-rules-it-settles-for-everyone) — Catalog's HTTP surface, and two rules it settles for everyone
+- [019](#019--catalog-gets-a-contracts-assembly-too-and-why-that-is-not-ceremony) — Catalog gets a contracts assembly too, and why that is not ceremony
+- [020](#020--the-contracts-assembly-may-carry-one-number) — The contracts assembly may carry one number
+- [021](#021--the-order-state-model-and-who-is-allowed-to-decide-an-order-has-expired) — The order state model, and who is allowed to decide an order has expired
+- [022](#022--orders-http-surface-and-the-service-that-has-no-port) — Orders' HTTP surface, and the service that has no port
+- [023](#023--a-partial-checkout-writes-nothing-releases-nothing-and-tells-you-everything) — A partial checkout writes nothing, releases nothing, and tells you everything
+- [024](#024--the-client-id-filter-is-copied-into-orders-not-shared) — The client id filter is copied into Orders, not shared
+- [025](#025--a-repeated-seat-id-is-refused-not-de-duplicated) — A repeated seat id is refused, not de-duplicated
+- [026](#026--the-on-sale-gate-and-why-sales-stay-open-after-the-show-starts) — The on-sale gate, and why sales stay open after the show starts
+- [027](#027--payments-arrives-and-what-that-changes-about-everything-else) — Payments arrives, and what that changes about everything else
+- [028](#028--authorise-sell-capture--and-void-when-the-sale-does-not-complete) — Authorise, sell, capture — and void when the sale does not complete
+- [029](#029--payment-has-a-state-machine-and-stays-in-a-flat-module) — `Payment` has a state machine, and stays in a flat module
+- [030](#030--one-live-attempt-per-order-and-what-live-means) — One live attempt per order, and what "live" means
+- [031](#031--a-timed-out-gateway-call-is-recorded-not-resolved) — A timed-out gateway call is recorded, not resolved
+- [032](#032--the-simulated-gateway-and-one-simplification-worth-admitting) — The simulated gateway, and one simplification worth admitting
+- [033](#033--payments-http-surface-is-read-only) — Payments' HTTP surface is read-only
+- [034](#034--cancelling-releases-the-seats) — Cancelling releases the seats
+- [035](#035--the-working-agreement-changes-build-first-explain-after) — The working agreement changes: build first, explain after
+- [036](#036--load-ins-last-gap-the-purity-guard-becomes-three-rules-in-one-file) — Load-In's last gap: the purity guard becomes three rules in one file
+- [037](#037--the-architecture-test-and-why-it-has-no-architecture-test-library) — The architecture test, and why it has no architecture-test library
+- [038](#038--seatcreate-rejects-an-empty-id) — `Seat.Create` rejects an empty id
+- [039](#039--utcnow-must-be-utc-and-the-aggregate-is-where-that-is-checked) — `utcNow` must be UTC, and the aggregate is where that is checked
+- [040](#040--the-expiry-boundary-the-reclaim-edge-and-what-a-no-op-release-leaves-behind) — The expiry boundary, the reclaim edge, and what a no-op release leaves behind
+- [041](#041--correcting-007-sell-already-tells-a-non-holder-the-truth) — Correcting 007: `Sell` already tells a non-holder the truth
+- [042](#042--xmin-leaves-the-three-migrations) — `xmin` leaves the three migrations
+- [043](#043--load-in-is-closed) — Load-In is closed
+- [044](#044--the-outbox-drain-belongs-to-the-unit-of-work-not-to-the-repository) — The outbox drain belongs to the unit of work, not to the repository
+- [045](#045--payment-gets-seats-two-guards) — `Payment` gets `Seat`'s two guards
+- [046](#046--the-three-seat-handlers-share-one-lock-vocabulary) — The three seat handlers share one lock vocabulary
+- [047](#047--correcting-045-and-the-summary-that-described-a-drain-nobody-wrote) — Correcting 045, and the summary that described a drain nobody wrote
+- [048](#048--the-load-harness-arrives-before-the-outbox-and-it-is-k6) — The load harness arrives before the outbox, and it is k6
+- [049](#049--correcting-014s-one-shape-and-an-openapi-document-that-is-not-a-package) — Correcting 014's "one shape", and an OpenAPI document that is not a package
+- [050](#050--the-host-side-postgres-port-moves-to-55432) — The host-side Postgres port moves to 55432
+- [051](#051--the-outbox-row-carries-two-identities-and-promises-less-than-it-looks-like-it-does) — The outbox row carries two identities, and promises less than it looks like it does
+- [052](#052--the-drain-clears-on-success-and-044-was-wrong-to-call-that-optional) — The drain clears on success, and 044 was wrong to call that optional
+- [053](#053--the-dispatcher-what-it-claims-what-it-retries-and-the-order-it-deliberately-does-not-keep) — The dispatcher: what it claims, what it retries, and the order it deliberately does not keep
+- [054](#054--what-crosses-the-wire-is-a-contract-not-a-domain-record) — What crosses the wire is a contract, not a domain record
+- [055](#055--notifications-is-the-fifth-module-and-the-first-with-nothing-to-map) — Notifications is the fifth module, and the first with nothing to map
+- [056](#056--what-the-outbox-cost-and-the-half-that-costs-it) — What the outbox cost, and the half that costs it
+- [057](#057--reconciliation-the-gateway-is-asked-what-it-did-and-a-timeout-stops-being-permanent) — Reconciliation: the gateway is asked what it did, and a timeout stops being permanent
+- [058](#058--five-copied-migrators-become-one-and-the-project-that-may-not-name-a-module) — Five copied migrators become one, and the project that may not name a module
+- [059](#059--the-hand-written-openapi-document-gets-the-test-049-asked-for) — The hand-written OpenAPI document gets the test 049 asked for
+- [060](#060--the-log-gets-an-index-and-the-index-gets-a-test) — The log gets an index, and the index gets a test
+- [061](#061--payments-becomes-a-service-and-033-survives-it) — Payments becomes a service, and 033 survives it
+- [062](#062--the-expired-hold-sweep-and-the-transition-it-needed) — The expired-hold sweep, and the transition it needed
+- [063](#063--correcting-061-replace-did-not-make-the-switch-order-independent) — Correcting 061: `Replace` did not make the switch order-independent
+- [064](#064--four-faults-injected-on-purpose-and-what-each-one-actually-cost) — Four faults, injected on purpose, and what each one actually cost
+- [065](#065--an-audit-and-the-four-claims-the-documents-had-stopped-making) — An audit, and the four claims the documents had stopped making
+- [066](#066--the-gateways-memory-becomes-a-table-and-a-precondition-stops-being-accidental) — The gateway's memory becomes a table, and a precondition stops being accidental
+- [067](#067--two-defaults-nobody-chose-the-connection-pools-and-the-locks-timeouts) — Two defaults nobody chose: the connection pools and the lock's timeouts
+- [068](#068--the-sweep-gets-the-index-its-query-always-wanted) — The sweep gets the index its query always wanted
+- [069](#069--delivery-gets-a-deadline-because-the-claim-transaction-was-open-for-as-long-as-a-consumer-felt-like) — Delivery gets a deadline, because the claim transaction was open for as long as a consumer felt like
+- [070](#070--retention-and-a-health-check-that-asks-something) — Retention, and a health check that asks something
+- [071](#071--the-openapi-document-learns-which-host-serves-a-route) — The OpenAPI document learns which host serves a route
+
 ---
 
 ## 001 — Why Inventory is hexagonal and the other modules aren't
@@ -2715,3 +2789,1118 @@ threshold once the dispatcher's arrangement is settled.
      and which of the two the extraction makes free; and whether a run with the dispatcher on
      but no consumer registered would separate the claim-and-mark cost from the consumer's
      INSERT, which this pair of runs cannot. -->
+
+---
+
+## 057 — Reconciliation: the gateway is asked what it did, and a timeout stops being permanent
+
+031 made a timed-out authorisation *safe* and left it *unresolved*. The row keeps its
+idempotency key so a retry asks the same question rather than a second one, and it keeps
+the order's one live slot so nothing else can authorise underneath it. What it could not
+do was make the ambiguity go away, because only the gateway knows, and nothing asked. This
+asks: `PaymentReconciler` sweeps attempts that have been `TimedOut` for longer than
+`MinimumAge`, calls `SimulatedPaymentGateway.LookUpAsync` with the key the row is carrying,
+and settles the attempt on what comes back.
+
+**It is in Payments, not behind the outbox, and that is 031's open question answered.** 031
+left it as "whether it belongs in Payments or is the first real consumer of the dispatcher".
+Payments, decisively. The outbox carries facts that are already decided; a timed-out
+authorisation contains no fact to carry — its whole content is that nobody knows. Publishing
+"something ambiguous happened to order X" and having a consumer go and ask the gateway would
+put the authority over payment state in a different module from the one that owns the row,
+which is the second-authority hazard 031 refused to build half of. What the outbox unblocked
+is not the mechanism but the *precedent*: 053 is the argument that a background worker may
+own a slow, retrying, at-least-once job without any invariant depending on it, and this is
+the second worker built on that argument.
+
+### The three answers, and the fourth that is not one
+
+`GatewayRecord` is a separate enum from `GatewayOutcome` because a lookup answers a different
+question — not "what did this call do" but "what, if anything, is on record".
+
+| Record | What it means | What the attempt becomes |
+|---|---|---|
+| `Authorized` | Funds are held under this key | Released at the gateway, then `Voided` |
+| `Declined` | The gateway received it and refused | `Declined` |
+| `NotFound` | The gateway has no record: it never arrived | `Abandoned` |
+| `Unknown` | The lookup itself got no answer | unchanged, still `TimedOut` |
+
+**`NotFound` against `Unknown` is the distinction the whole thing rests on.** One is an
+answer — the gateway looked and there is nothing there — and the other is the absence of one.
+Collapsing them would let a failed lookup be read as proof that nothing happened, which is the
+worst available reading: it would hand an order its live-attempt slot back while the customer's
+funds were still held, and the next confirm would authorise a second time.
+
+### `PaymentStatus.Abandoned`, and why the existing members would each have been a lie
+
+**Rejected: `Declined`.** 031 refused to treat a timeout as a decline because it tells a
+customer their card was refused when it may not have been. An attempt the gateway never
+received was not refused either; the objection arrives one step later, unchanged.
+
+**Rejected: `Voided`.** A void releases an authorisation that existed. There was none, and a
+row claiming otherwise sends whoever chases it to the gateway for a reference that does not
+exist.
+
+**Rejected: `Retry` back to `Pending`, leaving the request path to finish it.** Tempting,
+because the adapter already knows how to resume a `Pending` row and no new status is needed.
+It is worse than doing nothing: `Pending` is live, so the row would keep the order's slot,
+and if no further confirm ever came it would sit there forever — the same orphan, wearing a
+status that also lies about there being a call in flight.
+
+`Abandoned = 6` is terminal and not live. It costs no migration: the index filter is
+`"Status" IN (0, 1, 2, 4)` and a new non-live member is simply absent from it.
+`PaymentTests.IsLive_ShouldMatchTheIndexFilter` gained a row, which is the only thing pinning
+the enum to that SQL literal.
+
+### A hold it finds is released, not recorded
+
+**The sweep does not write `Authorized` and stop.** That would be bookkeeping: the funds would
+still be held, and 031's actual complaint — held until the gateway expires them days later —
+would be untouched. It voids, and only then writes, in one transition (`ResolveAsVoided`).
+
+**Why releasing is Payments' call and not an intrusion into Orders' lifecycle.** 028 authorises,
+sells, then captures, and a confirm whose authorisation times out returns before selling
+anything. So a `TimedOut` row never has sold seats behind it, and 028's own rule — a sale that
+does not complete voids the authorisation — is already the rule that applies. The void simply
+never happened, because nobody knew there was anything to void. The sweep is not deciding an
+order is dead; it is finishing a decision this module already made.
+
+**Nothing is written when the void gets no answer.** Recording the authorisation without having
+released it would swap one orphan for a worse one: an `Authorized` row nobody will ever capture
+and that no sweep looks at. The row stays `TimedOut` and the next sweep tries again.
+
+**Three transitions, not loosened guards on the existing three.** `ResolveAsVoided`,
+`ResolveAsDeclined` and `ResolveAsAbandoned` all refuse anything but `TimedOut`, reusing
+`NotTimedOut`. Letting `Authorize` or `Decline` accept a timed-out row would let the ordinary
+request path write a settled answer it never actually received, which is exactly the property
+the separation protects. They also leave `AttemptedAt` alone: no attempt was made, an answer was
+read back, and the funds were held when the original call reached the gateway rather than when
+we found out.
+
+### Shape of the worker, and where it deliberately differs from the dispatcher
+
+**No claim, no `FOR UPDATE SKIP LOCKED`.** The dispatcher locks because delivering a message
+twice is a real cost. Here the expensive half is a *read* at the gateway, which two instances
+may safely duplicate, and the write is arbitrated by `xmin` like every other write in this
+module. Holding a Postgres row lock across a call to a third party would be the worse trade by
+a distance — a confirm touching that row would block for as long as the gateway felt like
+taking. One scope per row, so a row losing on `xmin` leaves the rest of the sweep with a clean
+change tracker.
+
+**It always sleeps, even after a full batch — the opposite of the dispatcher.** A message the
+dispatcher fails to deliver has its next attempt pushed into the future, so a full batch there
+really does mean more work is ready now. A row this fails to resolve is still timed out, still
+old enough, and still first in the next sweep's ordering, so looping on a full batch would mean
+hammering the gateway with the same unanswerable questions as fast as it can refuse to answer
+them.
+
+**`PollInterval` is one minute, not the outbox's one second.** An undelivered event is a fact
+the system already owns and is merely late in passing on. An unresolved authorisation is a
+question only a third party can answer, and asking more often does not make the answer arrive
+sooner. This is also the direct lesson of 056: the outbox's cost was not the write on the hot
+path, it was a second workload competing for the same database, and a third one polling every
+second would be repeating a mistake that has already been measured once.
+
+**`MinimumAge` is five minutes, which is one seat-hold duration.** A confirm whose authorisation
+timed out aborts before selling, so the customer's only route back is another confirm — which
+finds the row and retries it under the same key. Past five minutes the seats that confirm was
+for have certainly expired, so no confirm that could still succeed is racing the sweep. The race
+is survivable either way; this is about not doing pointless work and not voiding an
+authorisation somebody is seconds from using.
+
+**`Enabled` defaults true**, on `OutboxOptions.Enabled`'s reasoning rather than
+`MigrateOnStartup`'s: a reconciler that did not run by default would silently leave funds held.
+`RECONCILER_ENABLED` is a compose variable for the same reason `OUTBOX_ENABLED` is — 056's
+baseline needs to be able to switch a background workload off to attribute its cost.
+
+### The simulator had to change, and it corrects an earlier note
+
+`SimulatedPaymentGateway` recorded nothing for a timed-out call, with a comment saying a timeout
+is deliberately not remembered so that "the ambiguity is not trivially resolvable and the retry
+path stays tested". **That was wrong in an instructive direction, and the note is superseded
+rather than deleted.** What the gateway records is not visible to the caller, so recording it
+removes no ambiguity from the only side that experiences it — and a retry under the same key
+getting a consistent answer back is precisely what a real idempotent gateway does. Never
+recording it made one branch of reconciliation *unreachable*: every lookup would have answered
+`NotFound`, so "the authorisation landed" could never be produced and the branch that actually
+returns somebody's money would have looked tested while being unreachable.
+
+So a timeout is now two events wearing one name. The gateway decides whether the caller hears
+anything (`TimeoutRate`), and separately, when they do not, whether the request arrived at all
+(`LostRequestRate`, default 0.5). A request lost outbound leaves nothing on record; one whose
+answer was lost leaves a decision the gateway repeats when asked. The caller still cannot tell
+them apart — that is what makes a timeout ambiguous — but `LookUpAsync` can.
+
+`LostRequestRate` does not reopen the sum-to-one problem `PaymentSimulationOptions` refuses. It
+is on a different axis: the first two rates divide every call into answered-yes, answered-no and
+unanswered, and this one divides the unanswered ones.
+
+### One new catch on the request path
+
+`InProcessOrderPayments.AuthorizeAsync` now catches `DbUpdateConcurrencyException` on its first
+save and answers `ConcurrentAttemptInFlight`. The reconciler is the first writer of these rows
+that is not a request, so a confirm that reads a `TimedOut` row, calls `Retry`, and saves after
+the sweep has settled it is newly reachable — and without the catch it is a 500 for a situation
+the caller can simply retry. It must come before the `IsDuplicateLiveAttempt` clause, which
+filters a base type of it.
+
+**Stated plainly: no test forces that interleaving.** Every settled status is non-live, so the
+server-side filter in `LiveAsync` excludes a resolved row and the retry path is never entered —
+the only way to reach the catch is a conflict landing between that read and that save, and
+nothing in the suite can hold the two apart. The clause is defensive, and it is cheaper than the
+alternative of discovering it in a log.
+
+### What this does not do
+
+**`Payment` still raises no domain events, so nothing is announced.** 029 refused them on the
+grounds that events with no consumer are ceremony, and that is still true of a capture; it is
+noticeably less true of "the authorisation we could not account for has been released", which an
+order sitting `Pending` would like to know about. Announcing it means Payments getting an outbox
+of its own — the drain, the table, the dispatcher, all currently Inventory's — and that is a
+second argument that should not ride along inside this one. It also collides with 027, which
+chose to resolve `AwaitingCapture` by the next confirm rather than by a background job, and that
+choice deserves re-examining on its own terms rather than by implication. **Deferred, named, and
+the next obvious chunk of Payments work.**
+
+**One branch has no integration test, deliberately.** A lookup that finds funds and then fails to
+release them leaves the row timed out. Reaching it needs the lookup to answer and the void not
+to, and both are governed by the single `TimeoutRate` knob — so forcing it would mean adding a
+knob to the simulator whose only purpose is to be a test's seam.
+
+**The simulator does not forget a released key.** After the sweep voids, a lookup under that key
+would still report the funds held. Nothing looks: an attempt is only reconciled while it is timed
+out, and settling it removes it from that set for good. Doing better needs a reference-to-key map,
+and `ReferenceFor` is deliberately one-way.
+
+<!-- Expand later: whether Payments gets its own outbox or the reconciler's outcome reaches
+     Orders some other way, which is the 029/027 pair above; and whether a reconciled hold should
+     ever be captured rather than voided, which only becomes a question if some future path can
+     time out an authorisation after seats are already sold. -->
+
+---
+
+## 058 — Five copied migrators become one, and the project that may not name a module
+
+017 accepted about sixty duplicated lines per module — the startup migrator, the
+Npgsql/history-table wiring — on a specific and good argument: the code is inert, it
+does not change, and "a bug in one copy cannot be a bug in another". The alternative
+on the table then was a host-level migration step, which would have to name every
+module's context and so would put EF Core into `Encore.Api`, costing it the
+zero-package property it keeps on purpose. Refusing that was right.
+
+What 017 did not separate is that *sharing an implementation* and *sharing a step* are
+two different things, and only the second was the one it objected to. `ModuleMigrator<TContext>`
+shares the first and not the second. Each module still registers its own instance, over
+its own context, behind its own `{Module}:MigrateOnStartup` flag, and carries it away
+when it is extracted. Nothing moved into the host, which still does not know that a
+module has a database.
+
+**The type parameter is the whole of the change.** What differed between the five copies
+was the context type and a string in a log message; both are now arguments. That is
+what makes this different from a drawer: the shared code has no module's name in it, and
+cannot acquire one without the test below going red.
+
+**Three rules, each asserted rather than asked for.**
+
+- It may **name no module and no `.Contracts` assembly**
+  (`AssemblyReferenceTests.SharedPersistence_ShouldNameNoModuleOrContractsAssembly`). This
+  is 017's strongest objection, kept answered. The day this assembly names `Catalog`, the
+  argument for its existence has gone whatever the code looks like.
+- It declares **no `ProjectReference` at all**, and **nothing zero-dependency may reference
+  it** (`ProjectGraphTests.SharedPersistence_ShouldDeclareNoProjectReference` and
+  `ZeroDependencyProject_ShouldNotReferenceSharedPersistence`). It carries EF Core and
+  Npgsql on purpose, so every edge out of it is a route by which those reach somewhere they
+  are forbidden. `Encore.Shared` is the one that matters: it is the Domain's only
+  `ProjectReference`, so EF Core arriving there arrives on the Domain's compile surface.
+  ENCORE003 would catch that at build time; this names the rule that was broken instead of
+  leaving a reader to work out what `Npgsql` is doing in a closure listing.
+- The host still does not name it
+  (`AssemblyReferenceTests.Host_ShouldNotNameTheSharedPersistenceAssembly`), which is 017's
+  refusal of a host-level step, still standing.
+
+The theory over the zero-dependency list is itself checked against the csprojs
+(`TheZeroDependencyListShouldMatchTheProjectsThatDeclareIt`), because a theory over a
+hand-written list stops being a rule the moment a sixth project opts in and nobody adds a
+row.
+
+**A module keeps its own vocabulary.** Catalog still exposes `UseCatalogNpgsql` and still
+declares the string `"catalog"`. Only the shape moved. The schema name is the one thing in
+the copied code that was never inert, and leaving it where the module declares it keeps a
+module's schema a fact about that module rather than a row in a table somewhere else.
+
+**This is not a licence to create a sibling.** The test for a candidate is still 017's, with
+one clause added: the code has to be inert, *and* sharing it must not require the shared
+project to learn a module's name. `ClientIdEndpointFilter` fails the second and stays copied
+three times (024), as does anything carrying a module's vocabulary — a result mapper, an
+endpoint filter, a request pipeline. This supersedes 017 on this one point and leaves the
+rest of it standing.
+
+**No `FrameworkReference` on it, deliberately.** Notifications has no routes and pays no web
+framework to get `IHostedLifecycleService` (055); a project every module references is the
+last place to hand one back. The hosting abstractions are all this needs.
+
+---
+
+## 059 — The hand-written OpenAPI document gets the test 049 asked for
+
+049 chose to maintain `src/Encore.Api/wwwroot/docs/openapi.json` by hand rather than
+reintroduce Swashbuckle or `Microsoft.AspNetCore.OpenApi`, which 014 had refused, and was
+explicit that this had a real cost: nothing fails when a route changes and the document does
+not. That cost is now paid by a test rather than by a reader noticing.
+
+`OpenApiDocumentTests` reads the mapped routes out of the endpoint sources — resolving
+`MapGroup` prefixes so a group's children are compared at their full paths — and the
+documented routes out of the JSON, and fails **in both directions**. A route added without a
+document entry is a failure; so is a documented path nothing maps, so deleting a route
+reddens as loudly as adding one. The rule for a contributor is one line: **add, rename or
+remove a route and update the document in the same change.**
+
+**A route it cannot read is the failure mode that matters**, because such a route is missing
+from *both* sides of the comparison and therefore passes. So a fourth test counts every
+`.MapGet(`/`.MapPost(`/… and every `.MapGroup(` against the number the reading regexes
+matched, and fails when those disagree. A registration written in some shape this suite
+cannot parse is then a red test naming the file, rather than a silent hole.
+
+Comments are stripped before either count, so a `MapPost` written in prose — and there are
+several, this log included — cannot be mistaken for a registration.
+
+This does not generate the document and is not a step towards generating it. It checks the
+one property a hand-written document loses first, which is agreement about which routes
+exist. Request and response shapes are still maintained by hand and still unchecked.
+
+---
+
+## 060 — The log gets an index, and the index gets a test
+
+Sixty entries is past the point where a reader can find one by scrolling, and 035 moved the
+reasoning out of conversation and into this file, which makes finding an entry the common
+operation rather than a rare one. So there is an index at the top.
+
+An index that is maintained by hand is the same class of problem 059 just fixed one floor
+down, and it rots the same way: an entry gets added, the index does not, and the gap is
+invisible because both halves still look fine on their own. `DecisionLogTests` compares the
+two and fails when they disagree — an entry with no index line, an index line naming an entry
+that does not exist or giving it a title it does not have, and the order of the two lists
+against each other.
+
+It also checks the numbering runs from `001` without gaps, which is the one property an
+append-only log cannot repair later, and that every index anchor matches the slug its heading
+actually generates — because a link that silently goes nowhere is exactly the failure an index
+exists to prevent.
+
+The tests read `DECISIONS.md` as text. That makes this file a build artefact in the sense that
+it can fail the suite, which is deliberate: the log is load-bearing under 035's working
+agreement, and a load-bearing document nothing checks is a document that drifts.
+
+**It is also now literally a build input, and that cost a run to find.** `.dockerignore`
+excluded `*.md` on the stated premise that markdown is "not source, and no reason to rebuild
+the image when they change" — true of every markdown file in the repo until this entry made
+one of them a thing the suite reads. The four `DecisionLogTests` passed on the host, which
+reads the real tree, and failed in the container with `FileNotFoundException:
+/src/DECISIONS.md`, which is the split that makes this kind of thing expensive to diagnose.
+So `!DECISIONS.md` un-ignores it and `tests/Dockerfile` copies it in — last, on its own line,
+because it changes on almost every commit and that is the cheapest layer to invalidate. The
+`api` image does not get it: the host does not read the log.
+
+---
+
+## 061 — Payments becomes a service, and 033 survives it
+
+Soundcheck's remaining outcome. Payments now runs as its own host, and Orders reaches
+it over HTTP through the same `IOrderPayments` it was already calling through the
+container. The interface did not change. Nothing inside Payments changed. That is the
+claim the modular monolith has been making since 001, and this is the entry where it
+either held or it did not.
+
+**The seam was already written for this, and that is most of why it was cheap.**
+`IOrderPayments` is keyed by order rather than by payment, so the caller never held an
+id that only made sense in the other process. The idempotency that makes a retry safe
+comes from the one-live-attempt index and from reusing the row, not from anything the
+caller remembers — so `AuthorizeAsync` called twice for an order answers with the same
+attempt whether it crossed a process boundary or not. And `TimedOut` already existed,
+because a gateway can fail to answer; the vocabulary for "this may or may not have
+happened" was in the contract before there was a network to need it.
+
+### 033 is not reversed, and the distinction is the whole design
+
+033 refused a `POST /payments` because **a client that can charge itself has walked
+around the order flow entirely.** It could authorise money against an order it does not
+own, or against no order at all, and Payments has no principled way to refuse because it
+does not know what a checkout is.
+
+That argument is about a *customer*, and it is untouched. What the extraction needs is a
+*service* surface, and the two are kept apart by four things rather than by intent:
+
+- A separate seam. `MapPaymentsServiceApi` is not called by `MapPaymentsModule`, so a
+  host has to ask for the write side by name.
+- A separate path. `/internal/payments/*`, which is one rule for an ingress to refuse.
+- A different credential. These routes carry no `X-Client-Id` at all; they carry
+  `X-Service-Token`, and `ServiceTokenEndpointFilter` refuses anything else with a 401.
+  A caller holding a client id and nothing else gets 401, and
+  `PaymentServiceEndpointsTests` asserts exactly that.
+- No default. `MapPaymentsServiceApi` throws at startup when `Payments:ServiceToken` is
+  unset, because a token with a fallback is a token everybody has and the failure mode
+  is an open authorise endpoint.
+
+**A shared secret is the floor.** There is no Identity module, so this is what is
+available. It is compared in fixed time, and it is the seam that gets replaced when
+Identity arrives or when the deployment grows mTLS — the routes do not change. Calling
+it good enough forever would be wrong; calling it insufficient to start would have
+meant blocking this phase on a later one.
+
+### The caller branches on `reason`, never on the status code
+
+Several statuses share a code — 409 covers both a lost race and a missing authorisation
+— so the codes are for proxies and humans and the string is the half that is one-to-one
+with the contract's vocabulary. Successes carry `outcome` in a plain body; refusals carry
+`reason` in problem+json, which is the shape 049 gave every refusal in this codebase.
+Two suites pin the two ends: `HttpOrderPaymentsTests` that the adapter reads these
+bodies, `PaymentServiceEndpointsTests` that the endpoints emit them. Neither is worth
+much alone.
+
+**An unreadable answer is a timeout.** A 502, a truncated body, an outcome string this
+version does not know, a connection refused, a service that never replies — all of them
+become `TimedOut`. That is not a shrug. It is the one status whose handling is already
+correct for "the money may or may not be held": the order stays `Pending`, no seat is
+sold, and the next confirm asks again under the same key. `Declined` would be a guess
+that loses a sale; `Authorized` would be a guess that sells seats against funds nobody
+holds. The one failure deliberately **not** mapped this way is a rejected token, which
+throws — it is configuration, it will not fix itself by being retried, and every
+subsequent call fails identically, so the first one should say so loudly.
+
+### What the extraction does not do yet
+
+**The database did not move.** `payments-api` owns the same `payments` schema in the same
+Postgres. The process boundary moved; the data boundary did not. Splitting it is a
+separate change with its own decision, and doing both at once would leave neither
+reviewable — the interesting failure in this one is a wire format, and the interesting
+failure in that one is a migration.
+
+**The reconciler must run in exactly one process, and nothing enforces that.** Two sweeps
+over one table would both ask the gateway about the same timed-out attempt, and 057's
+argument is that the answer is acted on exactly once. Today that is a compose setting —
+`Payments__Reconciliation__Enabled` is true on `payments-api` and false on
+`api-strangled` — and a comment. It wants a real lease before anything runs twice for
+real.
+
+**No Polly, and not as an oversight.** A retry policy in the adapter would be actively
+wrong: `CheckoutService` already treats a timeout as a state rather than as a failure, and
+a transparent retry would turn one ambiguous answer into several without telling anyone.
+The client's timeout is the whole policy.
+
+**Both arrangements still run.** `docker compose --profile load up` is the monolith,
+unchanged; `--profile strangled up` is the pair. That is deliberate and it is what makes
+the next measurement possible — 056's format applied to a third configuration, which is
+the obvious next piece of work and is not in this entry.
+
+### Two hosts now, and the rules noticed
+
+`Encore.Payments.Api` composes one module and holds no packages of its own, exactly as
+`Encore.Api` does. Three architecture tests were spelling `"Encore.Api"` into themselves
+and would have let a second host inherit none of the first one's rules silently; they now
+read `EncoreTree.Hosts`, and `TheHostListShouldMatchTheProjectsUsingTheWebSdk` fails when
+that list and the csprojs disagree. A fourth test says hosts may not reference each other:
+they meet over HTTP and at no other point, which is the difference between a Strangler Fig
+and a mess.
+
+**059 earned its keep during this change.** The service group was first written as
+`MapGroup(Prefix)` with a constant, which its route reader cannot resolve — so the three
+routes were being compared as `/authorize` rather than `/internal/payments/authorize`, and
+the drift test would have passed while documenting nothing. Its fourth test, the one that
+counts registrations against readable registrations, caught it. The prefix is now a
+literal and `PaymentsServiceApiTests` pins it against the constant the client is given.
+
+<!-- Expand later: whether the payments schema moves to its own database and what that
+     does to the reconciler's lease; whether the service token survives Identity or is
+     replaced by it; and what the third load configuration measures. -->
+
+---
+
+## 062 — The expired-hold sweep, and the transition it needed
+
+The last unbuilt piece of the settled Inventory design, deferred at
+`InventoryModule.cs` since Phase 7 was a roadmap row. 007 described it in one line —
+"a background sweep that flips expired holds in Postgres, cleanup only" — and that
+line turned out to hide one real design question.
+
+**The question: a bulk UPDATE, or a trip through the aggregate?** The cheap answer is
+one statement — `UPDATE seats SET status = available WHERE status = held AND
+hold_expires_at <= now()` — which is a single round trip and touches no domain code. It
+is also wrong here, for a reason that has nothing to do with purity. A lapsed hold that
+a new client reclaims raises `SeatReleased(Expired)` before `SeatHeld`, and 007 says
+plainly why: without it the log shows two consecutive claims with no point at which the
+first stopped being true. A bulk UPDATE would produce that same state change for every
+hold *nobody ever came back for* — the unpopular seats, the abandoned baskets — and
+publish nothing at all. Hold history would then be reconstructable only for seats that
+happened to be contended. Event history cannot be backfilled, which is the argument
+that settles it.
+
+**So `Seat` gets a fourth method, and it is not a fourth rule.** `ExpireHold(utcNow)`
+is the transition `Hold` was already performing inline, given a name so that something
+other than a new holder can trigger it. `Hold` now calls it rather than repeating it,
+so there is exactly one place in the codebase that knows what a lapsed hold's ending
+looks like — which is a strictly better position than before this change, when the
+reclaim lived in the middle of `Hold` and any second caller would have had to copy it.
+
+**It returns `bool` rather than throwing, alone among the transitions.** The other
+three answer a caller who asked for something, so a refusal is news. This one is a
+caller offering to tidy up; "there was nothing to tidy", including because the seat
+sold thirty milliseconds ago, is an ordinary outcome and not an exception anybody
+should have to catch.
+
+**The sweep decides nothing, and that is the load-bearing property.** The candidate
+query is SQL — `Status = Held AND HoldExpiresAt <= utcNow`, on the port as
+`FindExpiredHoldsAsync` — and that is a second expression of the lapsed-hold rule,
+which 007 warns about explicitly. It is defused by giving it no authority: it returns
+ids, the sweep loads each seat and calls `ExpireHold`, and the aggregate re-decides.
+A seat sold or re-held since the query ran is refused by the aggregate, so a wrong
+candidate writes nothing. `Sweep_WhenTheSeatIsReHeldFirst_ShouldLeaveTheNewHoldStanding`
+is that case as a test.
+
+### The falsification test, which is the actual deliverable
+
+007 states its own criterion as a challenge: if a test cannot pass with the sweep
+disabled, the sweep has become load-bearing and the design is broken. Until now that
+was satisfied trivially, because there was nothing to disable. `ExpiryWithoutTheSweepTests`
+makes it a real test — no sweeper registered, constructed or referenced, and no Redis
+either, so whatever passes is passing on the aggregate and `xmin` alone:
+
+- a lapsed hold is reclaimed by the next client, while the row still reads `Held`;
+- the lapsed holder cannot sell;
+- a passer-by cannot sell the effectively-available seat either (`NotTheHolder`, per 041);
+- **the per-client hold cap reopens as holds lapse** — the subtlest of the four, because
+  the cap is a Postgres `COUNT` rather than an aggregate rule (006), so the expiry rule
+  exists there in a second form. If that copy said only `Status = Held`, a client would
+  be capped until a background job happened to run, and every test that did not involve
+  waiting would still have passed;
+- thirty clients reclaiming one lapsed seat at once produce exactly one winner.
+
+The last is `ConcurrentHoldTests`' proof repeated for a seat that is only *effectively*
+available. If expiry needed the sweep to be a real state change, that is where two
+winners would appear.
+
+### No lease, and unlike 061 that is an argument rather than a gap
+
+061 records that `PaymentReconciler` must run in exactly one process and that nothing
+enforces it. This job needs no such rule. Two sweeps that pick the same seat both load
+it, both call `ExpireHold`, and both save — at which point `xmin` arbitrates exactly as
+it does between two clients racing for a hold. The loser writes nothing and publishes
+nothing, because its outbox row was in the transaction that rolled back.
+`Sweep_WhenTwoSweepsRunTogether_ShouldExpireEachSeatOnce` asserts one `SeatReleased` per
+seat, not two.
+
+The difference is not that this job is better written. It is that the reconciler's
+expensive half is a *call to a third party*, which no database token can arbitrate, and
+this job calls nothing.
+
+### Three smaller calls
+
+**A scope per seat, not one transaction per batch** — `PaymentReconciler`'s shape. One
+seat losing its race would otherwise roll back every tidy-up beside it and poison the
+change tracker for the rest. More round trips, bought with independence, for work nobody
+is waiting on.
+
+**It loops on a full batch, unlike the reconciler.** Every row this visits is settled by
+the visit, so looping makes definite progress and a backlog drains; a row the reconciler
+fails to resolve is still first in the next query, so looping there would hammer a
+gateway with the same unanswerable question.
+
+**A minute between sweeps, not the dispatcher's second.** An undelivered event is late
+news somebody is waiting for. An unswept row is not news at all — every path already
+treats it as available — so a faster sweep buys only a tidier table, and 056 measured
+what a second workload beside the request path costs.
+
+**No new index yet.** The candidate query leads on `Status`, and
+`ix_seats_event_client_status` leads on `EventId`, so this is a filtered scan. That is
+acceptable for a job off the request path once a minute, and it is why the query takes
+a limit. `(Status, HoldExpiresAt)` is the obvious answer if it ever shows up in a
+measurement; adding it now would be optimising a query nobody has watched run.
+
+<!-- Expand later: whether the sweep should also drop the row's index entry cost by
+     nulling HeldByClientId eagerly on the sell path; and whether a second aggregate
+     would make ExpireHold the first member of a "cleanup transition" category worth
+     naming. -->
+
+---
+
+## 063 — Correcting 061: `Replace` did not make the switch order-independent
+
+061 claimed Payments was extracted and that Orders reached it over HTTP. The wiring
+that was supposed to make that true did not work, and for four days the strangled
+configuration was a monolith wearing two containers.
+
+**What the code said.** `OrdersModule.AddPaymentsClient` registers `HttpOrderPayments`
+when `Orders:Payments:BaseAddress` is set, and finishes with
+`services.Replace(ServiceDescriptor.Scoped<IOrderPayments>(...))`. Its own remark
+explained the choice: `Replace` rather than a second `AddScoped`, "so the outcome does
+not depend on whether Orders or Payments was registered first in `Program.cs`. Two
+registrations of one interface where last-wins decides which one moves money is not an
+arrangement worth having."
+
+**What `Replace` does.** It removes the *first existing* registration of that service
+type and appends its own. `Program.cs` registers Catalog, **Orders**, then **Payments**
+— so when `AddPaymentsClient` ran there was no `IOrderPayments` registration to remove,
+and the HTTP adapter was simply appended. `AddPaymentsModule` then appended
+`InProcessOrderPayments` after it, and last-wins gave every payment to the in-process
+adapter. The remark described the arrangement it was trying to avoid, and then produced
+exactly it.
+
+**What it cost.** Nothing, yet — the in-process adapter is correct, the tests that
+covered it were testing real behaviour, and no claim about *Payments* was wrong. What
+was wrong was the claim about *deployment*: `docker compose --profile strangled up`
+brought up a `payments-api` that Orders never called. The extraction was not being
+exercised by anything.
+
+**Why nothing caught it.** `HttpOrderPaymentsTests` constructs the adapter and drives a
+stub; `PaymentServiceEndpointsTests` drives the service's routes. Both were green and
+both would have stayed green forever. 061 said of that pair that "neither is worth much
+alone" — which was the right instinct about the wrong gap. The missing test was not at
+either end of the wire. It was that the wire was connected at all, and that is a
+property of the *composition*, which no test in the tree could see because no test
+project referenced both modules.
+
+**The fix is one word.** Payments now registers with `TryAddScoped`, which makes the
+pair genuinely order-independent: Orders first, and Payments stands down; Payments
+first, and Orders' `Replace` takes it out; no base address, and the in-process adapter
+is the only candidate, which is the monolith unchanged. `StranglerSwitchTests` pins all
+four combinations by resolving `IOrderPayments` from a composed container and asking
+what it got.
+
+**How it was found, which is the part worth keeping.** Not by review and not by a test.
+By stopping `payments-api` to check that the chaos rig's first fault would do anything,
+and watching the confirms keep succeeding — with `Captured` rows appearing in a schema
+that no running process was supposed to be able to write to. The harness found it before
+it had measured anything. See 064.
+
+**The general lesson, stated once.** A seam is not proven by testing each side of it.
+`IOrderPayments` had a good adapter, a good service and a good contract, and the thing
+in the middle — which registration a real host actually resolves — was untested and
+wrong. Every future extraction gets a composition test as part of the extraction, not
+as a follow-up.
+
+<!-- Expand later: whether Program.cs should assert its own resolved graph at startup
+     rather than leaving it to a unit test, and whether the same last-wins hazard exists
+     anywhere else two modules register one interface. -->
+
+---
+
+## 064 — Four faults, injected on purpose, and what each one actually cost
+
+048 built a rig that measures. This makes it break things. The brief was evidence
+rather than a chaos script: for every fault, the invariants that already matter are
+asserted under the fault and reported pass or fail, so a claim can be pointed at rather
+than argued.
+
+### The rig is two halves, and the split is the design
+
+**k6 asserts and measures; it never breaks anything.** It has no access to the Docker
+daemon and should not have. `load/chaos.sh` owns the timeline, injects the faults, and
+reads the aftermath out of Postgres.
+
+**The two clocks are pinned by a marker.** k6's `setup()` writes a marker venue as its
+very last act and the script polls for it, so the injection timeline starts at the end
+of setup rather than at the start of a container. Seat-map creation takes a variable few
+seconds, and without this the faults would land wherever that variance left them.
+
+**Every fault is injected in the gap between two scenarios**, never inside one. A second
+of remaining skew then cannot put a fault in the wrong window.
+
+**Windows come in pairs wherever the question is a number.** Redis and Payments each run
+a control window and a broken window of identical shape, VUs and pool size. A single
+window with an outage in the middle measures a mixture and reports it as one number.
+
+**One fault per run, five runs.** A fault's aftermath — a backlog, a set of unresolved
+payment rows, a drained seat map — is half of what it is about, and one long run would
+feed each aftermath into the next fault's measurement. It also means a threshold failing
+on one fault does not take the other three down with it.
+
+**The invariant matrix is read back out of k6's own summary**, from
+`data.metrics[...].thresholds`, so the printed pass/fail cannot disagree with the exit
+code.
+
+### The third configuration, which 056 asked for and 061 left open
+
+Same script, same parameters, against `api-strangled` + `payments-api`:
+
+| | hold p99, contention | hold p99, sale | purchase p99 | iterations |
+|---|---|---|---|---|
+| Before the outbox (056, three runs) | 41.1 / 41.9 / 50.2 | 33.8 / 34.2 / 41.8 | 44.2 / 55.5 / 60.5 | 425,299 |
+| Drain only, dispatcher off (056) | 48.4 | 47.4 | 57.4 | 398,048 |
+| Drain and dispatcher (056) | 78.2 | 66.0 | 141.4 | 304,071 |
+| **Extracted, drain and dispatcher** | **47.5** | **46.4** | **68.8** | **391,982** |
+
+500 of 500 sold, no oversell, no unexpected response, 22,400 outbox rows all delivered
+with none pending, exactly 500 notifications.
+
+**Read this one carefully rather than as a win.** The extracted arrangement lands beside
+056's drain-only figures and well under its drain-and-dispatcher ones, while running the
+dispatcher — and while also running the expired-hold sweep, which none of 056's runs
+had. A tidy story would be that moving Payments out gave the hot path its database back.
+But this is one run on a different day, 056's own baseline spread across three identical
+runs was 22%, and the gap here is larger than that without being large enough to be
+safe. **Treat it as "the extraction did not cost the hot path anything", which the
+numbers support, and not as "the extraction made the hot path faster", which would need
+runs nobody has done.**
+
+### Fault 1 — Payments stopped mid-flash-sale
+
+Two windows of one-seat checkouts, `payments-api` stopped for the second.
+
+| | control | service stopped |
+|---|---|---|
+| confirm latency | med 258.8 ms, p99 1,050 ms | **med 10,002.7 ms** |
+| orders confirmed | 135 | **0** |
+| confirms reading `payment_timed_out` | 121 | 12 |
+| unexpected / 5xx | 0 | **0** |
+
+Every invariant passed. Afterwards: 133 orders `pending`, 135 `confirmed`, 85
+`awaiting_capture`; 720 seats sold; **0 seats sold without an owner**; **0 orders with
+more than one live payment attempt**. 500 + 135 + 85 = 720 exactly — every confirmed and
+awaiting-capture order sold its seat, every pending one sold nothing, and the 133 pending
+orders map one-to-one onto the 133 seats still held. 061's claim, demonstrated rather
+than asserted.
+
+**The number worth keeping is 10,002.7.** A *stopped* container does not refuse
+connections, it swallows them, so every confirm pays the full `HttpClient` timeout. 061
+said "the client's timeout is the whole policy"; this is what that policy costs, and ten
+seconds is a long time to hold a customer while deciding to tell them nothing happened.
+
+**A distinction the run made concrete.** A confirm during the outage creates no payment
+row at all, because the request never arrived — so there is nothing for reconciliation to
+find. Only an authorisation that *reached* the gateway and lost its answer becomes a
+`TimedOut` row. Those are the ones the sweep exists for, and it settled all 121 of them.
+
+### Fault 2 — two reconcilers over one table
+
+061's single-owner rule, broken on purpose. Nothing here adds the lease.
+
+**The good half, and it is genuinely good.** **No attempt was settled twice** — the
+overlap between what each process reported settling was zero. **82 sweeps lost the race
+on `xmin`** and each one wrote nothing and said so. **No order ever had more than one
+live payment attempt.** No 5xx, no oversell. Row-level idempotency held under a
+collision rate nothing else in this project has produced.
+
+**The bad half, which is worse than duplicated work.** `api-strangled`'s reconciler
+settled **379 attempts, every single one as `NotFound` into `Abandoned`. Zero
+authorised. Zero declined.** `payments-api` — the process that had actually done the
+authorising — reported 7 authorised and 29 not-found over the same table.
+
+The cause is that `SimulatedPaymentGateway` is a per-process singleton holding its
+answered keys in memory. A reconciler in a process that never authorised anything asks
+about keys its gateway has never seen, is told `NotFound`, and records the attempt as
+abandoned — "the gateway looked and there is nothing there". If the funds really were
+held, that releases the order's live-attempt slot while the customer's money is still
+held at the gateway, which is precisely the conflation 057 exists to prevent.
+
+**How much of that is the simulator.** A real gateway is a shared, durable third party;
+both processes would read the same record and both would get `Authorized`, and the
+duplicate would be a duplicate *void* rather than a wrong settlement. So the specific
+379 is an artifact. **The precondition it exposes is not.** The reconciler's correctness
+depends on every process running it seeing the same gateway, and 061 recorded the
+single-owner rule as being about duplicated work. It is not. It is about authority over
+an answer that only the gateway has.
+
+**The same hazard appeared with one reconciler.** In fault 1, `payments-api` was
+restarted as part of the fault, which emptied its in-memory gateway — and the sweep then
+settled **120 of 121 attempts as `Abandoned` with zero `Voided`**. No second reconciler
+was involved. An ordinary restart was enough. That moves this from "what happens if you
+break the rule" to "what happens on a Tuesday", and it is the strongest argument in this
+entry for the gateway's memory being the thing that needs fixing before the lease does.
+
+**Still no lease, deliberately.** The brief was evidence, and the evidence says the
+lease is not what is missing first.
+
+### Fault 3 — Redis stopped mid-run
+
+Two windows, 200 VUs of hold-and-release on 5 seats plus 50 VUs of hold-and-purchase on
+500, identical either side.
+
+| | lock present | lock gone |
+|---|---|---|
+| hold latency | med 140.4 ms, p99 517.5 ms | **med 11,978.8 ms, p99 12,096.9 ms** |
+| purchase latency | med 128.0 ms, p99 423.4 ms | med 5,970.7 ms, p99 6,043.6 ms |
+| holds won | 1,065 | 112 |
+| seats sold | 499 of 500 | 97 of 500 |
+| **oversold** | **no** | **no** |
+| unexpected / 5xx | **114** | **3** |
+
+**The claim holds and the implication does not.** Correctness survived: no oversell in
+either window, 0 seats sold without an owner, and the hold path kept winning holds with
+no lock in sight — which is the thing 001 and 010 promise. What does not survive is
+availability. A hold costs **85 times more** without Redis than with it.
+
+**Why twelve seconds.** `InventoryModule` tunes `ConnectTimeout` to 1s so that a missing
+Redis cannot stop the host starting, but leaves `SyncTimeout`/`AsyncTimeout` at
+StackExchange.Redis's 5s default. The hold path takes two locks, so discovering twice
+that the lock is unavailable costs about ten seconds before any database work happens.
+The lock adapter's ability to answer "I don't know" (010) is correct and is not fast, and
+nothing before this run had measured the difference.
+
+**The 5xx belong to the control window, not to the fault, and that is the result I did
+not expect.** 114 of the 117 unexpected responses happened with Redis *healthy*. At 250
+VUs this machine's Postgres runs out of connections — the API log is full of `53300:
+sorry, too many clients already` — and the outage, by stalling every request for twelve
+seconds, throttles the system below the load that causes it. So the broken window was
+*safer* than the working one, for a reason that has nothing to do with Redis.
+
+The first session could not tell these apart: it declared a threshold on the outage
+window and no submetric on the control window, so 111 faults appeared in the run total
+with only 4 attributable. **An A/B whose control arm is unmeasured is not an A/B**, and
+the rig now declares both.
+
+### Fault 4 — the outbox dispatcher stalled
+
+There is no switch for "stall the dispatcher" and adding one to production code for a
+chaos run would be the tail wagging the dog. Instead the run holds
+`notifications.notifications` under `ACCESS EXCLUSIVE` for 20 seconds. `SeatSold` is the
+only event with a registered handler, so delivery blocks on the consumer's INSERT while
+the seat path — another schema, another table — is untouched. That isolates delivery
+from the request path, which 056 could only do by comparing two whole runs.
+
+A paced 100 sales a second for 60 seconds, which is the one place in this rig where an
+arrival rate beats a mob: the question needs a known, sustained event rate, and a
+flash-sale mob drains any affordable seat map in seconds and then produces no events at
+all.
+
+| | value |
+|---|---|
+| backlog while blocked | 833 to 2,221 pending, with `delivered` frozen at 8,101 across three samples |
+| delivery latency | med 1,029 ms, p95 18,426 ms, **p99 20,238 ms, max 20,631 ms** |
+| request path during the stall | hold p99 **23.6 ms**, purchase p99 **16.8 ms** |
+| invariants | no oversell, **0 unexpected responses** |
+| recovery | the backlog drained to zero within seconds of release, unattended |
+
+**The max is the lock.** 20,631 ms against a 20,000 ms stall: the tail is the outage and
+nothing else, the median is untouched, and the request path did not notice. That is the
+outbox's entire proposition — late is not wrong — measured rather than asserted, and it
+is 007's rule holding for a third mechanism.
+
+### What this is not
+
+One laptop, one run per fault, no CI. 056's caveat applies with more force here, because
+these runs are shorter than its 60-second phases and several of the interesting numbers
+are counts in the low hundreds. The Redis and Payments numbers are A/Bs taken minutes
+apart on one machine, which is the best this rig can do and is not the same as a result.
+
+**Three things the rig got wrong on its first session, corrected rather than deleted.**
+The control window for Redis had no submetric, so 111 faults were unattributable. Both
+container logs were read seven separate times while reconciliation was still running, so
+seven counts described seven different instants and disagreed by a handful — they are now
+captured once to a file. And the stall's sampling loop reported "lock released" when the
+script noticed rather than when it happened, because each sample cost two `docker compose
+exec` round trips; the delivery-latency percentiles, which come from timestamps in the
+rows themselves, are the numbers to trust there.
+
+**And one thing the rig found before it measured anything**: the Strangler Fig switch was
+inert, so the first attempt at fault 1 stopped `payments-api` and watched the confirms
+succeed anyway. See 063.
+
+<!-- Expand later: whether SyncTimeout/AsyncTimeout should be tuned down to make the
+     lock's "I don't know" fast as well as correct, and what that does to false
+     unavailability under ordinary load; whether the simulated gateway's answered-keys
+     map should be a table rather than a dictionary, which would make the reconciler's
+     precondition explicit instead of accidental; and a latency SLO, which 056 deferred
+     until an arrangement was chosen and which now has a third arrangement to choose
+     from. -->
+
+---
+
+## 065 — An audit, and the four claims the documents had stopped making
+
+Nothing was broken. The suite was green, every architecture rule held, and the
+asymmetry 001 argues for had survived a fifth module and an extraction. What had
+stopped being true was the prose: `CLAUDE.md` opened its Architecture section with
+"Modular monolith, one ASP.NET Core host, five modules" four days after there were
+two hosts, and `README.md` opened with "Four modules behind one ASP.NET Core host"
+directly above a table listing five.
+
+**Four drifts, all corrected in this change.** The host count in both files; the
+Roadmap's claim that the Strangler Fig extraction was still ahead, when 061 did it
+and 063 repaired it; `CLAUDE.md`'s citation of 063 for the chaos harness, which is
+064 — a number `load/chaos.sh` and `load/flash-sale.js` both repeated in their own
+headers; and the OpenAPI document's description, which also said four modules and
+one host.
+
+**Why this is worth an entry rather than a quiet fix.** `CLAUDE.md` is the file an
+agent reads before touching anything, so a wrong architecture statement there is not
+a typo — it is an instruction. And the irony is instructive: 059 built a drift test
+for the OpenAPI document and 060 built one for this log's index, both on the
+reasoning that prose goes stale and only a test notices. The two files making the
+largest architectural claims in the repository had no such test, and went stale
+inside a week.
+
+**What this change does not add.** A test that reads English. Checking that
+`CLAUDE.md` says "two hosts" is a string match that a rewording defeats, and the
+thing worth checking — that the prose describes this system — is not mechanically
+decidable. What the audit did instead was cheaper and better: derive the answer from
+the code and compare it to the document in the one place where the document is
+machine-readable, which is 071.
+
+**The rest of the audit's findings are 066 through 071**, in the order it ranked
+them: the gateway's memory, two untuned defaults, the sweep's missing index, the
+dispatcher's unbounded transaction, retention and health, and the OpenAPI document's
+silence about which host serves what.
+
+---
+
+## 066 — The gateway's memory becomes a table, and a precondition stops being accidental
+
+`SimulatedPaymentGateway` kept the idempotency keys it had answered in a
+`Dictionary<string, GatewayOutcome>` on a singleton. That made "every process
+running `PaymentReconciler` is asking the same gateway" a precondition the design
+depended on and nothing stated — and 064 broke it twice by accident.
+
+**The one that matters is not the exotic one.** Fault 2 ran two reconcilers on
+purpose and got a wrong answer, which is what breaking a stated rule is supposed to
+produce. Fault 1 did nothing unusual at all: it restarted `payments-api`, which
+emptied the dictionary, and the next sweep settled **120 of 121 timed-out attempts
+as `Abandoned` with zero `Voided`**. `Abandoned` means "the gateway looked and there
+is nothing there", so every one of those released an order's live-attempt slot
+(030) while the funds behind it may still have been held. That is precisely the
+conflation 057 exists to prevent, reached by an ordinary deploy.
+
+**The fix is the smallest thing that makes the precondition real.**
+`payments.gateway_ledger`: idempotency key as the primary key, the decided outcome,
+and when it was decided. `AuthorizeAsync` reads it, rolls only when there is no row,
+and writes; `LookUpAsync` reads it and nothing else.
+
+**Three details in it are load-bearing.**
+
+*Only decisions are recorded.* A request lost on the way to the gateway still leaves
+no row, which is what keeps `NotFound` meaningful and keeps `LostRequestRate`'s two
+branches distinguishable (057).
+
+*The natural key is the primary key.* Two concurrent authorisations under one key
+both miss the read and both try to insert; the constraint lets one through and the
+loser reads back the winner's answer rather than its own roll. The lock that used to
+serialise this could not survive the read becoming a round trip, and a database is
+better at this than a lock was.
+
+*The table is in the `payments` schema and is not Payments' data.* A real gateway's
+records are not in our database at all, and a schema, context and migrator of their
+own would say so more honestly. They would also buy a distinction no test can
+observe, so the compromise is a comment on the entity, a note in `PaymentsDbContext`
+and this paragraph: nothing in Payments' own logic reads that table.
+
+**What it cost, stated rather than buried.** `SimulatedPaymentGatewayTests` moved
+from the unit project to the integration one — forty fast tests are now behind a
+container. The alternative was an `IGatewayLedger` with a database implementation
+and an in-memory one, and that is the repository interface 001 forbids in a flat
+module, introduced so that tests could keep using the very mechanism this entry
+exists to delete. The move is the honest price of the gateway having a database.
+
+**What it does not fix.** 061's single-owner rule for the reconciler still stands and
+still has no lease. Two processes sweeping one table now both get the gateway's real
+answer, so the failure is duplicated work and possibly a duplicate void rather than a
+wrong settlement — which is what 064 said the lease was actually for, once the
+simulator stopped being the problem.
+
+---
+
+## 067 — Two defaults nobody chose: the connection pools and the lock's timeouts
+
+Both were found by 064 and neither was the fault being injected.
+
+**The pools.** Npgsql pools per connection string, and the five module strings in one
+host are identical text, so one host means one pool with the library's default
+maximum of 100. The strangled pair therefore wanted 200 connections from a Postgres
+willing to hand out 97, and at 250 VUs the k6 **control** window — everything
+healthy, nothing stopped — filled with `53300: sorry, too many clients already`. 114
+of the 117 unexpected responses in 064's Redis A/B came from there, not from the
+outage, which is also why that run failed its own no-unexpected-responses threshold
+and exited 99.
+
+The budget is now written down in both places: `max_connections=300` on the Postgres
+service, and an explicit `Maximum Pool Size` per host — 100 for the monolith, 50 for
+`payments-api` — summing to 150, leaving room for the chaos rig's `psql` sessions,
+a `dotnet run` and the Testcontainers suites. None of those were counted before,
+because nothing was counting.
+
+**The timeouts.** `InventoryModule` tuned `ConnectTimeout` to 1s so a missing Redis
+could not stop the host starting, and left `SyncTimeout`/`AsyncTimeout` at
+StackExchange.Redis's 5s default. A hold takes two locks, so discovering twice that
+the lock was unavailable cost about ten seconds before any database work began:
+**med 11,979 ms against 140 ms**, an 85× cost for a dependency 010 calls optional.
+Both are now 250 ms.
+
+**What this does not change is what the lock means.** Unavailable is still "I don't
+know", the attempt still proceeds, and `xmin` still decides. 010's asymmetry is
+untouched: the seat lock's failure is waved through, the client lock's contention is
+refused. What changes is only how long the answer takes.
+
+**250 ms rather than something smaller**, because that is the budget for one round
+trip to a healthy Redis on the same network, and a lock that gave up on an ordinary
+GC pause would report contention that is not there. The cost of getting this wrong in
+that direction is a cap enforced less often (006) and a little more contention on the
+seat row, which is the direction this system is already built to survive.
+
+**Neither of these has been measured yet, and that is the honest state.** The numbers
+above are the ones that motivated the change; the run that shows what the change did
+has not been taken. What it needs is 064's Redis A/B repeated with a clean control
+window, which is now possible for the first time.
+
+---
+
+## 068 — The sweep gets the index its query always wanted
+
+`FindExpiredHoldsAsync` asks for `Status = Held AND HoldExpiresAt <= now`, ordered by
+`HoldExpiresAt`. The only index on `inventory.seats` was
+`ix_seats_event_client_status`, whose leading column is the event — which the sweep
+neither knows nor cares about. So the query was a sequential scan plus a sort over
+every seat in the system, once a minute, against the hottest table there is.
+
+**It has never mattered and that is not a reason.** The load rig's seat maps are 500
+rows, so this cost nothing measurable and would have gone on costing nothing until
+the day a real seat map made it cost everything at once. The sweep's own defence —
+that nothing waits on it (007) — is about latency, not about the shared database it
+scans while the request path is using it.
+
+`ix_seats_expiring_holds` is partial, filtered to held rows, which is
+`ix_outbox_messages_unprocessed`'s trick from 051 used for the same reason: in a
+healthy system almost every seat is `Available` or `Sold`, so this indexes a few
+thousand rows whatever the table's size, and a seat enters or leaves it only when it
+is held or stops being held.
+
+**The filter is a SQL literal naming the stored int**, because an index filter cannot
+be an expression over the enum — the same bargain `ux_payments_order_live` makes, and
+the same hazard. `MigrationConventionTests` now reads `SeatStatus.Held`'s value out of
+the enum's source and asserts the generated migration's filter says that number.
+Renumbering the enum without regenerating the index would otherwise change which rows
+are indexed without changing which rows the sweep asks for, and the result would be a
+sweep that quietly scans instead of seeking: slow, correct, and invisible.
+
+---
+
+## 069 — Delivery gets a deadline, because the claim transaction was open for as long as a consumer felt like
+
+`OutboxDispatcher` opens a transaction, claims up to fifty rows with
+`FOR UPDATE SKIP LOCKED`, delivers them all, then saves and commits. 053 argued
+carefully about claiming, backoff, ordering and dead-lettering, and said nothing
+about how long that transaction stays open — which is until the slowest handler in
+the batch returns.
+
+**064's fourth fault measured it without meaning to.** Holding
+`notifications.notifications` under `ACCESS EXCLUSIVE` for twenty seconds produced a
+20,631 ms maximum delivery latency, and that number is also how long one Inventory
+transaction stayed open with fifty rows locked, holding back vacuum on the schema the
+request path writes to. The request path itself was untouched — hold p99 23.6 ms —
+which is the outbox's proposition working. Late is not wrong. But late was also
+holding a lock, and nothing bounded it.
+
+**Two numbers now bound it.** `DeliveryTimeout` (2s) is what one handler gets, on a
+linked cancellation token; overrunning it fails that message like any other failure,
+with the ordinary backoff and retry. `MaxBatchDuration` (5s) is what the whole tick
+gets: when it is spent the tick commits what it delivered and returns, leaving the
+rest of the claimed batch untouched — no attempt recorded, no backoff applied,
+because those messages were never tried — for the next tick to claim again.
+
+**Both are enforced on the wall clock rather than `TimeProvider`**, alone in this
+codebase. Everything else here takes its instant as a parameter so that expiry is
+data rather than duration (039). These two are not about domain time: they bound how
+long a real transaction holds real locks, and a test holding a fake clock still wants
+its handler given real time.
+
+**The alternative, and why not.** Deliver outside the claim transaction entirely —
+claim and lease in one short transaction, deliver, mark processed in another. That is
+the textbook shape and it is probably where this ends up. It also adds a lease column,
+lease expiry, and a second way for a message to be in flight, in exchange for a bound
+this change gets from two `TimeSpan`s. Re-read 053's argument for `SKIP LOCKED` over a
+lease: the claim query was chosen precisely so that a second dispatcher needs no new
+state. Adding lease state now would spend that.
+
+**A handler that overruns is failed, not retried faster.** A consumer that cannot
+answer in two seconds is not healthy, and the outbox's promise is that late is not
+wrong — not that late is free.
+
+---
+
+## 070 — Retention, and a health check that asks something
+
+Two of 051's open questions, both due.
+
+**Retention, which 051 refused to build.** Its argument was that nothing here had an
+opinion about how long an event is worth keeping, and that inventing ninety days
+would be a guess wearing a policy's clothing. That was right about the guess and
+wrong about the alternative: **"forever" is also a policy, and nobody chose it
+either**. One chaos run writes 22,400 rows. This entry supersedes 051 on that point
+alone; everything else it says about the table stands.
+
+`OutboxRetentionSweeper` deletes rows delivered longer ago than
+`KeepDelivered` (30 days, chosen and written down as a starting point), a batch at a
+time, once an hour. It is a bulk `ExecuteDelete`, which is the opposite of what
+`ExpiredHoldSweeper` does and for a reason: expiring a hold is a state change
+somebody downstream needs to hear about, so it goes through the aggregate and raises
+`SeatReleased(Expired)` (062); deleting a delivered row announces nothing, has no
+aggregate and no invariant.
+
+**Only delivered rows, by `ProcessedAt`, never by the age of the event.** An
+undelivered message is work however old it is, and a dead letter is the evidence that
+something never arrived — which is exactly what somebody eventually comes looking
+for. A retention sweep that went by `OccurredAt` would tidy away the only record of
+the failure it was meant to survive.
+
+**Health, which was a constant.** Both hosts answered `/health` with
+`{ "status": "ok" }`, and compose gates `api-strangled` on `payments-api` being
+"healthy" — which meant a process was listening. `/health/ready` now asks each module
+and reports the answers together: 200 when all can work, 503 when any cannot.
+
+**The host counts votes rather than asking a database**, because it is not allowed to
+know that a module has one (013, 058) and the architecture tests hold it to that. So
+`Encore.Shared` gets `IReadinessCheck`, beside `IIntegrationEventHandler` and for its
+reason: how a module reports that it is ready is an agreement every module shares,
+and `Task`, `CancellationToken` and a record are BCL, so `ENCORE001`–`003` are
+untouched.
+
+**A module registers one when it has something to say that nothing else says.**
+Inventory does — it reports the outbox backlog and the dead-letter count 051 asked
+for and nothing surfaced. Payments does — it reports timed-out attempts older than
+`MinimumAge`, the number 064 had to open `psql` to find. Catalog, Orders and
+Notifications point at the same database and run no background work, so a check
+apiece would be three more pings of one server reported as three facts.
+
+**Neither number fails the check, and that is the judgement.** A dead letter means one
+message never arrived; taking the host out of rotation for it would turn a message
+nobody read into a request path nobody can reach. The only failure either check
+reports is a database it cannot read.
+
+**The endpoint is copied into both hosts**, for 024's reason: a host may not reference
+another host, and `Encore.Shared` cannot carry an endpoint without naming ASP.NET
+Core. Twenty duplicated lines is the cheaper of the two prices.
+
+---
+
+## 071 — The OpenAPI document learns which host serves a route
+
+The monolith serves the document at `/docs/`, and since 061 the monolith does not map
+`/internal/payments/authorize`, `/capture` or `/void` — only `Encore.Payments.Api`
+calls `MapPaymentsServiceApi`. 059's drift test could not see the difference, because
+it compares a set of route literals found anywhere in `src/` against a set of
+documented paths, with no notion of which host mounts which. So the page advertised
+three routes that the host serving it answers with a 404.
+
+**The document now says so**, with a per-path `servers` entry naming the Payments
+host, and the rule is narrow on purpose: **a path carries `servers` exactly when the
+monolith does not serve it.** It does not say which other hosts do. `/health`,
+`/health/ready` and the two `/payments` read routes are served by both and are
+documented plainly, because the question this page's reader has is "will the thing
+serving this document answer me", and the fuller answer would mean a `servers` array
+on all twenty paths to state something nineteen of them do not need.
+
+**The check walks the call graph.** From each host's `Program.cs`, through the `Map*`
+extensions, to the bodies that register routes — at method granularity rather than
+file, because `PaymentsModule` declares both `MapPaymentsModule` and
+`MapPaymentsServiceApi`, and attributing both to any host that calls either would
+erase the distinction being checked. A file is cut into bodies at its extension
+declarations; that is coarser than parsing C# and finer than taking the file whole,
+which is what this question needs.
+
+**It has a sanity test of its own**, because the quiet failure here is a walker that
+over-resolves: if both hosts came out serving identical route sets, the check would
+pass while having stopped distinguishing anything. So the suite asserts that the two
+sets differ, that the payments host serves `/internal/payments/authorize` and the
+monolith does not, and that both serve `/health`.
+
+**What is still hand-maintained is the document itself.** 014's refusal of
+Swashbuckle stands, 049's bill stands, and this adds one more line to it: a route
+that moves between hosts needs its `servers` entry moved too. The difference is that
+forgetting now fails a test instead of sending a reader at a 404.

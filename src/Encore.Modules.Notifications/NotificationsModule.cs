@@ -1,6 +1,7 @@
 using Encore.Modules.Inventory.Contracts.Events;
 using Encore.Modules.Notifications.Data;
 using Encore.Shared;
+using Encore.Modules.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -60,7 +61,7 @@ public static class NotificationsModule
 
         if (configuration.GetValue<bool>("Notifications:MigrateOnStartup"))
         {
-            services.AddHostedService<NotificationsMigrator>();
+            services.AddModuleMigrator<NotificationsDbContext>("Notifications");
         }
 
         return services;

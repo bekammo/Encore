@@ -40,6 +40,11 @@
     <InternalsVisibleTo Include="Encore.Modules.Orders.IntegrationTests" />
   </ItemGroup>
 
+  <!-- No PackageReference for IHttpClientFactory, and that is worth a line. The
+       adapter that talks to Payments once it is its own service (DECISIONS 061) uses
+       a typed client, and Microsoft.Extensions.Http ships inside the ASP.NET Core
+       shared framework this module already references. Adding it explicitly is an
+       NU1510 build error, not a redundancy the SDK tolerates. -->
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.4">
@@ -47,6 +52,15 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+  </ItemGroup>
+
+  <!-- The startup migrator and the Npgsql/history-table wiring, shared since
+       DECISIONS 058. The edge runs this way and only this way: a module names
+       this project, and this project names nothing at all — least of all a
+       module. It carries EF Core and Npgsql on purpose, which is exactly why
+       nothing zero-dependency is allowed to reach it. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Encore.Modules.Shared.Persistence\Encore.Modules.Shared.Persistence.csproj" />
   </ItemGroup>
 
 </Project>

@@ -32,9 +32,11 @@ public enum PaymentTransitionReason
     AlreadyCaptured = 2,
 
     /// <summary>
-    /// A retry was attempted on an attempt that did get an answer. Only the
-    /// ambiguity of <see cref="PaymentStatus.TimedOut"/> justifies reusing a row
-    /// and its idempotency key; everything else starts a fresh attempt.
+    /// A retry, or one of the three reconciliation transitions, was attempted on an
+    /// attempt that did get an answer. Only the ambiguity of
+    /// <see cref="PaymentStatus.TimedOut"/> justifies reusing a row and its
+    /// idempotency key, or settling an attempt on an answer looked up rather than
+    /// received; everything else already knows how it ended.
     /// </summary>
     NotTimedOut = 3
 }
