@@ -1,24 +1,110 @@
+using Encore.Modules.Payments.Data;
 using Encore.Modules.Payments.Simulation;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Testcontainers.PostgreSql;
 
-namespace Encore.Modules.Payments.UnitTests;
+namespace Encore.Modules.Payments.IntegrationTests;
 
 /// <summary>
-/// The simulated gateway's two promises: it honours an idempotency key, and a
-/// seeded run is reproducible. Both exist so the failure paths above it can be
-/// tested at all — a gateway that forgot its keys would let the retry path pass
-/// tests it should fail, and one that could not be pinned would make every
-/// assertion about an outcome a coin flip.
+/// One Postgres for every test in <see cref="SimulatedPaymentGatewayTests"/>, plus
+/// the scope factory the gateway now needs and a way to empty its ledger between
+/// tests.
 /// </summary>
 /// <remarks>
-/// Every gateway here is built with zero latency, so nothing in this file sleeps.
+/// A class fixture rather than a container per test: xUnit builds a new test class
+/// instance per test, so the <c>IAsyncLifetime</c> pattern the other suites here use
+/// would start forty containers for this file. The fixture starts one and
+/// <see cref="ResetAsync"/> gives each test a clean ledger, which is what those tests
+/// actually need.
 /// </remarks>
-public class SimulatedPaymentGatewayTests
+public sealed class GatewayLedgerDatabase : IAsyncLifetime
+{
+    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
+        .WithDatabase("encore")
+        .WithUsername("encore")
+        .WithPassword("encore")
+        .Build();
+
+    private ServiceProvider _provider = null!;
+
+    /// <summary>What the gateway resolves its context through.</summary>
+    public IServiceScopeFactory Scopes { get; private set; } = null!;
+
+    /// <inheritdoc />
+    public async Task InitializeAsync()
+    {
+        await _postgres.StartAsync();
+
+        var connectionString = _postgres.GetConnectionString();
+
+        await using (var context = new PaymentsDbContext(
+            new DbContextOptionsBuilder<PaymentsDbContext>().UsePaymentsNpgsql(connectionString).Options))
+        {
+            await context.Database.MigrateAsync();
+        }
+
+        var services = new ServiceCollection();
+        services.AddDbContext<PaymentsDbContext>(options => options.UsePaymentsNpgsql(connectionString));
+
+        _provider = services.BuildServiceProvider();
+        Scopes = _provider.GetRequiredService<IServiceScopeFactory>();
+    }
+
+    /// <summary>Empties the gateway's ledger, so the next test starts with a gateway that has answered nothing.</summary>
+    public async Task ResetAsync()
+    {
+        using var scope = Scopes.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<PaymentsDbContext>();
+
+        await context.Database.ExecuteSqlRawAsync(
+            $"TRUNCATE TABLE \"{PaymentsPersistence.Schema}\".\"gateway_ledger\"");
+    }
+
+    /// <inheritdoc />
+    public async Task DisposeAsync()
+    {
+        await _provider.DisposeAsync();
+        await _postgres.DisposeAsync();
+    }
+}
+
+/// <summary>
+/// The simulated gateway's three promises: it honours an idempotency key, a seeded
+/// run is reproducible, and — since <c>DECISIONS.md</c> 066 — what it decided
+/// outlives the process that decided it. The first two exist so the failure paths
+/// above it can be tested at all; the third exists because 064 proved the system
+/// depended on it while nothing provided it.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>These were unit tests until 066 and are integration tests now</b>, because the
+/// gateway's memory is a table. That is a real cost — forty fast tests became forty
+/// tests behind a container — and it was paid rather than avoided: the alternative
+/// was an <c>IGatewayLedger</c> with a real implementation and an in-memory one,
+/// which is the repository interface 001 forbids in a flat module, introduced so
+/// that tests could keep using the very mechanism the entry exists to remove.
+/// </para>
+/// <para>
+/// Every gateway here is built with zero latency, so nothing in this file sleeps.
+/// </para>
+/// </remarks>
+public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
+    : IClassFixture<GatewayLedgerDatabase>, IAsyncLifetime
 {
     private const decimal Amount = 99.99m;
     private const string Currency = "GBP";
 
-    private static SimulatedPaymentGateway Gateway(
+    private readonly GatewayLedgerDatabase _database = database;
+
+    /// <inheritdoc />
+    public Task InitializeAsync() => _database.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    private SimulatedPaymentGateway Gateway(
         double declineRate = 0,
         double timeoutRate = 0,
         double lostRequestRate = 0.5,
@@ -33,11 +119,10 @@ public class SimulatedPaymentGatewayTests
     /// Every lookup test needs this. Reconciliation only ever asks about an
     /// authorisation that got no answer, so the two calls have to happen under
     /// opposite conditions — <c>TimeoutRate</c> at 1 for the authorisation and 0 for
-    /// the lookup — and they have to hit the <i>same</i> gateway, because the record
-    /// being looked up lives in that instance. Rebuilding it between the calls would
-    /// look like the same test and assert nothing.
+    /// the lookup. They no longer have to hit the same <i>instance</i>, which is the
+    /// whole of 066; they do anyway, because the weather is what is being changed.
     /// </remarks>
-    private static (SimulatedPaymentGateway Gateway, PaymentSimulationOptions Options) Configured(
+    private (SimulatedPaymentGateway Gateway, PaymentSimulationOptions Options) Configured(
         double declineRate = 0,
         double timeoutRate = 0,
         double lostRequestRate = 0.5,
@@ -53,7 +138,9 @@ public class SimulatedPaymentGatewayTests
             Seed = seed
         };
 
-        return (new SimulatedPaymentGateway(Options.Create(options), TimeProvider.System), options);
+        return (
+            new SimulatedPaymentGateway(_database.Scopes, Options.Create(options), TimeProvider.System),
+            options);
     }
 
     // -- Outcomes ---------------------------------------------------------
@@ -166,16 +253,103 @@ public class SimulatedPaymentGatewayTests
         await Assert.ThrowsAsync<ArgumentException>(
             () => Gateway().AuthorizeAsync(key, Amount, Currency));
 
+    // -- Surviving the process (DECISIONS 066) ----------------------------
+
+    /// <summary>
+    /// The regression test for the failure 064 found, stated as plainly as it can be:
+    /// a gateway that never authorised anything still knows what the one that did
+    /// decided.
+    /// </summary>
+    /// <remarks>
+    /// Two instances over one database is both halves of 064's problem at once — the
+    /// restart in fault 1, where <c>payments-api</c> came back with an empty
+    /// dictionary and settled 120 of 121 attempts as abandoned, and fault 2's second
+    /// process asking about keys it had never seen. Before 066 this returned
+    /// <c>NotFound</c>, which the reconciler reads as "the gateway looked and there is
+    /// nothing there" and acts on by releasing an order's live-attempt slot while the
+    /// funds are still held.
+    /// </remarks>
+    [Fact]
+    public async Task LookUp_FromAnInstanceThatNeverAuthorised_ShouldStillReportTheHold()
+    {
+        var authorising = Gateway();
+        var (outcome, reference) = await authorising.AuthorizeAsync("key-1", Amount, Currency);
+        Assert.Equal(GatewayOutcome.Succeeded, outcome);
+
+        // A restart, or a second process. Same database, no shared state in memory.
+        var restarted = Gateway();
+
+        var (record, found) = await restarted.LookUpAsync("key-1");
+
+        Assert.Equal(GatewayRecord.Authorized, record);
+        Assert.Equal(reference, found);
+    }
+
+    /// <summary>
+    /// And the same for a decline: a restarted gateway must not re-roll a decision
+    /// somebody has already been given.
+    /// </summary>
+    [Fact]
+    public async Task Authorize_FromAnotherInstance_ShouldRepeatTheRecordedAnswer()
+    {
+        var (outcome, _) = await Gateway(declineRate: 1).AuthorizeAsync("key-1", Amount, Currency);
+        Assert.Equal(GatewayOutcome.Declined, outcome);
+
+        // Different instance, opposite weather: without the ledger this would roll
+        // again and succeed, which is a customer told "declined" and then charged.
+        var (again, _) = await Gateway(declineRate: 0).AuthorizeAsync("key-1", Amount, Currency);
+
+        Assert.Equal(GatewayOutcome.Declined, again);
+    }
+
+    /// <summary>
+    /// A request that never arrived leaves nothing behind, and that has to stay true
+    /// now the record is durable — it is what makes <c>NotFound</c> mean something to
+    /// the reconciler (057).
+    /// </summary>
+    [Fact]
+    public async Task Authorize_WhenTheRequestWasLost_ShouldLeaveNothingForAnotherInstanceToFind()
+    {
+        await Gateway(timeoutRate: 1, lostRequestRate: 1).AuthorizeAsync("key-1", Amount, Currency);
+
+        var (record, _) = await Gateway().LookUpAsync("key-1");
+
+        Assert.Equal(GatewayRecord.NotFound, record);
+    }
+
+    /// <summary>
+    /// Concurrent authorisations under one key are arbitrated by the ledger's primary
+    /// key, and the loser reads back the winner's answer rather than its own roll.
+    /// </summary>
+    [Fact]
+    public async Task Authorize_ConcurrentlyUnderOneKey_ShouldAgreeOnOneAnswer()
+    {
+        var gateway = Gateway(declineRate: 0.5);
+
+        var attempts = await Task.WhenAll(Enumerable.Range(0, 16)
+            .Select(_ => gateway.AuthorizeAsync("one-key", Amount, Currency)));
+
+        Assert.Single(attempts.Select(attempt => attempt.Outcome).Distinct());
+    }
+
     // -- Reproducibility --------------------------------------------------
 
     /// <summary>
     /// A seeded gateway replays. This is what lets a load test be re-run against
     /// the same sequence of nastiness rather than a fresh one.
     /// </summary>
+    /// <remarks>
+    /// The ledger is emptied between the two runs, and since 066 that is not
+    /// housekeeping but the point: a second run over the first's rows would return
+    /// the recorded answers and agree with itself no matter what the seed did.
+    /// </remarks>
     [Fact]
     public async Task Authorize_WithTheSameSeed_ShouldProduceTheSameSequence()
     {
         var first = await SequenceAsync(Gateway(declineRate: 0.3, timeoutRate: 0.3, seed: 1234));
+
+        await _database.ResetAsync();
+
         var again = await SequenceAsync(Gateway(declineRate: 0.3, timeoutRate: 0.3, seed: 1234));
 
         Assert.Equal(first, again);
@@ -190,6 +364,9 @@ public class SimulatedPaymentGatewayTests
     public async Task Authorize_WithoutASeed_ShouldNotProduceTheSameSequence()
     {
         var first = await SequenceAsync(Gateway(declineRate: 0.3, timeoutRate: 0.3));
+
+        await _database.ResetAsync();
+
         var again = await SequenceAsync(Gateway(declineRate: 0.3, timeoutRate: 0.3));
 
         Assert.NotEqual(first, again);
@@ -206,6 +383,7 @@ public class SimulatedPaymentGatewayTests
     public async Task Authorize_WhenMaxLatencyIsBelowMin_ShouldNotThrow()
     {
         var gateway = new SimulatedPaymentGateway(
+            _database.Scopes,
             Options.Create(new PaymentSimulationOptions
             {
                 MinLatency = TimeSpan.FromMilliseconds(1),

@@ -66,6 +66,32 @@ public sealed class SeatConfiguration : IEntityTypeConfiguration<Seat>
             .HasIndex(seat => new { seat.EventId, seat.HeldByClientId, seat.Status })
             .HasDatabaseName("ix_seats_event_client_status");
 
+        // Serves the expired-hold sweep's candidate query, and nothing else.
+        // DECISIONS 068.
+        //
+        // That query asks for `Status = Held AND HoldExpiresAt <= now` ordered by
+        // HoldExpiresAt, which the index above cannot answer: its leading column is
+        // the event, and the sweep does not know or care which event a lapsed hold
+        // belongs to. Without this it is a sequential scan plus a sort over every
+        // seat in the system, once a minute, against the hottest table there is.
+        //
+        // Partial, filtered to held rows, for the reason ix_outbox_messages_unprocessed
+        // is partial (051): the interesting set is tiny and the table is not. In a
+        // healthy system almost every seat is Available or Sold, so this indexes a
+        // few thousand rows whatever the seat map's size — which also keeps the
+        // write cost near zero, because a seat only enters or leaves this index when
+        // it is held or stops being held, never on the reads around it.
+        //
+        // The filter is raw SQL naming the stored int rather than the enum, because
+        // that is what HasConversion<int>() above put in the column. It is checked:
+        // MigrationConventionTests reads the generated migration, and an enum
+        // renumbering that left this behind would change which rows are indexed
+        // without changing which rows the sweep asks for.
+        builder
+            .HasIndex(seat => seat.HoldExpiresAt)
+            .HasFilter($"\"Status\" = {(int)SeatStatus.Held}")
+            .HasDatabaseName("ix_seats_expiring_holds");
+
         // Raised events are in-memory bookkeeping, not a column. InventoryDbContext
         // copies them into outbox_messages during SaveChanges, in the same
         // transaction as this row.

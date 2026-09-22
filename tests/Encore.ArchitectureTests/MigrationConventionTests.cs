@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace Encore.ArchitectureTests;
 
 /// <summary>
@@ -50,6 +52,53 @@ public class MigrationConventionTests
         Assert.True(
             offenders.Count == 0,
             $"xmin is a system column and must never appear in a migration's CreateTable — map a concurrency token onto it in the EF configuration instead. Found at: {string.Join("; ", offenders)}");
+    }
+
+    /// <summary>
+    /// The expired-hold sweep's index is filtered to held seats, and the filter says
+    /// the number the enum says.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>ix_seats_expiring_holds</c> is partial — <c>"Status" = 1</c> — because the
+    /// interesting set is the handful of seats currently held and the table is every
+    /// seat in the system (<c>DECISIONS.md</c> 068). The number is the stored form of
+    /// <c>SeatStatus.Held</c>, written as a SQL literal because an index filter
+    /// cannot be an expression over the enum.
+    /// </para>
+    /// <para>
+    /// So it is pinned here, in <c>PaymentConfiguration</c>'s spirit: renumbering the
+    /// enum would change which rows the index covers without changing which rows the
+    /// sweep asks for, and nothing else in the build would notice. The failure that
+    /// produces is a sweep that quietly scans instead of seeking — slow, correct, and
+    /// invisible.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void TheExpiringHoldsIndexShouldBeFilteredToTheHeldStatus()
+    {
+        // The enum is read out of its source rather than referenced: this project
+        // takes every ProjectReference with ReferenceOutputAssembly="false", so it
+        // can read the tree but cannot name a type in it (037).
+        var statuses = File.ReadAllText(
+            Path.Combine(EncoreTree.Root, "src", "Encore.Modules.Inventory.Domain", "SeatStatus.cs"));
+
+        var held = Regex.Match(statuses, @"Held\s*=\s*(?<value>\d+)");
+
+        Assert.True(held.Success, "Could not read SeatStatus.Held's value out of SeatStatus.cs.");
+
+        var expected = $"filter: \"\\\"Status\\\" = {held.Groups["value"].Value}\"";
+
+        var migration = MigrationSources()
+            .Where(file => Path.GetFileName(file).Contains("AddExpiringHoldsIndex", StringComparison.Ordinal))
+            .Where(file => !file.EndsWith(".Designer.cs", StringComparison.Ordinal))
+            .ToList();
+
+        var file = Assert.Single(migration);
+        var source = File.ReadAllText(file);
+
+        Assert.Contains("ix_seats_expiring_holds", source, StringComparison.Ordinal);
+        Assert.Contains(expected, source, StringComparison.Ordinal);
     }
 
     /// <summary>

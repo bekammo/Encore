@@ -3,6 +3,7 @@ using Encore.Modules.Payments.Data;
 using Encore.Modules.Payments.Endpoints;
 using Encore.Modules.Payments.Simulation;
 using Encore.Modules.Shared.Persistence;
+using Encore.Shared;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -35,10 +36,14 @@ public static class PaymentsModule
         services.Configure<PaymentSimulationOptions>(
             configuration.GetSection(PaymentSimulationOptions.SectionName));
 
-        // Singleton, because the gateway's memory of which idempotency keys it has
-        // already answered is the point of it. A scoped instance would forget
-        // between requests, and the retry path would then pass tests it should
-        // fail.
+        // Still a singleton, but no longer for the reason this comment used to give.
+        //
+        // It said the instance had to live because the gateway's memory of which
+        // keys it had answered lived on it — which was true, and was the bug. That
+        // memory is a table since 066, so a new instance now remembers everything
+        // the old one did and a second process sees the same answers. What is left
+        // on the instance is the simulation's own state: one seeded Random, which
+        // has to be one sequence for a seed to mean anything.
         services.AddSingleton<SimulatedPaymentGateway>();
 
         // TryAdd, not Add, and the difference is the whole Strangler Fig.
@@ -63,6 +68,10 @@ public static class PaymentsModule
         // Orders registers nothing and this is the only candidate, which is the
         // monolith, unchanged.
         services.TryAddScoped<IOrderPayments, InProcessOrderPayments>();
+
+        // This module's half of /health/ready, and in payments-api the only half
+        // there is. 070.
+        services.AddScoped<IReadinessCheck, PaymentsReadinessCheck>();
 
         services.TryAddSingleton(TimeProvider.System);
 

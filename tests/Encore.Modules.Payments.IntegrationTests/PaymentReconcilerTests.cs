@@ -24,12 +24,18 @@ namespace Encore.Modules.Payments.IntegrationTests;
 /// truth behind it for a lookup to find.
 /// </para>
 /// <para>
-/// <b>One gateway instance, two sets of weather.</b> Its memory of what it decided
-/// is per-instance, so the sweep has to ask the same object the adapter asked. The
-/// options object is mutated between the two calls instead: timing out for the
-/// authorisation, answering for the lookup. Rebuilding the gateway in between would
-/// leave the lookup asking a stranger, which reports <c>NotFound</c> and would make
-/// three of these tests pass for the wrong reason.
+/// <b>One gateway instance, two sets of weather.</b> The options object is mutated
+/// between the two calls — timing out for the authorisation, answering for the
+/// lookup — because that is the only difference these tests want between them.
+/// </para>
+/// <para>
+/// <b>It no longer has to be the same instance, and that is <c>DECISIONS.md</c>
+/// 066.</b> This remark used to say that rebuilding the gateway in between would
+/// leave the lookup asking a stranger, because what it had decided lived in a
+/// dictionary on the object. It lives in <c>payments.gateway_ledger</c> now, so a
+/// second instance — or a second process, or the same one after a restart — gives the
+/// same answer. <c>SimulatedPaymentGatewayTests</c> asserts exactly that, and 064's
+/// first fault is what proved it needed asserting.
 /// </para>
 /// <para>
 /// <b>One sweep is driven directly rather than by starting the hosted service</b>,
@@ -64,6 +70,13 @@ public sealed class PaymentReconcilerTests : IAsyncLifetime
     private string _connectionString = null!;
     private DbContextOptions<PaymentsDbContext> _options = null!;
 
+    /// <summary>
+    /// How the gateway reaches its ledger, which is a table since
+    /// <c>DECISIONS.md</c> 066 rather than a field on the instance.
+    /// </summary>
+    private ServiceProvider _provider = null!;
+    private IServiceScopeFactory _scopes = null!;
+
     /// <inheritdoc />
     public async Task InitializeAsync()
     {
@@ -76,10 +89,20 @@ public sealed class PaymentReconcilerTests : IAsyncLifetime
 
         await using var context = new PaymentsDbContext(_options);
         await context.Database.MigrateAsync();
+
+        var services = new ServiceCollection();
+        services.AddDbContext<PaymentsDbContext>(builder => builder.UsePaymentsNpgsql(_connectionString));
+
+        _provider = services.BuildServiceProvider();
+        _scopes = _provider.GetRequiredService<IServiceScopeFactory>();
     }
 
     /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    public async Task DisposeAsync()
+    {
+        await _provider.DisposeAsync();
+        await _postgres.DisposeAsync();
+    }
 
     /// <summary>
     /// The branch that actually returns somebody's money. The authorisation reached
@@ -313,7 +336,7 @@ public sealed class PaymentReconcilerTests : IAsyncLifetime
     /// A gateway that hangs up on every call, paired with the options object it is
     /// still reading so a test can stop it hanging up later.
     /// </summary>
-    private static TestGateway Gateway(double declineRate = 0, double lostRequestRate = 0.5)
+    private TestGateway Gateway(double declineRate = 0, double lostRequestRate = 0.5)
     {
         var options = new PaymentSimulationOptions
         {
@@ -325,7 +348,7 @@ public sealed class PaymentReconcilerTests : IAsyncLifetime
         };
 
         return new TestGateway(
-            new SimulatedPaymentGateway(Options.Create(options), TimeProvider.System),
+            new SimulatedPaymentGateway(_scopes, Options.Create(options), TimeProvider.System),
             options);
     }
 

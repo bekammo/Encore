@@ -2,6 +2,23 @@ services:
   postgres:
     image: postgres:16
     container_name: encore-postgres
+    # 300 rather than the image's default of 100, and the number is arithmetic
+    # rather than taste. DECISIONS 067.
+    #
+    # Every host here pools per connection string, and the five module strings in
+    # one host are identical text, so one host means one pool. Npgsql's default
+    # maximum is 100 — so the strangled pair alone wanted 200 connections from a
+    # server willing to hand out 97, and at 250 VUs the k6 control window filled
+    # with `53300: sorry, too many clients already`. That is where 114 of the 117
+    # "unexpected responses" in 064's Redis A/B came from: the healthy window, not
+    # the outage.
+    #
+    # The budget is now stated in both places. Each host declares its own maximum
+    # (100 for the monolith, 50 for payments-api) and they sum to 150, leaving room
+    # for the chaos rig's psql sessions, a `dotnet run` on the host and the
+    # Testcontainers suites — none of which used to be counted because nothing was
+    # counting.
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: encore
       POSTGRES_PASSWORD: encore
@@ -82,11 +99,11 @@ services:
       # to the other containers. The four stay separate even though they name
       # one database, because the names are the extraction seam — collapsing
       # them to a single setting here would quietly undo that.
-      ConnectionStrings__Catalog: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
-      ConnectionStrings__Orders: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
-      ConnectionStrings__Inventory: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
-      ConnectionStrings__Payments: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
-      ConnectionStrings__Notifications: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      ConnectionStrings__Catalog: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
+      ConnectionStrings__Orders: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
+      ConnectionStrings__Inventory: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
+      ConnectionStrings__Payments: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
+      ConnectionStrings__Notifications: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
       ConnectionStrings__Redis: "redis:6379"
       # 013 permits this in development, and a load rig is development. One that
       # needed a manual `dotnet ef database update` first is a rig nobody can
@@ -142,7 +159,7 @@ services:
     ports:
       - "8081:8080"
     environment:
-      ConnectionStrings__Payments: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      ConnectionStrings__Payments: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=50"
       Payments__MigrateOnStartup: "true"
       # The only thing guarding a call that can move money. A compose file is not a
       # secret store and this value is not a secret — it is a local development
@@ -198,11 +215,11 @@ services:
     ports:
       - "8080:8080"
     environment:
-      ConnectionStrings__Catalog: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
-      ConnectionStrings__Orders: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
-      ConnectionStrings__Inventory: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
-      ConnectionStrings__Payments: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
-      ConnectionStrings__Notifications: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore"
+      ConnectionStrings__Catalog: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
+      ConnectionStrings__Orders: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
+      ConnectionStrings__Inventory: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
+      ConnectionStrings__Payments: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
+      ConnectionStrings__Notifications: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
       ConnectionStrings__Redis: "redis:6379"
       Catalog__MigrateOnStartup: "true"
       Orders__MigrateOnStartup: "true"

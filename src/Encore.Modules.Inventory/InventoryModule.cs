@@ -9,6 +9,7 @@ using Encore.Modules.Inventory.Contracts.Events;
 using Encore.Modules.Inventory.Endpoints;
 using Encore.Modules.Inventory.Ports;
 using Encore.Modules.Shared.Persistence;
+using Encore.Shared;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -56,6 +57,26 @@ public static class InventoryModule
             options.ConnectTimeout = 1_000;
             options.ConnectRetry = 3;
 
+            // The command timeouts, and they are set here for a reason 064 had to
+            // measure before anybody could see it. ConnectTimeout above was tuned
+            // and these two were left at StackExchange.Redis's 5s default, so a
+            // hold — which takes two locks — spent about ten seconds discovering
+            // twice that the lock was unavailable before any database work began:
+            // med 11,979ms against 140ms with Redis up, an 85x cost for a
+            // dependency the design says is optional.
+            //
+            // 250ms rather than something smaller, because this is the budget for
+            // a single round trip to a healthy Redis on the same network, and a
+            // lock that gives up on an ordinary GC pause would report contention
+            // that is not there. A holder that has genuinely gone away costs half
+            // a second across both locks now instead of ten.
+            //
+            // This does not change what the lock means. Unavailable is still "I
+            // don't know", the attempt still proceeds, and xmin still decides
+            // (010). It changes only how long that answer takes to arrive.
+            options.SyncTimeout = 250;
+            options.AsyncTimeout = 250;
+
             return ConnectionMultiplexer.Connect(options);
         });
 
@@ -83,6 +104,11 @@ public static class InventoryModule
         // line points at an HTTP-backed implementation instead and no consumer
         // is recompiled.
         services.AddScoped<ISeatReservations, InProcessSeatReservations>();
+
+        // This module's half of /health/ready. Scoped because it reads through the
+        // scoped context, and registered as the interface so the host can ask every
+        // module the same question without learning which modules exist. 070.
+        services.AddScoped<IReadinessCheck, InventoryReadinessCheck>();
 
         // Off unless asked for. The run profiles set it so that a developer with
         // a fresh `docker compose up` gets a schema from `dotnet run`; anything
@@ -176,6 +202,32 @@ public static class InventoryModule
         if (options.Enabled)
         {
             services.AddHostedService<OutboxDispatcher>();
+        }
+
+        AddOutboxRetention(services, configuration);
+    }
+
+    /// <summary>
+    /// Registers the job that removes delivered messages once they are older than
+    /// the retention window. <c>DECISIONS.md</c> 070, superseding 051 on this point.
+    /// </summary>
+    /// <remarks>
+    /// Separate from the dispatcher's own flag on purpose. Delivery and tidying are
+    /// different duties on different clocks — one second against one hour — and an
+    /// operator switching the dispatcher off to measure it (056) should not silently
+    /// stop the table being pruned as well.
+    /// </remarks>
+    private static void AddOutboxRetention(IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(OutboxRetentionOptions.SectionName);
+
+        services.Configure<OutboxRetentionOptions>(section);
+
+        var options = section.Get<OutboxRetentionOptions>() ?? new OutboxRetentionOptions();
+
+        if (options.Enabled)
+        {
+            services.AddHostedService<OutboxRetentionSweeper>();
         }
     }
 

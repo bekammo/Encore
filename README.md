@@ -5,8 +5,8 @@ whose real subject is *where* architecture is worth paying for.
 
 ## The shape of it
 
-Four modules behind one ASP.NET Core host. Three of them are deliberately
-plain, and one is deliberately not:
+Five modules, four of them deliberately plain and one deliberately not — and,
+since the Payments extraction, two ASP.NET Core hosts rather than one:
 
 | Module | Shape | Why |
 |---|---|---|
@@ -20,6 +20,13 @@ That asymmetry is the argument, not an accident. Architecture is a cost you pay
 for optionality, and it is only worth paying where the optionality will actually
 be spent. The reasoning behind every choice here, including the ones I would
 expect to be challenged, is in [DECISIONS.md](DECISIONS.md).
+
+The second host is `Encore.Payments.Api`: the same Payments module, composed
+through the same seam, plus the three `/internal/payments/*` routes the monolith
+does not map. Orders reaches it over HTTP when `Orders:Payments:BaseAddress` is
+set and in-process when it is not — one configuration key, and the reason the
+extraction was cheap. It was also inert for four days before a chaos run noticed
+(`DECISIONS.md` 061 and 063).
 
 ## Layout
 
@@ -326,8 +333,10 @@ What the four runs showed (`DECISIONS.md` 064 has the tables and the caveats):
 - **Two reconcilers over one table.** No attempt was settled twice, 82 sweeps lost the
   race on `xmin` and wrote nothing, and no order ever had more than one live attempt. But
   the process that had never authorised anything settled 379 attempts as `abandoned`,
-  because the simulated gateway keeps its answered keys in memory per process. The lease
-  061 wants is not the first thing missing.
+  because the simulated gateway kept its answered keys in memory per process. The lease
+  061 wants was not the first thing missing — **the gateway's memory is a table since
+  `DECISIONS.md` 066**, because an ordinary restart was enough to produce the same
+  failure with one reconciler.
 - **Redis stopped.** No oversell either side, and holds kept being won with no lock in
   sight — the claim that correctness comes from `xmin` alone, demonstrated under 250 VUs.
   A hold costs about 85 times more without it, because discovering the lock is
@@ -390,6 +399,25 @@ when the sweep releases an authorisation, nothing tells the order it was release
 means Payments getting an outbox of its own, and it collides with 027's choice to resolve an
 order by the next confirm rather than by a background job — two arguments that deserve their own
 change rather than a ride inside this one.
+
+**An audit closed seven more** (`DECISIONS.md` 065–071), and what it found is worth
+stating plainly, because none of it was a broken test. The simulated gateway's memory
+became a table, so a restart can no longer make the reconciler settle a live
+authorisation as abandoned — the failure fault 1 produced by accident. Two defaults
+nobody had chosen were chosen: connection pool sizes, which is why the *healthy* window
+of a chaos run was full of `53300: sorry, too many clients already`, and Redis's command
+timeouts, which is why losing the lock cost 85× rather than a little. The expired-hold
+sweep got the partial index its query always wanted. The outbox dispatcher's delivery got
+a deadline, because until then the claim transaction stayed open for as long as the
+slowest consumer felt like taking — twenty seconds, in fault 4. Delivered outbox rows now
+have a retention window, and `/health/ready` asks each module whether it can actually
+work instead of answering `{"status":"ok"}` from a constant. And the OpenAPI document now
+says which routes the host serving it does not answer, with a test that walks the call
+graph from each host's `Program.cs` to check it.
+
+The audit's first finding was not in the code at all: this file and `CLAUDE.md` had both
+gone on describing a single-host monolith for four days after there were two hosts
+(`DECISIONS.md` 065).
 
 **The extraction was inert for four days, and a chaos run found it** (`DECISIONS.md` 063).
 `OrdersModule` used `services.Replace` to swap in the HTTP adapter and argued in a comment

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text.Json;
 using Encore.Modules.Inventory.Adapters.Messaging;
 using Encore.Modules.Inventory.Adapters.Persistence;
@@ -181,6 +182,90 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         Assert.Null(messages[0].ProcessedAt);
         Assert.Equal(1, messages[0].Attempts);
         Assert.NotNull(messages[1].ProcessedAt);
+    }
+
+    /// <summary>
+    /// A handler that overruns its deadline is failed like any other handler, and
+    /// the tick carries on.
+    /// </summary>
+    /// <remarks>
+    /// The bound 064's fourth fault showed was missing. Delivery happens inside the
+    /// claim transaction, so before <c>DECISIONS.md</c> 069 a consumer blocked on a
+    /// table lock held that transaction — and the batch's row locks — for as long as
+    /// it was blocked, which in that run was twenty seconds. The message backs off
+    /// and is retried; what does not happen is the rest of the system waiting for it.
+    /// </remarks>
+    [Fact]
+    public async Task Dispatch_WhenAHandlerOverrunsItsDeadline_ShouldFailThatMessageAndCarryOn()
+    {
+        var slow = Guid.NewGuid();
+
+        await SeedSoldAsync(slow);
+
+        var handler = new RecordingHandler { Stall = TimeSpan.FromSeconds(30) };
+
+        await using var host = Host(
+            handler,
+            options => options.DeliveryTimeout = TimeSpan.FromMilliseconds(100));
+
+        var started = Stopwatch.StartNew();
+
+        Assert.Equal(1, await host.Dispatcher.DispatchBatchAsync(CancellationToken.None));
+
+        // The point of the whole change: the tick took the deadline, not the stall.
+        Assert.True(
+            started.Elapsed < TimeSpan.FromSeconds(10),
+            $"The tick waited {started.Elapsed} on a handler it had given 100ms.");
+
+        var stored = Assert.Single(await MessagesAsync());
+
+        Assert.Null(stored.ProcessedAt);
+        Assert.Equal(1, stored.Attempts);
+        Assert.Empty(handler.Delivered);
+    }
+
+    /// <summary>
+    /// When the tick's own budget runs out it commits what it delivered and leaves
+    /// the rest untouched for the next one.
+    /// </summary>
+    /// <remarks>
+    /// The other half of 069's bound. A per-message deadline alone still allows a
+    /// batch of fifty to hold one transaction open for fifty deadlines; this is what
+    /// makes the worst case a number somebody chose. A message the tick never reached
+    /// is not failed and not counted against its attempts — it was never tried.
+    /// </remarks>
+    [Fact]
+    public async Task Dispatch_WhenTheBatchBudgetRunsOut_ShouldLeaveTheRestForTheNextTick()
+    {
+        for (var seat = 0; seat < 3; seat++)
+        {
+            await SeedSoldAsync(Guid.NewGuid());
+        }
+
+        var handler = new RecordingHandler { Stall = TimeSpan.FromMilliseconds(120) };
+
+        await using var host = Host(
+            handler,
+            options =>
+            {
+                options.DeliveryTimeout = TimeSpan.FromSeconds(5);
+                options.MaxBatchDuration = TimeSpan.FromMilliseconds(100);
+            });
+
+        // Claimed three, delivered one, and stopped: the budget is spent once the
+        // first handler has taken longer than all of it.
+        Assert.Equal(3, await host.Dispatcher.DispatchBatchAsync(CancellationToken.None));
+
+        var afterFirst = await MessagesAsync();
+
+        Assert.Single(afterFirst, message => message.ProcessedAt is not null);
+        Assert.Equal(2, afterFirst.Count(message => message.ProcessedAt is null && message.Attempts == 0));
+
+        // Untouched means claimable, so the next tick picks them up normally.
+        await using var patient = Host(new RecordingHandler());
+
+        Assert.Equal(2, await patient.Dispatcher.DispatchBatchAsync(CancellationToken.None));
+        Assert.All(await MessagesAsync(), message => Assert.NotNull(message.ProcessedAt));
     }
 
     /// <summary>
@@ -374,15 +459,30 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         /// <summary>Refuse only the message about this seat.</summary>
         internal Guid? FailFor { get; init; }
 
+        /// <summary>
+        /// Take this long before answering — a consumer blocked on a lock, a slow
+        /// query, or a dependency that has stopped answering. DECISIONS 069.
+        /// </summary>
+        internal TimeSpan Stall { get; init; }
+
         internal IReadOnlyList<Delivery> Delivered => [.. _delivered];
 
         internal int Failures => Volatile.Read(ref _failures);
 
-        public Task HandleAsync(
+        public async Task HandleAsync(
             SeatSoldV1 integrationEvent,
             Guid messageId,
             CancellationToken cancellationToken)
         {
+            if (Stall > TimeSpan.Zero)
+            {
+                // The token is honoured, as a handler doing real work would honour
+                // it: the dispatcher's deadline arrives as a cancellation, and a
+                // handler that ignored it would be testing nothing about the
+                // deadline and everything about Task.Delay.
+                await Task.Delay(Stall, cancellationToken);
+            }
+
             if (Fail || FailFor == integrationEvent.SeatId)
             {
                 Interlocked.Increment(ref _failures);
@@ -391,8 +491,6 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
             }
 
             _delivered.Enqueue(new Delivery(messageId, integrationEvent));
-
-            return Task.CompletedTask;
         }
 
         /// <summary>

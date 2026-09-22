@@ -70,6 +70,13 @@ a superseding entry gets added instead.
 - [062](#062--the-expired-hold-sweep-and-the-transition-it-needed) — The expired-hold sweep, and the transition it needed
 - [063](#063--correcting-061-replace-did-not-make-the-switch-order-independent) — Correcting 061: `Replace` did not make the switch order-independent
 - [064](#064--four-faults-injected-on-purpose-and-what-each-one-actually-cost) — Four faults, injected on purpose, and what each one actually cost
+- [065](#065--an-audit-and-the-four-claims-the-documents-had-stopped-making) — An audit, and the four claims the documents had stopped making
+- [066](#066--the-gateways-memory-becomes-a-table-and-a-precondition-stops-being-accidental) — The gateway's memory becomes a table, and a precondition stops being accidental
+- [067](#067--two-defaults-nobody-chose-the-connection-pools-and-the-locks-timeouts) — Two defaults nobody chose: the connection pools and the lock's timeouts
+- [068](#068--the-sweep-gets-the-index-its-query-always-wanted) — The sweep gets the index its query always wanted
+- [069](#069--delivery-gets-a-deadline-because-the-claim-transaction-was-open-for-as-long-as-a-consumer-felt-like) — Delivery gets a deadline, because the claim transaction was open for as long as a consumer felt like
+- [070](#070--retention-and-a-health-check-that-asks-something) — Retention, and a health check that asks something
+- [071](#071--the-openapi-document-learns-which-host-serves-a-route) — The OpenAPI document learns which host serves a route
 
 ---
 
@@ -3595,3 +3602,305 @@ succeed anyway. See 063.
      precondition explicit instead of accidental; and a latency SLO, which 056 deferred
      until an arrangement was chosen and which now has a third arrangement to choose
      from. -->
+
+---
+
+## 065 — An audit, and the four claims the documents had stopped making
+
+Nothing was broken. The suite was green, every architecture rule held, and the
+asymmetry 001 argues for had survived a fifth module and an extraction. What had
+stopped being true was the prose: `CLAUDE.md` opened its Architecture section with
+"Modular monolith, one ASP.NET Core host, five modules" four days after there were
+two hosts, and `README.md` opened with "Four modules behind one ASP.NET Core host"
+directly above a table listing five.
+
+**Four drifts, all corrected in this change.** The host count in both files; the
+Roadmap's claim that the Strangler Fig extraction was still ahead, when 061 did it
+and 063 repaired it; `CLAUDE.md`'s citation of 063 for the chaos harness, which is
+064 — a number `load/chaos.sh` and `load/flash-sale.js` both repeated in their own
+headers; and the OpenAPI document's description, which also said four modules and
+one host.
+
+**Why this is worth an entry rather than a quiet fix.** `CLAUDE.md` is the file an
+agent reads before touching anything, so a wrong architecture statement there is not
+a typo — it is an instruction. And the irony is instructive: 059 built a drift test
+for the OpenAPI document and 060 built one for this log's index, both on the
+reasoning that prose goes stale and only a test notices. The two files making the
+largest architectural claims in the repository had no such test, and went stale
+inside a week.
+
+**What this change does not add.** A test that reads English. Checking that
+`CLAUDE.md` says "two hosts" is a string match that a rewording defeats, and the
+thing worth checking — that the prose describes this system — is not mechanically
+decidable. What the audit did instead was cheaper and better: derive the answer from
+the code and compare it to the document in the one place where the document is
+machine-readable, which is 071.
+
+**The rest of the audit's findings are 066 through 071**, in the order it ranked
+them: the gateway's memory, two untuned defaults, the sweep's missing index, the
+dispatcher's unbounded transaction, retention and health, and the OpenAPI document's
+silence about which host serves what.
+
+---
+
+## 066 — The gateway's memory becomes a table, and a precondition stops being accidental
+
+`SimulatedPaymentGateway` kept the idempotency keys it had answered in a
+`Dictionary<string, GatewayOutcome>` on a singleton. That made "every process
+running `PaymentReconciler` is asking the same gateway" a precondition the design
+depended on and nothing stated — and 064 broke it twice by accident.
+
+**The one that matters is not the exotic one.** Fault 2 ran two reconcilers on
+purpose and got a wrong answer, which is what breaking a stated rule is supposed to
+produce. Fault 1 did nothing unusual at all: it restarted `payments-api`, which
+emptied the dictionary, and the next sweep settled **120 of 121 timed-out attempts
+as `Abandoned` with zero `Voided`**. `Abandoned` means "the gateway looked and there
+is nothing there", so every one of those released an order's live-attempt slot
+(030) while the funds behind it may still have been held. That is precisely the
+conflation 057 exists to prevent, reached by an ordinary deploy.
+
+**The fix is the smallest thing that makes the precondition real.**
+`payments.gateway_ledger`: idempotency key as the primary key, the decided outcome,
+and when it was decided. `AuthorizeAsync` reads it, rolls only when there is no row,
+and writes; `LookUpAsync` reads it and nothing else.
+
+**Three details in it are load-bearing.**
+
+*Only decisions are recorded.* A request lost on the way to the gateway still leaves
+no row, which is what keeps `NotFound` meaningful and keeps `LostRequestRate`'s two
+branches distinguishable (057).
+
+*The natural key is the primary key.* Two concurrent authorisations under one key
+both miss the read and both try to insert; the constraint lets one through and the
+loser reads back the winner's answer rather than its own roll. The lock that used to
+serialise this could not survive the read becoming a round trip, and a database is
+better at this than a lock was.
+
+*The table is in the `payments` schema and is not Payments' data.* A real gateway's
+records are not in our database at all, and a schema, context and migrator of their
+own would say so more honestly. They would also buy a distinction no test can
+observe, so the compromise is a comment on the entity, a note in `PaymentsDbContext`
+and this paragraph: nothing in Payments' own logic reads that table.
+
+**What it cost, stated rather than buried.** `SimulatedPaymentGatewayTests` moved
+from the unit project to the integration one — forty fast tests are now behind a
+container. The alternative was an `IGatewayLedger` with a database implementation
+and an in-memory one, and that is the repository interface 001 forbids in a flat
+module, introduced so that tests could keep using the very mechanism this entry
+exists to delete. The move is the honest price of the gateway having a database.
+
+**What it does not fix.** 061's single-owner rule for the reconciler still stands and
+still has no lease. Two processes sweeping one table now both get the gateway's real
+answer, so the failure is duplicated work and possibly a duplicate void rather than a
+wrong settlement — which is what 064 said the lease was actually for, once the
+simulator stopped being the problem.
+
+---
+
+## 067 — Two defaults nobody chose: the connection pools and the lock's timeouts
+
+Both were found by 064 and neither was the fault being injected.
+
+**The pools.** Npgsql pools per connection string, and the five module strings in one
+host are identical text, so one host means one pool with the library's default
+maximum of 100. The strangled pair therefore wanted 200 connections from a Postgres
+willing to hand out 97, and at 250 VUs the k6 **control** window — everything
+healthy, nothing stopped — filled with `53300: sorry, too many clients already`. 114
+of the 117 unexpected responses in 064's Redis A/B came from there, not from the
+outage, which is also why that run failed its own no-unexpected-responses threshold
+and exited 99.
+
+The budget is now written down in both places: `max_connections=300` on the Postgres
+service, and an explicit `Maximum Pool Size` per host — 100 for the monolith, 50 for
+`payments-api` — summing to 150, leaving room for the chaos rig's `psql` sessions,
+a `dotnet run` and the Testcontainers suites. None of those were counted before,
+because nothing was counting.
+
+**The timeouts.** `InventoryModule` tuned `ConnectTimeout` to 1s so a missing Redis
+could not stop the host starting, and left `SyncTimeout`/`AsyncTimeout` at
+StackExchange.Redis's 5s default. A hold takes two locks, so discovering twice that
+the lock was unavailable cost about ten seconds before any database work began:
+**med 11,979 ms against 140 ms**, an 85× cost for a dependency 010 calls optional.
+Both are now 250 ms.
+
+**What this does not change is what the lock means.** Unavailable is still "I don't
+know", the attempt still proceeds, and `xmin` still decides. 010's asymmetry is
+untouched: the seat lock's failure is waved through, the client lock's contention is
+refused. What changes is only how long the answer takes.
+
+**250 ms rather than something smaller**, because that is the budget for one round
+trip to a healthy Redis on the same network, and a lock that gave up on an ordinary
+GC pause would report contention that is not there. The cost of getting this wrong in
+that direction is a cap enforced less often (006) and a little more contention on the
+seat row, which is the direction this system is already built to survive.
+
+**Neither of these has been measured yet, and that is the honest state.** The numbers
+above are the ones that motivated the change; the run that shows what the change did
+has not been taken. What it needs is 064's Redis A/B repeated with a clean control
+window, which is now possible for the first time.
+
+---
+
+## 068 — The sweep gets the index its query always wanted
+
+`FindExpiredHoldsAsync` asks for `Status = Held AND HoldExpiresAt <= now`, ordered by
+`HoldExpiresAt`. The only index on `inventory.seats` was
+`ix_seats_event_client_status`, whose leading column is the event — which the sweep
+neither knows nor cares about. So the query was a sequential scan plus a sort over
+every seat in the system, once a minute, against the hottest table there is.
+
+**It has never mattered and that is not a reason.** The load rig's seat maps are 500
+rows, so this cost nothing measurable and would have gone on costing nothing until
+the day a real seat map made it cost everything at once. The sweep's own defence —
+that nothing waits on it (007) — is about latency, not about the shared database it
+scans while the request path is using it.
+
+`ix_seats_expiring_holds` is partial, filtered to held rows, which is
+`ix_outbox_messages_unprocessed`'s trick from 051 used for the same reason: in a
+healthy system almost every seat is `Available` or `Sold`, so this indexes a few
+thousand rows whatever the table's size, and a seat enters or leaves it only when it
+is held or stops being held.
+
+**The filter is a SQL literal naming the stored int**, because an index filter cannot
+be an expression over the enum — the same bargain `ux_payments_order_live` makes, and
+the same hazard. `MigrationConventionTests` now reads `SeatStatus.Held`'s value out of
+the enum's source and asserts the generated migration's filter says that number.
+Renumbering the enum without regenerating the index would otherwise change which rows
+are indexed without changing which rows the sweep asks for, and the result would be a
+sweep that quietly scans instead of seeking: slow, correct, and invisible.
+
+---
+
+## 069 — Delivery gets a deadline, because the claim transaction was open for as long as a consumer felt like
+
+`OutboxDispatcher` opens a transaction, claims up to fifty rows with
+`FOR UPDATE SKIP LOCKED`, delivers them all, then saves and commits. 053 argued
+carefully about claiming, backoff, ordering and dead-lettering, and said nothing
+about how long that transaction stays open — which is until the slowest handler in
+the batch returns.
+
+**064's fourth fault measured it without meaning to.** Holding
+`notifications.notifications` under `ACCESS EXCLUSIVE` for twenty seconds produced a
+20,631 ms maximum delivery latency, and that number is also how long one Inventory
+transaction stayed open with fifty rows locked, holding back vacuum on the schema the
+request path writes to. The request path itself was untouched — hold p99 23.6 ms —
+which is the outbox's proposition working. Late is not wrong. But late was also
+holding a lock, and nothing bounded it.
+
+**Two numbers now bound it.** `DeliveryTimeout` (2s) is what one handler gets, on a
+linked cancellation token; overrunning it fails that message like any other failure,
+with the ordinary backoff and retry. `MaxBatchDuration` (5s) is what the whole tick
+gets: when it is spent the tick commits what it delivered and returns, leaving the
+rest of the claimed batch untouched — no attempt recorded, no backoff applied,
+because those messages were never tried — for the next tick to claim again.
+
+**Both are enforced on the wall clock rather than `TimeProvider`**, alone in this
+codebase. Everything else here takes its instant as a parameter so that expiry is
+data rather than duration (039). These two are not about domain time: they bound how
+long a real transaction holds real locks, and a test holding a fake clock still wants
+its handler given real time.
+
+**The alternative, and why not.** Deliver outside the claim transaction entirely —
+claim and lease in one short transaction, deliver, mark processed in another. That is
+the textbook shape and it is probably where this ends up. It also adds a lease column,
+lease expiry, and a second way for a message to be in flight, in exchange for a bound
+this change gets from two `TimeSpan`s. Re-read 053's argument for `SKIP LOCKED` over a
+lease: the claim query was chosen precisely so that a second dispatcher needs no new
+state. Adding lease state now would spend that.
+
+**A handler that overruns is failed, not retried faster.** A consumer that cannot
+answer in two seconds is not healthy, and the outbox's promise is that late is not
+wrong — not that late is free.
+
+---
+
+## 070 — Retention, and a health check that asks something
+
+Two of 051's open questions, both due.
+
+**Retention, which 051 refused to build.** Its argument was that nothing here had an
+opinion about how long an event is worth keeping, and that inventing ninety days
+would be a guess wearing a policy's clothing. That was right about the guess and
+wrong about the alternative: **"forever" is also a policy, and nobody chose it
+either**. One chaos run writes 22,400 rows. This entry supersedes 051 on that point
+alone; everything else it says about the table stands.
+
+`OutboxRetentionSweeper` deletes rows delivered longer ago than
+`KeepDelivered` (30 days, chosen and written down as a starting point), a batch at a
+time, once an hour. It is a bulk `ExecuteDelete`, which is the opposite of what
+`ExpiredHoldSweeper` does and for a reason: expiring a hold is a state change
+somebody downstream needs to hear about, so it goes through the aggregate and raises
+`SeatReleased(Expired)` (062); deleting a delivered row announces nothing, has no
+aggregate and no invariant.
+
+**Only delivered rows, by `ProcessedAt`, never by the age of the event.** An
+undelivered message is work however old it is, and a dead letter is the evidence that
+something never arrived — which is exactly what somebody eventually comes looking
+for. A retention sweep that went by `OccurredAt` would tidy away the only record of
+the failure it was meant to survive.
+
+**Health, which was a constant.** Both hosts answered `/health` with
+`{ "status": "ok" }`, and compose gates `api-strangled` on `payments-api` being
+"healthy" — which meant a process was listening. `/health/ready` now asks each module
+and reports the answers together: 200 when all can work, 503 when any cannot.
+
+**The host counts votes rather than asking a database**, because it is not allowed to
+know that a module has one (013, 058) and the architecture tests hold it to that. So
+`Encore.Shared` gets `IReadinessCheck`, beside `IIntegrationEventHandler` and for its
+reason: how a module reports that it is ready is an agreement every module shares,
+and `Task`, `CancellationToken` and a record are BCL, so `ENCORE001`–`003` are
+untouched.
+
+**A module registers one when it has something to say that nothing else says.**
+Inventory does — it reports the outbox backlog and the dead-letter count 051 asked
+for and nothing surfaced. Payments does — it reports timed-out attempts older than
+`MinimumAge`, the number 064 had to open `psql` to find. Catalog, Orders and
+Notifications point at the same database and run no background work, so a check
+apiece would be three more pings of one server reported as three facts.
+
+**Neither number fails the check, and that is the judgement.** A dead letter means one
+message never arrived; taking the host out of rotation for it would turn a message
+nobody read into a request path nobody can reach. The only failure either check
+reports is a database it cannot read.
+
+**The endpoint is copied into both hosts**, for 024's reason: a host may not reference
+another host, and `Encore.Shared` cannot carry an endpoint without naming ASP.NET
+Core. Twenty duplicated lines is the cheaper of the two prices.
+
+---
+
+## 071 — The OpenAPI document learns which host serves a route
+
+The monolith serves the document at `/docs/`, and since 061 the monolith does not map
+`/internal/payments/authorize`, `/capture` or `/void` — only `Encore.Payments.Api`
+calls `MapPaymentsServiceApi`. 059's drift test could not see the difference, because
+it compares a set of route literals found anywhere in `src/` against a set of
+documented paths, with no notion of which host mounts which. So the page advertised
+three routes that the host serving it answers with a 404.
+
+**The document now says so**, with a per-path `servers` entry naming the Payments
+host, and the rule is narrow on purpose: **a path carries `servers` exactly when the
+monolith does not serve it.** It does not say which other hosts do. `/health`,
+`/health/ready` and the two `/payments` read routes are served by both and are
+documented plainly, because the question this page's reader has is "will the thing
+serving this document answer me", and the fuller answer would mean a `servers` array
+on all twenty paths to state something nineteen of them do not need.
+
+**The check walks the call graph.** From each host's `Program.cs`, through the `Map*`
+extensions, to the bodies that register routes — at method granularity rather than
+file, because `PaymentsModule` declares both `MapPaymentsModule` and
+`MapPaymentsServiceApi`, and attributing both to any host that calls either would
+erase the distinction being checked. A file is cut into bodies at its extension
+declarations; that is coarser than parsing C# and finer than taking the file whole,
+which is what this question needs.
+
+**It has a sanity test of its own**, because the quiet failure here is a walker that
+over-resolves: if both hosts came out serving identical route sets, the check would
+pass while having stopped distinguishing anything. So the suite asserts that the two
+sets differ, that the payments host serves `/internal/payments/authorize` and the
+monolith does not, and that both serve `/health`.
+
+**What is still hand-maintained is the document itself.** 014's refusal of
+Swashbuckle stands, 049's bill stands, and this adds one more line to it: a route
+that moves between hosts needs its `servers` entry moved too. The difference is that
+forgetting now fails a test instead of sending a reader at a 404.

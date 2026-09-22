@@ -3,6 +3,7 @@ using Encore.Modules.Inventory;
 using Encore.Modules.Notifications;
 using Encore.Modules.Orders;
 using Encore.Modules.Payments;
+using Encore.Shared;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -69,7 +70,50 @@ app.UseStatusCodePages();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
+// Liveness, and only liveness: this answers "is a process listening", which is
+// exactly as much as a constant can honestly claim. It stays a constant.
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+
+// Readiness, which is a different question and needs somebody who knows the answer.
+// The host is not that somebody — it is not allowed to know that a module has a
+// database (013, 058), and the architecture tests hold it to that. So each module
+// registers an IReadinessCheck and this counts the votes: 200 when every module says
+// it can work, 503 when any cannot, and the detail lines carry the numbers that want
+// watching rather than alerting on — a dead-lettered outbox message, an attempt the
+// reconciler has not settled. DECISIONS 070.
+app.MapGet("/health/ready", async (
+    IEnumerable<IReadinessCheck> checks,
+    CancellationToken cancellationToken) =>
+{
+    // One at a time rather than Task.WhenAll. The checks are resolved from one
+    // request scope, so two of them sharing a DbContext — which no pair does today
+    // and a third check easily could — would be two concurrent commands on one
+    // connection, which throws. Readiness is two counts; it does not need the
+    // parallelism badly enough to leave that trap lying around.
+    var results = new Dictionary<string, ReadinessResult>();
+
+    foreach (var check in checks)
+    {
+        results[check.Name] = await check.CheckAsync(cancellationToken);
+    }
+
+    var ready = results.Values.All(result => result.Ready);
+
+    var body = new
+    {
+        status = ready ? "ready" : "not_ready",
+        checks = results.ToDictionary(
+            entry => entry.Key,
+            entry => new { ready = entry.Value.Ready, detail = entry.Value.Detail })
+    };
+
+    // 503 rather than 500: the host is working and is telling the truth about
+    // something it depends on, which is what the code is for. A load balancer reads
+    // it as "not yet"; a person reads the body.
+    return ready
+        ? Results.Ok(body)
+        : Results.Json(body, statusCode: StatusCodes.Status503ServiceUnavailable);
+});
 
 app.MapCatalogModule();
 app.MapOrdersModule();

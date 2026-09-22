@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Encore's chaos harness. DECISIONS 063.
+# Encore's chaos harness. DECISIONS 064.
 #
 # The k6 script beside this one drives the traffic and asserts the invariants.
 # It cannot break anything: k6 has no access to the Docker daemon and should not
@@ -596,7 +596,7 @@ report "# Encore chaos session — ${STAMP}"
 report ''
 report 'Produced by `load/chaos.sh`. Every number below was read out of the running system:'
 report "the k6 digests are each run's own output, and everything in a \`psql\` block was"
-report 'queried from Postgres after the fault. DECISIONS 063 is the write-up.'
+report 'queried from Postgres after the fault. DECISIONS 064 is the write-up.'
 report ''
 report "Runs in this session: ${RUNS[*]}"
 

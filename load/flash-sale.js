@@ -1,4 +1,4 @@
-// Encore's flash-sale load harness, and since DECISIONS 063 its chaos harness too.
+// Encore's flash-sale load harness, and since DECISIONS 064 its chaos harness too.
 //
 // The project's central claim is that seat contention is handled correctly under
 // flash-sale load. Until the harness existed that claim was proven by
@@ -28,7 +28,7 @@
 // No sleep between iterations anywhere in those two. A flash sale is not a Poisson
 // arrival process with think time; it is everyone pressing the button at once.
 //
-// == The chaos scenarios (063) ==
+// == The chaos scenarios (064) ==
 //
 // CHAOS_PHASES selects them, and an empty value — the default — registers exactly
 // the two scenarios above and nothing else. That is deliberate: a baseline run

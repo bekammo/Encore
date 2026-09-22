@@ -20,6 +20,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Payments\Encore.Modules.Payments.csproj" />
+    <!-- Declared rather than taken transitively through the module: this host names
+         IReadinessCheck itself for /health/ready (070), and a reference you rely on
+         is a reference you write down. -->
+    <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
   </ItemGroup>
 
 </Project>

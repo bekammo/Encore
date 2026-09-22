@@ -100,6 +100,109 @@ public partial class OpenApiDocumentTests
     }
 
     /// <summary>
+    /// Which host serves a route, and whether the document says so.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>One document, two hosts, and until <c>DECISIONS.md</c> 071 no way to tell
+    /// which.</b> The monolith serves this page at <c>/docs/</c> and does not map
+    /// <c>/internal/payments/*</c> — only <c>Encore.Payments.Api</c> calls
+    /// <c>MapPaymentsServiceApi</c> — so a reader pressing "Try it out" on those
+    /// three got a 404 from the host that had just advertised them.
+    /// </para>
+    /// <para>
+    /// <b>The rule this checks is narrow on purpose.</b> A path carries its own
+    /// <c>servers</c> entry exactly when the monolith does not serve it. It does not
+    /// say which other hosts do — <c>/health</c> and the two <c>/payments</c> read
+    /// routes are served by both and are documented plainly — because the question
+    /// this page's reader has is "will the thing serving this document answer me",
+    /// and a fuller answer would mean a <c>servers</c> array on all nineteen paths to
+    /// state something eighteen of them do not need.
+    /// </para>
+    /// <para>
+    /// <b>Attribution walks the call graph from each host's <c>Program.cs</c></b>,
+    /// through the <c>Map*</c> extensions, to the files that declare routes — at
+    /// method granularity rather than file, because <c>PaymentsModule</c> declares
+    /// both <c>MapPaymentsModule</c> and <c>MapPaymentsServiceApi</c> and the whole
+    /// point is that a host may call one without the other.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void EveryDocumentedPathShouldSayWhetherThisHostServesIt()
+    {
+        var servedByMonolith = RoutesServedBy(MonolithProgram);
+        var wrong = new List<string>();
+
+        using var document = JsonDocument.Parse(File.ReadAllText(DocumentPath));
+
+        foreach (var path in document.RootElement.GetProperty("paths").EnumerateObject())
+        {
+            var overridden = path.Value.TryGetProperty("servers", out var servers);
+
+            foreach (var operation in path.Value.EnumerateObject()
+                .Where(member => OperationKeys.Contains(member.Name, StringComparer.OrdinalIgnoreCase)))
+            {
+                var route = new Route(operation.Name.ToUpperInvariant(), Combine(string.Empty, path.Name));
+                var monolithServes = servedByMonolith.Contains(route);
+
+                if (monolithServes && overridden)
+                {
+                    wrong.Add($"{route} carries a servers override but Encore.Api maps it");
+                }
+                else if (!monolithServes && !overridden)
+                {
+                    wrong.Add($"{route} is not mapped by Encore.Api, so it needs a servers entry naming the host that maps it");
+                }
+            }
+
+            if (overridden && !servers.EnumerateArray().Any(server =>
+                server.TryGetProperty("url", out var url)
+                && url.GetString()?.Contains("8081", StringComparison.Ordinal) is true))
+            {
+                wrong.Add($"{path.Name} overrides servers without naming the Payments host");
+            }
+        }
+
+        Assert.True(
+            wrong.Count == 0,
+            $"The document and the hosts disagree about who serves what (DECISIONS 071): {string.Join("; ", wrong)}");
+    }
+
+    /// <summary>
+    /// Sanity for the test above: both hosts serve something, and the two sets are
+    /// not the same set.
+    /// </summary>
+    /// <remarks>
+    /// Without this, a walker that resolved nothing would attribute every route to
+    /// neither host, and the check above would then demand a <c>servers</c> entry on
+    /// all of them — loudly. A walker that over-resolved is the quiet failure, and
+    /// this is what catches it: if the two hosts served identical route sets, the
+    /// distinction the entry exists to draw would have stopped existing.
+    /// </remarks>
+    [Fact]
+    public void TheTwoHostsShouldServeDifferentRouteSets()
+    {
+        var monolith = RoutesServedBy(MonolithProgram);
+        var payments = RoutesServedBy(PaymentsProgram);
+
+        Assert.NotEmpty(monolith);
+        Assert.NotEmpty(payments);
+
+        // SetEquals rather than Assert.NotEqual: a HashSet compares by reference, so
+        // NotEqual would pass here whatever the two sets contained.
+        Assert.False(monolith.SetEquals(payments), "Both hosts resolved to the same routes.");
+
+        // The three routes that are the whole reason this distinction exists.
+        Assert.Contains(new Route("POST", "/internal/payments/authorize"), payments);
+        Assert.DoesNotContain(new Route("POST", "/internal/payments/authorize"), monolith);
+
+        // And something both of them serve, so "different" does not quietly become
+        // "disjoint" — the two hosts share the health routes and the payment reads.
+        Assert.Contains(new Route("GET", "/health"), monolith);
+        Assert.Contains(new Route("GET", "/health"), payments);
+    }
+
+    /// <summary>
     /// The guard on the scan itself: every route registration in the tree is one
     /// of the forms the two patterns above can read.
     /// </summary>
@@ -336,6 +439,161 @@ public partial class OpenApiDocumentTests
                         && !trimmed.StartsWith('*')
                         && !trimmed.StartsWith("/*", StringComparison.Ordinal);
                 }));
+
+    /// <summary>The monolith's composition root.</summary>
+    private static string MonolithProgram =>
+        Path.Combine(EncoreTree.Root, "src", "Encore.Api", "Program.cs");
+
+    /// <summary>The Payments service's composition root.</summary>
+    private static string PaymentsProgram =>
+        Path.Combine(EncoreTree.Root, "src", "Encore.Payments.Api", "Program.cs");
+
+    /// <summary>
+    /// One <c>Map*</c> extension method, or a <c>Program.cs</c> — the unit the walk
+    /// below moves through.
+    /// </summary>
+    /// <param name="Routes">Routes registered directly in this body.</param>
+    /// <param name="Calls">Other <c>Map*</c> extensions this body calls.</param>
+    private sealed record Body(List<Route> Routes, List<string> Calls);
+
+    /// <summary>
+    /// Every route reachable from one host's <c>Program.cs</c>.
+    /// </summary>
+    /// <remarks>
+    /// A breadth-first walk over <see cref="Bodies"/>, which is as much call-graph
+    /// resolution as this needs: the edges here are all "an extension method calls
+    /// another extension method by name", with no indirection and no generics. An
+    /// extension that is called and cannot be found is skipped rather than failing —
+    /// <c>MapGroup</c>, <c>MapStaticAssets</c> and anything else the framework
+    /// provides live outside <c>src/</c>, and routes only ever come from bodies this
+    /// tree declares.
+    /// </remarks>
+    private static HashSet<Route> RoutesServedBy(string programPath)
+    {
+        var bodies = Bodies();
+        var served = new HashSet<Route>();
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+
+        var root = Path.GetFileName(programPath) is "Program.cs"
+            ? $"<{Path.GetFileName(Path.GetDirectoryName(programPath))}>"
+            : throw new ArgumentException("Expected a host's Program.cs.", nameof(programPath));
+
+        var queue = new Queue<string>([root]);
+
+        while (queue.Count > 0)
+        {
+            var name = queue.Dequeue();
+
+            if (!visited.Add(name) || !bodies.TryGetValue(name, out var body))
+            {
+                continue;
+            }
+
+            served.UnionWith(body.Routes);
+
+            foreach (var call in body.Calls)
+            {
+                queue.Enqueue(call);
+            }
+        }
+
+        return served;
+    }
+
+    /// <summary>
+    /// Every route-mapping body in <c>src/</c>, keyed by the name a caller uses.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A file is cut into bodies at its <c>Map*</c> extension declarations, and each
+    /// body runs to the next declaration. That is coarser than parsing C# and finer
+    /// than taking the file whole, which is the granularity the question needs:
+    /// <c>PaymentsModule</c> declares <c>MapPaymentsModule</c> and
+    /// <c>MapPaymentsServiceApi</c> in one file, and attributing both to any host
+    /// that calls either would erase the very distinction being checked.
+    /// </para>
+    /// <para>
+    /// A <c>Program.cs</c> has no declaration to cut at, so the whole file is one
+    /// body keyed by its host directory — <c>&lt;Encore.Api&gt;</c>. The angle
+    /// brackets cannot collide with a method name.
+    /// </para>
+    /// </remarks>
+    private static Dictionary<string, Body> Bodies()
+    {
+        var bodies = new Dictionary<string, Body>(StringComparer.Ordinal);
+
+        foreach (var file in SourceFiles())
+        {
+            var source = WithoutComments(File.ReadAllText(file));
+
+            // Group prefixes are resolved per file, as everywhere else here: a group
+            // is declared and used inside one method in this codebase, and reading
+            // them file-wide costs nothing and survives the day one moves.
+            var prefixes = GroupPrefixes(source);
+
+            var declarations = ExtensionDeclarationPattern().Matches(source)
+                .Select(match => (Name: match.Groups["name"].Value, Start: match.Index))
+                .OrderBy(declaration => declaration.Start)
+                .ToList();
+
+            if (declarations.Count == 0)
+            {
+                if (Path.GetFileName(file) is "Program.cs")
+                {
+                    bodies[$"<{Path.GetFileName(Path.GetDirectoryName(file))}>"] = BodyOf(source, prefixes);
+                }
+
+                continue;
+            }
+
+            for (var index = 0; index < declarations.Count; index++)
+            {
+                var start = declarations[index].Start;
+                var end = index + 1 < declarations.Count ? declarations[index + 1].Start : source.Length;
+
+                bodies[declarations[index].Name] = BodyOf(source[start..end], prefixes);
+            }
+        }
+
+        return bodies;
+    }
+
+    /// <summary>What one body registers and what it calls.</summary>
+    private static Body BodyOf(string source, Dictionary<string, string> prefixes)
+    {
+        var routes = MapPattern().Matches(source)
+            .Select(match => new Route(
+                match.Groups["method"].Value.ToUpperInvariant(),
+                Combine(
+                    prefixes.TryGetValue(match.Groups["receiver"].Value, out var known) ? known : string.Empty,
+                    match.Groups["pattern"].Value)))
+            .ToList();
+
+        var calls = ExtensionCallPattern().Matches(source)
+            .Select(match => match.Groups["name"].Value)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        return new Body(routes, calls);
+    }
+
+    /// <summary>
+    /// <c>public static IEndpointRouteBuilder MapSomething(</c>, however it wraps.
+    /// </summary>
+    [GeneratedRegex(@"static\s+IEndpointRouteBuilder\s+(?<name>Map\w+)\s*\(")]
+    private static partial Regex ExtensionDeclarationPattern();
+
+    /// <summary>
+    /// A call to one of those, such as <c>app.MapCatalogModule()</c> or
+    /// <c>endpoints.MapSeatEndpoints()</c>.
+    /// </summary>
+    /// <remarks>
+    /// The verbs and <c>MapGroup</c> are excluded by name: they are route
+    /// registrations rather than edges, and <see cref="MapPattern"/> already has
+    /// them.
+    /// </remarks>
+    [GeneratedRegex(@"\.\s*(?<name>Map(?!Get\b|Put\b|Post\b|Delete\b|Patch\b|Group\b)[A-Z]\w+)\s*\(")]
+    private static partial Regex ExtensionCallPattern();
 
     /// <summary>
     /// Everything under <c>src/</c> rather than the <c>*Endpoints.cs</c> files

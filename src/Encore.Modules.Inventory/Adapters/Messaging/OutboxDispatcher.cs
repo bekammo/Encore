@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Encore.Modules.Inventory.Adapters.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -177,9 +178,31 @@ internal sealed class OutboxDispatcher(
             return 0;
         }
 
+        // Wall clock, not TimeProvider: this bounds how long a real transaction
+        // holds real row locks, and a test with a fake clock still wants that bound
+        // to be about the time the test actually spends. DECISIONS 069.
+        var started = Stopwatch.StartNew();
+        var delivered = 0;
+
         foreach (var message in claimed)
         {
+            if (started.Elapsed >= _options.MaxBatchDuration)
+            {
+                // Out of budget. Everything after this message is untouched — no
+                // attempt recorded, no backoff applied — so committing now simply
+                // hands it back, and the next tick claims it again. Stopping is
+                // cheaper than the alternative, which is a transaction that stays
+                // open for as long as the slowest consumer feels like taking.
+                _logger.LogWarning(
+                    "Outbox tick spent its {MaxBatchDuration} budget after {Delivered} of {Claimed} messages. Committing and leaving the rest for the next tick.",
+                    _options.MaxBatchDuration,
+                    delivered,
+                    claimed.Count);
+                break;
+            }
+
             await DeliverAsync(scope.ServiceProvider, message, cancellationToken).ConfigureAwait(false);
+            delivered++;
         }
 
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -188,6 +211,22 @@ internal sealed class OutboxDispatcher(
         return claimed.Count;
     }
 
+    /// <summary>Hands one message to its handler, under a deadline.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The handler gets its own token, and a handler that overruns it fails like
+    /// any other handler.</b> The alternative — the one this had until 069 — is that
+    /// a consumer blocked on a lock, a slow query or an unreachable dependency holds
+    /// this tick's transaction open for as long as it likes, with the batch's rows
+    /// locked the whole time.
+    /// </para>
+    /// <para>
+    /// The linked source means shutdown still cancels immediately and is still told
+    /// apart below: the caller's token being the one that fired is what separates
+    /// "we are stopping" from "this consumer is too slow", and only the first leaves
+    /// the row untouched.
+    /// </para>
+    /// </remarks>
     private async Task DeliverAsync(
         IServiceProvider provider,
         OutboxMessage message,
@@ -195,9 +234,12 @@ internal sealed class OutboxDispatcher(
     {
         var utcNow = _timeProvider.GetUtcNow().UtcDateTime;
 
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(_options.DeliveryTimeout);
+
         try
         {
-            await _catalog.DispatchAsync(provider, message, cancellationToken).ConfigureAwait(false);
+            await _catalog.DispatchAsync(provider, message, deadline.Token).ConfigureAwait(false);
             message.MarkProcessed(utcNow);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -209,6 +251,9 @@ internal sealed class OutboxDispatcher(
         }
         catch (Exception ex)
         {
+            // An overrun arrives here as an OperationCanceledException whose token is
+            // the deadline's rather than the caller's, and it is meant to: a handler
+            // that ran out of time failed, and the row backs off and is retried.
             var backoff = BackoffFor(message.Attempts);
             message.MarkFailed(utcNow, ex.ToString(), backoff);
 
