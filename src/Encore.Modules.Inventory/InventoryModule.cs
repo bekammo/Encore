@@ -2,6 +2,7 @@ using Encore.Modules.Inventory.Adapters.Caching;
 using Encore.Modules.Inventory.Adapters.InProcess;
 using Encore.Modules.Inventory.Adapters.Messaging;
 using Encore.Modules.Inventory.Adapters.Persistence;
+using Encore.Modules.Inventory.Adapters.Scheduling;
 using Encore.Modules.Inventory.Application;
 using Encore.Modules.Inventory.Contracts;
 using Encore.Modules.Inventory.Contracts.Events;
@@ -94,9 +95,43 @@ public static class InventoryModule
         }
 
         AddOutbox(services, configuration);
+        AddExpiredHoldSweep(services, configuration);
 
-        // TODO: the expired-hold sweep (Phase 7) is still to come.
         return services;
+    }
+
+    /// <summary>
+    /// Registers the background sweep that tidies lapsed holds.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Registered on exactly the same terms as the dispatcher, and that is the
+    /// point of the symmetry.</b> On by default, because a cleanup job that did not
+    /// run by default would silently stop cleaning; switchable off, because 007's
+    /// falsifiability test requires that switching it off changes nothing an
+    /// invariant depends on.
+    /// </para>
+    /// <para>
+    /// <b>No lease, no single-owner flag, and no <c>FOR UPDATE SKIP LOCKED</c>.</b>
+    /// Two of these racing over one seat is arbitrated by <c>xmin</c> like every
+    /// other write in this module, and the loser writes nothing — see
+    /// <see cref="ExpiredHoldSweeper"/>. 061's single-owner debt is
+    /// <c>PaymentReconciler</c>'s alone, because that job's expensive half is a call
+    /// to a gateway that no database token can arbitrate.
+    /// </para>
+    /// </remarks>
+    private static void AddExpiredHoldSweep(IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(ExpiredHoldSweepOptions.SectionName);
+
+        services.Configure<ExpiredHoldSweepOptions>(section);
+
+        var options = section.Get<ExpiredHoldSweepOptions>() ?? new ExpiredHoldSweepOptions();
+
+        if (options.Enabled)
+        {
+            services.AddHostedService<ExpiredHoldSweeper>();
+        }
     }
 
     /// <summary>

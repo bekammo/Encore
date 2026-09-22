@@ -88,6 +88,36 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
             .CountAsync(cancellationToken);
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<Guid>> FindExpiredHoldsAsync(
+        DateTime utcNow,
+        int limit,
+        CancellationToken cancellationToken = default)
+        // AsNoTracking and ids only: these rows are candidates for another
+        // context to load, and tracking them here would populate an identity map
+        // that GetByIdAsync then has to reload past.
+        //
+        // Ordered by the oldest lapse, so a backlog is worked through in the
+        // order it accumulated and a row cannot be starved by newer arrivals
+        // between one batch and the next.
+        //
+        // Served by ix_seats_event_client_status only incidentally — that index
+        // leads on EventId, which this does not filter — so this is a scan of the
+        // seats table filtered on status. That is acceptable for a job that runs
+        // once a minute off the request path, and it is the reason this takes a
+        // limit rather than returning everything. An index on
+        // (Status, HoldExpiresAt) is the obvious answer if it ever shows up in a
+        // measurement; adding one now would be optimising a query nobody has
+        // watched run.
+        => await _context.Seats
+            .AsNoTracking()
+            .Where(seat => seat.Status == SeatStatus.Held && seat.HoldExpiresAt <= utcNow)
+            .OrderBy(seat => seat.HoldExpiresAt)
+            .Take(limit)
+            .Select(seat => seat.Id)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+    /// <inheritdoc />
     public async Task AddRangeAsync(
         IReadOnlyCollection<Seat> seats,
         CancellationToken cancellationToken = default)

@@ -6,16 +6,17 @@ namespace Encore.Modules.Inventory.Ports;
 /// <summary>
 /// The durable store of seats — Postgres, and the authoritative source of truth
 /// for seat state. Two of these methods load an aggregate and write it back; the
-/// third answers a question about seats that no single aggregate can.
+/// others answer questions about seats that no single aggregate can.
 /// </summary>
 /// <remarks>
-/// <see cref="CountLiveHoldsAsync"/> is not aggregate access and sits slightly
-/// awkwardly next to the other two. It lives here anyway rather than behind its
-/// own port: a one-method interface with one implementation, never substituted,
-/// is the ceremony <c>DECISIONS.md</c> 001 argues against paying for. What it
-/// must not become is a general query surface — anything that grows past
-/// "questions Postgres can answer about seats that a single <see cref="Seat"/>
-/// cannot" belongs on a read-side port of its own.
+/// <see cref="CountLiveHoldsAsync"/> and <see cref="FindExpiredHoldsAsync"/> are
+/// not aggregate access and sit slightly awkwardly next to the rest. They live
+/// here anyway rather than behind ports of their own: a one-method interface with
+/// one implementation, never substituted, is the ceremony <c>DECISIONS.md</c> 001
+/// argues against paying for. What this must not become is a general query
+/// surface — anything that grows past "questions Postgres can answer about seats
+/// that a single <see cref="Seat"/> cannot" belongs on a read-side port of its
+/// own.
 /// </remarks>
 public interface ISeatRepository
 {
@@ -67,6 +68,37 @@ public interface ISeatRepository
         Guid eventId,
         Guid excludingSeatId,
         DateTime utcNow,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The seats whose holds have lapsed as of <paramref name="utcNow"/>, oldest
+    /// lapse first, capped at <paramref name="limit"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Backs the expired-hold sweep (<c>DECISIONS.md</c> 062), and like
+    /// <see cref="CountLiveHoldsAsync"/> it is a question about seats that no
+    /// single <see cref="Seat"/> can answer.
+    /// </para>
+    /// <para>
+    /// <b>It returns candidates, not verdicts, and the distinction is the whole
+    /// reason the sweep stays cleanup.</b> The rows it names may have been sold or
+    /// re-held by the time the caller loads them, and the caller is expected to
+    /// hand each one back to the aggregate rather than act on this list. 007
+    /// forbids a second copy of the lapsed-hold rule anywhere; this is the same
+    /// predicate expressed in SQL for selectivity, and it is deliberately given no
+    /// authority over what happens next.
+    /// </para>
+    /// <para>
+    /// Ids only. The sweep visits each seat in a scope of its own, so materialising
+    /// aggregates here would be loading them on a context that will not save them.
+    /// </para>
+    /// </remarks>
+    /// <param name="utcNow">The instant to judge the lapse against.</param>
+    /// <param name="limit">Ceiling on how many ids come back.</param>
+    Task<IReadOnlyList<Guid>> FindExpiredHoldsAsync(
+        DateTime utcNow,
+        int limit,
         CancellationToken cancellationToken = default);
 
     /// <summary>

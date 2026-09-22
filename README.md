@@ -91,6 +91,12 @@ converting a hold is always a single-row write.
 - **Expiry is lazy first.** A row reading `Held` whose `HoldExpiresAt` has passed
   is logically available on every read and write path, whatever the column says.
   A background sweep is cleanup only, and its timing is never load-bearing.
+  `ExpiredHoldSweeper` tidies the rows and `ExpiryWithoutTheSweepTests` is the
+  falsification — no sweeper, no Redis, and a lapsed hold is still reclaimed, still
+  unsellable by its lapsed holder, and still freeing the client's hold cap. The
+  sweep goes through the aggregate rather than issuing a bulk UPDATE, so a hold
+  nobody ever came back for still ends with a `SeatReleased(Expired)` in the log
+  (`DECISIONS.md` 062).
 - **Hold duration is five minutes, owned by the aggregate.** Callers pass
   `utcNow`, never an absolute expiry — a caller-supplied expiry would let anyone
   reach a state the rules never approved.
@@ -298,6 +304,41 @@ Each run writes a JSON summary to `load/results/`, which is gitignored — one
 laptop's numbers on one day are worth comparing against the next run and worth
 nothing to a reader of the repo.
 
+## Breaking it on purpose
+
+```bash
+bash load/chaos.sh
+```
+
+Four faults, one run each, against the extracted configuration. k6 drives the traffic
+and asserts the invariants; it has no access to the Docker daemon and never breaks
+anything. `load/chaos.sh` owns the timeline, stops the containers, takes the locks, and
+reads the aftermath out of Postgres into one report. Faults are injected in the *gaps*
+between scenario windows, and each fault that asks a question about a number runs a
+control window of identical shape beside the broken one.
+
+What the four runs showed (`DECISIONS.md` 064 has the tables and the caveats):
+
+- **Payments stopped.** Every invariant held: no order confirmed, every confirm read
+  `payment_timed_out`, no 5xx, and the 133 orders left `pending` map one-to-one onto the
+  133 seats still held. The cost is that a stopped container swallows connections rather
+  than refusing them, so every confirm pays the full ten-second client timeout.
+- **Two reconcilers over one table.** No attempt was settled twice, 82 sweeps lost the
+  race on `xmin` and wrote nothing, and no order ever had more than one live attempt. But
+  the process that had never authorised anything settled 379 attempts as `abandoned`,
+  because the simulated gateway keeps its answered keys in memory per process. The lease
+  061 wants is not the first thing missing.
+- **Redis stopped.** No oversell either side, and holds kept being won with no lock in
+  sight — the claim that correctness comes from `xmin` alone, demonstrated under 250 VUs.
+  A hold costs about 85 times more without it, because discovering the lock is
+  unavailable waits out a five-second client timeout twice.
+- **The dispatcher stalled.** A twenty-second consumer outage produced a backlog of 2,200
+  messages, a delivery-latency tail of 20,631 ms, a request path that did not notice
+  (hold p99 23.6 ms) and no faults at all. Late is not wrong, measured.
+
+Reports land in `load/results/` beside the summaries, and are gitignored for the same
+reason.
+
 ## Status
 
 **Load-In closed; Soundcheck started.** Inventory is complete and proven end to end —
@@ -349,6 +390,15 @@ when the sweep releases an authorisation, nothing tells the order it was release
 means Payments getting an outbox of its own, and it collides with 027's choice to resolve an
 order by the next confirm rather than by a background job — two arguments that deserve their own
 change rather than a ride inside this one.
+
+**The extraction was inert for four days, and a chaos run found it** (`DECISIONS.md` 063).
+`OrdersModule` used `services.Replace` to swap in the HTTP adapter and argued in a comment
+that this made the outcome independent of registration order. It does not: `Replace`
+removes the *first existing* registration and appends, and `Program.cs` registers Orders
+before Payments, so the in-process adapter was appended afterwards and last-wins gave it
+every payment. Both ends of the wire had tests and both stayed green; nothing tested that
+the wire was connected, because no test project referenced both modules. Payments now
+registers with `TryAddScoped` and `StranglerSwitchTests` pins all four combinations.
 
 **Payments is extracted** (`DECISIONS.md` 061), which closes Soundcheck's remaining outcome.
 It runs as its own host, `Encore.Payments.Api`, and Orders reaches it over HTTP through the

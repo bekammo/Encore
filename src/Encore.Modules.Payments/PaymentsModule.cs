@@ -41,7 +41,28 @@ public static class PaymentsModule
         // fail.
         services.AddSingleton<SimulatedPaymentGateway>();
 
-        services.AddScoped<IOrderPayments, InProcessOrderPayments>();
+        // TryAdd, not Add, and the difference is the whole Strangler Fig.
+        //
+        // 061 registered this with Add and argued in OrdersModule that
+        // ServiceCollectionDescriptorExtensions.Replace made the outcome
+        // independent of which module Program.cs registers first. It does not.
+        // Replace removes the first existing registration and appends its own, so
+        // with Orders registered before Payments — which is the order in
+        // Encore.Api — there was nothing to remove when the HTTP client was
+        // registered, and this line then appended the in-process adapter after it.
+        // Last-wins handed every call to InProcessOrderPayments, and the
+        // strangled configuration was quietly still a monolith.
+        //
+        // The chaos harness is what found it: run 3 stopped payments-api and the
+        // confirms kept succeeding, with captured rows appearing in a database no
+        // running process was supposed to be writing to. DECISIONS 063.
+        //
+        // TryAdd makes the pair order-independent for real. Orders first: this
+        // sees the HTTP registration and stands down. Payments first: this
+        // registers and Orders' Replace takes it out. No BaseAddress at all:
+        // Orders registers nothing and this is the only candidate, which is the
+        // monolith, unchanged.
+        services.TryAddScoped<IOrderPayments, InProcessOrderPayments>();
 
         services.TryAddSingleton(TimeProvider.System);
 
