@@ -77,6 +77,7 @@ a superseding entry gets added instead.
 - [069](#069--delivery-gets-a-deadline-because-the-claim-transaction-was-open-for-as-long-as-a-consumer-felt-like) — Delivery gets a deadline, because the claim transaction was open for as long as a consumer felt like
 - [070](#070--retention-and-a-health-check-that-asks-something) — Retention, and a health check that asks something
 - [071](#071--the-openapi-document-learns-which-host-serves-a-route) — The OpenAPI document learns which host serves a route
+- [072](#072--ci-arrives-before-its-phase-and-the-check-it-encodes) — CI arrives before its phase, and the check it encodes
 
 ---
 
@@ -3904,3 +3905,98 @@ monolith does not, and that both serve `/health`.
 Swashbuckle stands, 049's bill stands, and this adds one more line to it: a route
 that moves between hosts needs its `servers` entry moved too. The difference is that
 forgetting now fails a test instead of sending a reader at a 404.
+
+## 072 — CI arrives before its phase, and the check it encodes
+
+`CLAUDE.md` listed CI under "all later phases", beside MassTransit and Bicep. This
+contradicts that, deliberately and on request, and the rule has been edited rather
+than quietly worked around.
+
+**Why it stops being a later phase.** 065 is the argument. Two documents making the
+largest architectural claims in the repository went stale inside a week, and the
+entry's own observation was that 059 and 060 had just built drift tests on exactly
+that reasoning — prose rots, and only a test notices. The suite has the same problem
+one level up. 036 through 042 turned this project's claims into build rules and
+architecture tests specifically so they would be enforced rather than asserted, and
+until now nothing ran any of them except a person remembering to. A repository whose
+entire argument is *a claim nobody checks reads exactly like a claim that holds* was
+relying on somebody's habit.
+
+It is also the cheapest thing on the On Tour list by a wide margin, and the two
+extractions queued behind it are the largest changes since Load-In. Protecting them
+before they land is worth more than protecting them after.
+
+### It runs the documented command, not a faster one
+
+`docker compose run --rm --build tests`, unchanged from what `CLAUDE.md` hands a
+developer. `dotnet test` on the runner would be quicker and would be **a different
+thing being tested.** `tests/Dockerfile` copies each project file in by name, so a new
+test project nobody added to it fails `dotnet restore` at solution level — and that
+file is otherwise exercised only by developers, on a machine where Smart App Control
+makes the container mandatory. CI is the one place that rot would surface for everyone.
+
+The container indirection exists because of a Windows policy that a Linux runner is
+not subject to (015), so carrying it here looks like ceremony. It is not: the thing it
+buys on the runner is different from the thing it buys on the desk.
+
+### The verdict comes from the summary lines, and that is the whole point
+
+`docker compose run` exits **0** when it cannot reach the daemon at all. Nothing runs,
+the error is printed, and the command succeeds. `CLAUDE.md` records that as a hazard to
+remember; a workflow that checked `$?` would be the exact mistake that note warns about,
+written down and then automated.
+
+So the run is teed to a log and the log is counted: `Passed!` lines against the number
+of `*.csproj` files under `tests/`. One comparison fails in three different ways —
+
+- an assembly that failed (a `Failed!` line),
+- nothing having executed at all (zero `Passed!` lines),
+- **a test project that exists in the tree but never reached the runner**, because the
+  solution or `tests/Dockerfile` does not know about it.
+
+The third is the one no other mechanism catches, and it is the failure the next change
+is most likely to produce.
+
+**All three were checked by fabricating the logs that produce them**, rather than by
+reading the script and believing it. A guard that has never fired is a guard nobody has
+any evidence about, which is 064's complaint about an A/B with an unmeasured control arm
+in a smaller key.
+
+### What it deliberately does not do
+
+**It does not re-assert the purity rules.** `ENCORE001`–`003` fail the build when a
+package, a framework reference or a transitive arrival reaches a zero-dependency
+project, and `Encore.ArchitectureTests` asserts the same boundaries again over compiled
+metadata and the declared project graph. A `dotnet list package` step would be a third
+check of something two mechanisms already refuse to let through, and this repository
+does not pay for a guarantee twice (001).
+
+**It does not run the load or chaos harnesses.** 056 and 064 both close by saying what
+their numbers are not: one laptop, one run per configuration. Those figures mean
+something against the run before them on the same machine and nothing at all on a shared
+runner with neighbours nobody can see. A latency number from CI would be a measurement
+wearing a threshold's clothing, which is the thing 048 refused to build.
+
+**The triggers are a pull request and a push to `main`, and the first draft of this
+entry had that wrong.** It argued there should be no `pull_request` trigger because
+work here is committed straight to a branch — which `origin/main` flatly contradicts:
+both changes before this one landed through one. A workflow that does not run on the
+event a repository actually uses to land code gates nothing while looking like it gates
+everything, which is 063's failure standing in a new place, found the same way 063's was
+— by looking at what the system does rather than at what a comment says about it. The
+wildcard push trigger stays refused for its own reason: with both, every commit on a PR
+branch runs the suite twice.
+
+
+**Nothing is cached.** A GitHub runner keeps no Docker layers between runs, so the
+restore-and-build layer that makes the local loop fast is rebuilt every time. Fixing it
+means buildx with a `gha` cache backend, which is more configuration than a first
+workflow should carry. Named rather than solved, and it is the obvious next edit if the
+wait ever becomes the reason somebody skips a push.
+
+### The one thing it cannot check
+
+The same thing 065 concluded: a test that reads English. Whether `README.md` describes
+this system is not mechanically decidable, and a string match on "three hosts" is
+defeated by a rewording. What CI does instead is run the checks that *are* decidable,
+every time, which is the half of 065's problem that was actually solvable.

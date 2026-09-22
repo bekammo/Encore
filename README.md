@@ -1,5 +1,7 @@
 # Encore
 
+[![tests](https://github.com/bekammo/Encore/actions/workflows/tests.yml/badge.svg)](https://github.com/bekammo/Encore/actions/workflows/tests.yml)
+
 An event-ticketing platform, built as a modular monolith. A portfolio project
 whose real subject is *where* architecture is worth paying for.
 
@@ -220,11 +222,13 @@ not — `DECISIONS.md` 049 records that, and the two ways to close it.
 ## Running the tests
 
 ```bash
-docker compose run --rm tests
+docker compose run --rm --build tests
 ```
 
-397 tests: 282 unit and architecture, 115 integration against real Postgres and
-Testcontainers.
+547 tests: 340 unit and architecture, 207 integration against real Postgres and
+Testcontainers. `--build` is not optional: the image compiles the source into itself
+with no bind mount, so a run without it reports on the last build's binaries as though
+they were today's.
 
 The suite runs in a container rather than on the host, and that is a host problem
 rather than a design one. Windows Smart App Control is a Code Integrity policy in
@@ -240,8 +244,33 @@ worth keeping: the suite now runs identically on any machine with Docker.
 Arguments append, so the usual filters work:
 
 ```bash
-docker compose run --rm tests --filter "FullyQualifiedName~SeatTests"
+docker compose run --rm --build tests --filter "FullyQualifiedName~SeatTests"
 ```
+
+## Continuous integration
+
+[`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs that same command on
+every push. Not `dotnet test` on the runner, which would be faster and would be a
+different thing being tested: `tests/Dockerfile` copies each project file in by name, so
+a new test project nobody added to it fails `dotnet restore` at solution level — a
+failure that looks nothing like its cause, and one only this path can catch.
+
+**The verdict comes from the summary lines, not the exit code**, because
+`docker compose run` exits 0 when it cannot reach the daemon at all: nothing runs, and
+the command still succeeds. So the workflow counts `Passed!` lines against the number of
+`*.csproj` files under `tests/`, which fails the run in three different ways — an
+assembly that failed, nothing having executed, and a test project that exists in the tree
+but never reached the runner. `DECISIONS.md` 072.
+
+What it deliberately does not do is re-assert the purity rules. `ENCORE001`–`003` already
+fail the build if a package, a framework reference or a transitive arrival reaches a
+zero-dependency project, and `Encore.ArchitectureTests` asserts the same boundaries again
+over compiled metadata — so a `dotnet list package` step in CI would be a third check of
+something two mechanisms already refuse to let through.
+
+Load and chaos runs stay off CI. They are one-laptop measurements whose numbers mean
+something relative to the run before them and nothing on a shared runner of unknown
+neighbours.
 
 ## Running the load test
 

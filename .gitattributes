@@ -61,3 +61,12 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+###############################################################################
+# Workflow files carry shell scripts in their `run:` blocks. A Linux runner
+# checks these out as LF already, but a CR surviving into bash fails in ways
+# that read like anything except a line ending, so it is pinned not inferred.
+###############################################################################
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
