@@ -6,9 +6,11 @@
        which is why this project exists alongside the unit tests rather than
        instead of them: the state machine is in-memory and stays there.
 
-       No Redis: Payments never takes a lock. No EntityFrameworkCore.InMemory
-       either — it does not enforce a partial unique index, so it would fake away
-       the guard these tests are here for. -->
+       No Redis. PaymentReconciler takes a lease since 073, but it is a Postgres
+       advisory lock taken through the same PaymentsDbContext everything else
+       here uses, not a second dependency. No EntityFrameworkCore.InMemory either
+       — it does not enforce a partial unique index, so it would fake away the
+       guard these tests are here for. -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>

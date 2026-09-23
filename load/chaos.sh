@@ -454,14 +454,24 @@ run_stall() {
   report ''
   report '```'
 
+  # 073 found the bug in this criterion: pending reads zero only once arrivals
+  # stop, and a run where 100 sales a second keep landing never reaches that —
+  # the loop would call the backlog undrained forever, which is a fact about the
+  # sale continuing and not about the stall's aftermath. "Drained" is asked as a
+  # question about age instead: is anything undelivered older than 5s, which is
+  # MaxBatchDuration's own budget and comfortably above the ~1s a message takes
+  # in steady state (PollInterval, then DeliveryTimeout if it is unlucky). A
+  # message younger than that is still in ordinary flight, not backlog.
   local drained=-1
-  local pending
+  local counts pending stale
 
   while [ $((SECONDS - t0 - expires)) -lt 120 ]; do
-    pending=$(psql_q 'SELECT count(*) FROM inventory.outbox_messages WHERE "ProcessedAt" IS NULL;')
-    report "t+$((SECONDS - t0))s  pending: ${pending}"
+    counts=$(psql_q 'SELECT count(*) FILTER (WHERE "ProcessedAt" IS NULL), count(*) FILTER (WHERE "ProcessedAt" IS NULL AND "OccurredAt" < now() - interval '"'"'5 seconds'"'"') FROM inventory.outbox_messages;')
+    pending="${counts%% | *}"
+    stale="${counts##* | }"
+    report "t+$((SECONDS - t0))s  pending: ${pending}  stale (undelivered, >5s old): ${stale}"
 
-    if [ "$pending" = "0" ]; then
+    if [ "$stale" = "0" ]; then
       drained=$((SECONDS - t0 - expires))
       break
     fi
@@ -470,7 +480,7 @@ run_stall() {
   done
 
   if [ "$drained" -ge 0 ]; then
-    report "backlog first observed empty ${drained}s after the lock expired"
+    report "backlog first observed drained (nothing undelivered older than 5s) ${drained}s after the lock expired"
   else
     report 'backlog was still draining when this stopped watching'
   fi

@@ -4,6 +4,7 @@ using Encore.Modules.Inventory.Application;
 using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Ports;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using StackExchange.Redis;
 using Testcontainers.PostgreSql;
 using Testcontainers.Redis;
@@ -152,7 +153,7 @@ public sealed class ConcurrentHoldCapTests : IAsyncLifetime
     {
         var seatIds = await SeedAvailableSeatsAsync(ConcurrentAttempts);
 
-        var results = await RaceForSeatsAsync(seatIds, new RedisDistributedLock(_connection));
+        var results = await RaceForSeatsAsync(seatIds, new RedisDistributedLock(_connection, NullLogger<RedisDistributedLock>.Instance));
         var held = results.Count(result => result.Outcome is HoldSeatOutcome.Held);
 
         Assert.True(
@@ -185,7 +186,7 @@ public sealed class ConcurrentHoldCapTests : IAsyncLifetime
     public async Task Hold_WhenOneClientRetriesOnContention_ShouldReachExactlyTheCap()
     {
         var seatIds = await SeedAvailableSeatsAsync(ConcurrentAttempts);
-        var distributedLock = new RedisDistributedLock(_connection);
+        var distributedLock = new RedisDistributedLock(_connection, NullLogger<RedisDistributedLock>.Instance);
 
         await using var context = new InventoryDbContext(_options);
         var handler = new HoldSeatCommandHandler(

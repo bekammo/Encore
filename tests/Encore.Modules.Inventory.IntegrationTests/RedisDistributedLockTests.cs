@@ -1,5 +1,6 @@
 using Encore.Modules.Inventory.Adapters.Caching;
 using Encore.Modules.Inventory.Ports;
+using Microsoft.Extensions.Logging.Abstractions;
 using StackExchange.Redis;
 using Testcontainers.Redis;
 
@@ -29,7 +30,7 @@ public sealed class RedisDistributedLockTests : IAsyncLifetime
     {
         await _redis.StartAsync();
         _connection = await ConnectionMultiplexer.ConnectAsync(_redis.GetConnectionString());
-        _lock = new RedisDistributedLock(_connection);
+        _lock = new RedisDistributedLock(_connection, NullLogger<RedisDistributedLock>.Instance);
     }
 
     /// <inheritdoc />
@@ -112,7 +113,7 @@ public sealed class RedisDistributedLockTests : IAsyncLifetime
         options.ConnectRetry = 1;
 
         await using var dead = await ConnectionMultiplexer.ConnectAsync(options);
-        var deadLock = new RedisDistributedLock(dead);
+        var deadLock = new RedisDistributedLock(dead, NullLogger<RedisDistributedLock>.Instance);
 
         var acquisition = await deadLock.TryAcquireAsync(NewResource(), Ttl);
 
@@ -129,7 +130,7 @@ public sealed class RedisDistributedLockTests : IAsyncLifetime
         options.ConnectRetry = 1;
 
         await using var dead = await ConnectionMultiplexer.ConnectAsync(options);
-        var deadLock = new RedisDistributedLock(dead);
+        var deadLock = new RedisDistributedLock(dead, NullLogger<RedisDistributedLock>.Instance);
 
         Assert.False(await deadLock.ReleaseAsync(NewResource(), "token"));
     }

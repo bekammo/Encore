@@ -37,13 +37,20 @@ namespace Encore.Modules.Payments.Data;
 /// because nobody knew there was anything to void.
 /// </para>
 /// <para>
-/// <b>No lock, no claim, no <c>FOR UPDATE SKIP LOCKED</c>.</b> The outbox
-/// dispatcher takes row locks because delivering a message twice is a real cost it
-/// has to avoid. Here the expensive half is a <i>read</i> at the gateway, which two
-/// instances may safely duplicate, and the write is arbitrated by <c>xmin</c> like
-/// every other write in this module. Holding a Postgres row lock across a call to a
-/// third party would be the worse trade by a distance: a confirm touching the same
-/// row would block for as long as the gateway felt like taking.
+/// <b>No row lock, no <c>FOR UPDATE SKIP LOCKED</c> — but a lease since 073.</b> The
+/// outbox dispatcher takes row locks because delivering a message twice is a real
+/// cost it has to avoid. Here the write is arbitrated by <c>xmin</c> like every
+/// other write in this module regardless, so two reconcilers duplicating a row's
+/// resolution was never a correctness problem. It was still a cost — a doubled
+/// gateway lookup and a batch's worth of work thrown away on a lost race — and 064's
+/// chaos run against two reconcilers over one table measured it: 073 counted 950
+/// ledger lookups against 655 payments and 17 sweeps losing the <c>xmin</c> race in
+/// one session. <see cref="ReconcileBatchAsync"/> now takes a transaction-scoped
+/// Postgres advisory lock before reading any candidate, so at most one instance is
+/// ever mid-batch. Holding a Postgres row lock across a call to a third party would
+/// still be the worse trade by a distance — a confirm touching the same row would
+/// block for as long as the gateway felt like taking — and the lease does not do
+/// that: it locks nothing any query touches.
 /// </para>
 /// <para>
 /// <b>Nothing depends on this running</b>, which is 007's rule about the expiry
@@ -113,17 +120,64 @@ internal sealed class PaymentReconciler(
         _logger.LogInformation("Payment reconciler stopped.");
     }
 
+    /// <summary>
+    /// Names this job's lease in Postgres's advisory-lock namespace. Arbitrary;
+    /// the only rule is that nothing else in the schema uses it, so a future job
+    /// wanting its own lease picks a different constant.
+    /// </summary>
+    internal const long LeaseKey = 3_811_030_057;
+
     /// <summary>Sweeps one batch of timed-out attempts.</summary>
     /// <returns>How many were settled.</returns>
     /// <remarks>
+    /// <para>
     /// Internal rather than private so the integration tests can drive one sweep
     /// deterministically, for the reason <c>OutboxDispatcher.DispatchBatchAsync</c>
     /// gives: a test that started the hosted service and waited would be timing
     /// dependent, and a flaky test about an at-least-once mechanism reports failures
     /// indistinguishable from the thing it is meant to catch.
+    /// </para>
+    /// <para>
+    /// <b>The lease 061 deferred, paid the way 073 found it actually costs.</b> Not a
+    /// row lock — the class docs on this file already explain why not — but a
+    /// transaction-scoped advisory lock, which locks nothing any query touches and
+    /// needs no manual release: it is freed when the transaction ends, including
+    /// when the process dies with it still open, which a manual
+    /// <c>pg_advisory_unlock</c> would not survive. A sweep that cannot get the
+    /// lease returns 0 rather than waiting for it, because a batch that lost the
+    /// race is not behind schedule, it is redundant — the other instance is doing
+    /// this work right now. Two reconcilers still may not both be mid-sweep at
+    /// once; neither has to promise anything about being alone forever, only about
+    /// one batch.
+    /// </para>
     /// </remarks>
     internal async Task<int> ReconcileBatchAsync(CancellationToken cancellationToken)
     {
+        using var leaseScope = _scopeFactory.CreateScope();
+        var leaseContext = leaseScope.ServiceProvider.GetRequiredService<PaymentsDbContext>();
+
+        await using var lease = await leaseContext.Database
+            .BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        // The alias is not decoration: Database.SqlQuery<T> for a scalar type
+        // wraps this in a query that projects a column literally named "Value",
+        // and pg_try_advisory_xact_lock's own column is named after the
+        // function. Without it every sweep threw 42703 and the outer catch in
+        // ExecuteAsync swallowed it as a retry — no lease was ever taken, by
+        // either process, and nothing settled. Found by actually running fault
+        // 2 rather than by the type checker, which had nothing to say about it.
+        var acquired = await leaseContext.Database
+            .SqlQuery<bool>($"SELECT pg_try_advisory_xact_lock({LeaseKey}) AS \"Value\"")
+            .SingleAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!acquired)
+        {
+            _logger.LogDebug("Reconciliation sweep skipped: another instance already holds the lease.");
+            return 0;
+        }
+
         var candidates = await CandidatesAsync(cancellationToken).ConfigureAwait(false);
 
         if (candidates.Count is 0)

@@ -54,8 +54,29 @@ public static class InventoryModule
             // return a multiplexer that retries in the background, so individual
             // commands fail with a translatable exception instead.
             options.AbortOnConnectFail = false;
-            options.ConnectTimeout = 1_000;
+            // Overridable so 073's discriminating experiment could be run: move
+            // this alone and see whether the cost of a lock attempt against a
+            // missing Redis moves with it. 074 ran it at 1,000 and 3,000 — the
+            // per-lock cost stayed at ~1,000ms either way, and every failure was
+            // RedisConnectionException rather than RedisTimeoutException. That
+            // rules this setting out as the mechanism; 074 has the numbers.
+            // Nothing outside the chaos rig should set this — 1,000 is 064's
+            // tuned value and the knob stays for the next experiment this class
+            // of question needs.
+            options.ConnectTimeout = configuration.GetValue("Inventory:RedisLock:ConnectTimeoutMs", 1_000);
             options.ConnectRetry = 3;
+            // The candidate fix 073 named and deliberately did not apply in the
+            // same session that found it: a disconnected multiplexer's default
+            // behaviour is to queue a command in a backlog and wait for a
+            // reconnect, which is what a ~1,000ms cost independent of
+            // ConnectTimeout looks like. FailFast refuses immediately instead.
+            // Applied here, in the session after the one that ruled out
+            // ConnectTimeout, on the same rule that section followed: change and
+            // measurement do not share a session. This session's redis fault run
+            // is 1,000/3,000 ConnectTimeout with the default backlog policy, so
+            // this line is untested by anything in 074 — the next chaos session
+            // against `redis` measures it. See DECISIONS.md 074.
+            options.BacklogPolicy = BacklogPolicy.FailFast;
 
             // The command timeouts, and they are set here for a reason 064 had to
             // measure before anybody could see it. ConnectTimeout above was tuned
