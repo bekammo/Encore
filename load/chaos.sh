@@ -36,7 +36,13 @@ COMPOSE="docker compose --profile strangled"
 
 # Every table the runs touch, truncated between them so that each run's evidence
 # is about that run. Ordered parents-first with CASCADE doing the rest.
-TABLES='catalog.venues, catalog.events, inventory.seats, inventory.outbox_messages, notifications.notifications, orders.orders, orders.order_lines, payments.payments'
+#
+# The gateway ledger is here since 073. 066 added the table after this list was
+# written, so the first session to run against it let the ledger accumulate across
+# all five runs: 950 ledger rows beside 655 payments at the end. Every join went
+# payments-to-ledger and keys are per attempt, so no reported number was wrong, but
+# a count of the ledger on its own would have been.
+TABLES='catalog.venues, catalog.events, inventory.seats, inventory.outbox_messages, notifications.notifications, orders.orders, orders.order_lines, payments.payments, payments.gateway_ledger'
 
 # The baseline pair that opens every k6 invocation. Full length for the baseline
 # run, because that one is a measurement meant to sit in 056's table; short for
@@ -353,7 +359,9 @@ run_payments() {
 
   report ''
   report '```'
-  local pay="${RESULTS_DIR}/log-payments-api-${STAMP}.txt"
+  # Named for the run. Fault 2 captures payments-api as well, and when both used
+  # one filename the file on disk after a full session was fault 2's (073).
+  local pay="${RESULTS_DIR}/log-payments-api-payments-${STAMP}.txt"
   capture_log payments-api "$pay"
 
   report 'reconciler said:'
@@ -544,8 +552,8 @@ run_reconcilers() {
   # was still running, so its seven numbers described seven different moments and
   # did not add up. They are large — EF Core logs every command at Information, so
   # this is over a million lines a side — which is also why one pass matters.
-  local pay="${RESULTS_DIR}/log-payments-api-${STAMP}.txt"
-  local mono="${RESULTS_DIR}/log-api-strangled-${STAMP}.txt"
+  local pay="${RESULTS_DIR}/log-payments-api-reconcilers-${STAMP}.txt"
+  local mono="${RESULTS_DIR}/log-api-strangled-reconcilers-${STAMP}.txt"
 
   say 'capturing both logs'
   capture_log payments-api "$pay"
