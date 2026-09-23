@@ -1,5 +1,6 @@
 using Encore.Modules.Inventory.Adapters.Caching;
 using Encore.Modules.Inventory.Ports;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using StackExchange.Redis;
 using Testcontainers.Redis;
@@ -133,5 +134,63 @@ public sealed class RedisDistributedLockTests : IAsyncLifetime
         var deadLock = new RedisDistributedLock(dead, NullLogger<RedisDistributedLock>.Instance);
 
         Assert.False(await deadLock.ReleaseAsync(NewResource(), "token"));
+    }
+
+    /// <summary>
+    /// An outage is one warning, not one per attempt. 079 counted 95,244 warnings
+    /// with stack traces in 30 seconds, and they were the prime suspect for what an
+    /// outage still cost requests that never touch the lock (080).
+    /// </summary>
+    [Fact]
+    public async Task TryAcquire_WhenRedisStaysUnreachable_ShouldWarnOnceForTheWholeOutage()
+    {
+        var options = ConfigurationOptions.Parse("localhost:1");
+        options.AbortOnConnectFail = false;
+        options.ConnectTimeout = 250;
+        options.ConnectRetry = 1;
+        options.BacklogPolicy = BacklogPolicy.FailFast;
+
+        await using var dead = await ConnectionMultiplexer.ConnectAsync(options);
+        var logger = new CountingLogger();
+        var deadLock = new RedisDistributedLock(dead, logger);
+
+        for (var i = 0; i < 20; i++)
+        {
+            Assert.Equal(LockOutcome.Unavailable, (await deadLock.TryAcquireAsync(NewResource(), Ttl)).Outcome);
+        }
+
+        Assert.False(await deadLock.ReleaseAsync(NewResource(), "token"));
+
+        Assert.Equal(1, logger.Count(LogLevel.Warning));
+        Assert.Equal(0, logger.Count(LogLevel.Information));
+    }
+
+    private sealed class CountingLogger : ILogger<RedisDistributedLock>
+    {
+        private readonly List<LogLevel> _levels = [];
+
+        public int Count(LogLevel level) => _levels.Count(entry => entry == level);
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        // Information and above, as a host at its default level would write.
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (IsEnabled(logLevel))
+            {
+                lock (_levels)
+                {
+                    _levels.Add(logLevel);
+                }
+            }
+        }
     }
 }
