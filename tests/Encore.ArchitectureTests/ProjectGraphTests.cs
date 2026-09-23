@@ -130,6 +130,35 @@ public class ProjectGraphTests
             $"Hosts meet over HTTP, not through the project graph. Found: {string.Join(", ", offenders)}");
     }
 
+    /// <summary>The telemetry project declares no <c>ProjectReference</c>: it wires exporters and names nothing.</summary>
+    [Fact]
+    public void Telemetry_ShouldDeclareNoProjectReference()
+    {
+        var references = Declared(EncoreTree.Telemetry);
+
+        Assert.True(
+            references.Count == 0,
+            $"{EncoreTree.Telemetry} must declare zero ProjectReference items — hosts name it, it names nothing. Found: {string.Join(", ", references)}");
+    }
+
+    /// <summary>
+    /// Only a host may reference the telemetry project. Modules emit through the BCL's
+    /// <c>ActivitySource</c> and <c>Meter</c>, so OpenTelemetry's packages never reach one.
+    /// </summary>
+    [Fact]
+    public void OnlyAHostShouldReferenceTelemetry()
+    {
+        var offenders = EncoreTree.SourceProjects()
+            .Where(project => !EncoreTree.Hosts.Contains(project.Key))
+            .Where(project => EncoreTree.DeclaredProjectReferences(project.Value).Contains(EncoreTree.Telemetry))
+            .Select(project => project.Key)
+            .ToList();
+
+        Assert.True(
+            offenders.Count == 0,
+            $"{EncoreTree.Telemetry} is host wiring; a module that references it carries OpenTelemetry. Found: {string.Join(", ", offenders)}");
+    }
+
     private static IReadOnlyList<string> Declared(string project)
     {
         var projects = EncoreTree.SourceProjects();

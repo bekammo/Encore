@@ -48,6 +48,10 @@ public sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outbox
         builder.Property(message => message.LastError)
             .HasMaxLength(OutboxMessage.MaxErrorLength);
 
+        // Nullable: a seat changed outside a traced operation has no trace to link to.
+        builder.Property(message => message.TraceParent)
+            .HasMaxLength(OutboxMessage.MaxTraceParentLength);
+
         // Partial: indexes only the backlog, so the dispatcher's poll stays cheap as the
         // table grows. Column order matches the claim query.
         builder

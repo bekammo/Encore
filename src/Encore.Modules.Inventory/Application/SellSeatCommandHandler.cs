@@ -42,9 +42,21 @@ public sealed class SellSeatCommandHandler(
 
         var attempt = await AttemptAsync(command, cancellationToken).ConfigureAwait(false);
 
-        return attempt.LostRace
-            ? (await AttemptAsync(command, cancellationToken).ConfigureAwait(false)).Result
-            : attempt.Result;
+        if (!attempt.LostRace)
+        {
+            return attempt.Result;
+        }
+
+        // The retry's load discards the first attempt's changes.
+        var retry = await AttemptAsync(command, cancellationToken).ConfigureAwait(false);
+
+        if (retry.LostRace)
+        {
+            // Nothing else will: reload so the seats that read Sold in memory cannot reach a later save.
+            await _seats.GetByIdsAsync(command.SeatIds, cancellationToken).ConfigureAwait(false);
+        }
+
+        return retry.Result;
     }
 
     private async Task<Attempt> AttemptAsync(

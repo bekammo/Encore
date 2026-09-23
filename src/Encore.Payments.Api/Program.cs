@@ -1,7 +1,11 @@
 using Encore.Modules.Payments;
 using Encore.Shared;
+using Encore.Telemetry;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// As in Encore.Api: off unless OTEL_EXPORTER_OTLP_ENDPOINT is set.
+builder.AddEncoreTelemetry("encore-payments");
 
 // Problem details for every response, as in Encore.Api.
 builder.Services.AddProblemDetails();

@@ -4,7 +4,7 @@ The choices in Encore that are worth defending, each with the alternative it bea
 it costs. Entries are append-only: when a decision changes, a new entry supersedes it rather
 than rewriting it.
 
-This log was consolidated on 2026-09-23 from an 80-entry working log into the twenty below.
+This log was consolidated on 2026-09-23 from an 80-entry working log into 001–020; later entries follow them.
 Corrections, audits and re-measurements were folded into the decision they concerned, and
 the wrong turns worth learning from were kept (018 is the best of them). The full working
 log is in git: `git show 2e5ad70:DECISIONS.md`.
@@ -31,6 +31,7 @@ log is in git: `git show 2e5ad70:DECISIONS.md`.
 - [018](#018--payments-becomes-a-service-and-a-seam-is-not-proven-by-testing-each-side-of-it) — Payments becomes a service, and a seam is not proven by testing each side of it
 - [019](#019--measure-first-then-break-it-on-purpose) — Measure first, then break it on purpose
 - [020](#020--a-claim-nothing-checks-reads-like-a-claim-that-holds) — A claim nothing checks reads like a claim that holds
+- [021](#021--telemetry-follows-the-asymmetry) — Telemetry follows the asymmetry
 
 ---
 
@@ -489,8 +490,9 @@ would sell them. `SeatBatchTests` pins it by saving after a refusal and checking
 The holds a refused sale leaves behind stay the client's, for 009's reason. Under load, 1,943
 orders — 1,298 of them multi-seat — ended with none partly sold (019).
 
-Open: when the batch loses a race twice, the catch leaves the seats reading `Sold` in the
-change tracker; the reload covers a refusal but not that path.
+A sale that loses its race twice reloads too: the retry's load discards the first loss, and
+nothing discarded the second, so a later save on the same unit of work tried to write stale
+`Sold` seats. `xmin` refused that write, but the refusal landed on an unrelated caller.
 
 ---
 
@@ -856,8 +858,10 @@ it out. `BacklogPolicy.FailFast` removed it: a hold's median cost of losing Redi
 and every refusal was "no connection is active". Logging each refused attempt — ~3,000 a second
 — was then the suspect for what purchases still paid; logging an outage's edges instead
 (`LockOutageLog`) took the hold's median cost to zero, but purchases only from 2.0× to 1.78×.
-**A change is never measured by the session that motivated it.** Open: let the lock stop asking
-Redis briefly after a refusal.
+**A change is never measured by the session that motivated it.** The next step is built and
+not yet measured: after a refusal, `CooldownDistributedLock` stops asking Redis for
+`Inventory:RedisLock:Cooldown` (1 s) and answers "unavailable" itself. `REDIS_LOCK_COOLDOWN=00:00:00`
+is the control.
 
 The seat lock's removal was measured the same way: three runs against six, 18% more attempts,
 lost races 0.10% → 0.23% (004). And the partial index suspected of a 62% p99 regression was
@@ -906,3 +910,40 @@ won it. Every containerised path stayed green, since container traffic never tou
 published port; only `dotnet run` and `dotnet ef` failed, with a password error against a
 correct connection string. Moving the host side is reversible and leaves the developer's
 machine alone.
+
+---
+
+## 021 — Telemetry follows the asymmetry
+
+OpenTelemetry was brought forward from On Tour by the owner. Its packages live in
+**`Encore.Telemetry`**, a host-side project that both hosts reference and nothing else may.
+The alternative was to drop `EncoreNoDirectPackages` from the hosts. That would reopen the rule
+behind 008's hand-written contract for the sake of four packages. 017's "one shared project"
+still holds for modules. This second one is shared by hosts. The architecture tests forbid it
+to name a module, a contracts assembly or `Encore.Shared`, forbid anything but a host to
+reference it, and forbid any module to emit a reference to OpenTelemetry.
+
+**Modules emit through the BCL.** Inventory's `ActivitySource` and `Meter` are
+`System.Diagnostics` types, recorded at the adapters' edges: the lock cooldown, the outbox
+dispatcher, and the two driving adapters. The Domain and the use cases are unchanged. The host
+subscribes to `Encore.*` by wildcard, so it never names a module. **Only Inventory has
+instruments of its own.** The flat modules get the framework's spans for HTTP, Npgsql and
+HttpClient and nothing more, for 001's reason.
+
+**An outbox delivery links to the trace that raised it; it does not join it.** The drain
+stores `Activity.Current`'s `traceparent` in a nullable column, and the dispatcher starts a
+consumer span with a link to it. A parent would have been wrong on both counts: the request
+ended long before, and a redelivery would give it a second child. The drain's atomicity is
+untouched. It writes one more string per row.
+
+**Two things the first live run showed.** Every background poll (the outbox claim, the sweep,
+the reconciler) arrived as its own trace of one Npgsql span, about one a second per job,
+burying the requests. The root sampler now drops a client span that nothing started, and
+Npgsql's metrics still price those queries. The confirm's trace crosses both processes, with
+authorise and capture as server spans in `encore-payments`, without any code for it:
+HttpClient propagates W3C context natively.
+
+**Off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set**, so a load run measures the system without
+it, and tests and `dotnet run` are unchanged. Locally, `grafana/otel-lgtm` runs under
+`--profile telemetry`. What exporting costs a flash sale has not been measured. It gets its own
+session, like everything else in 019.

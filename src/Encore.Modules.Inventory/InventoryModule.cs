@@ -58,7 +58,16 @@ public static class InventoryModule
         });
 
         services.AddScoped<ISeatRepository, EfSeatRepository>();
-        services.AddSingleton<IDistributedLock, RedisDistributedLock>();
+
+        // Singletons: the cooldown is shared state, one window per process.
+        var redisLock = configuration.GetSection(RedisLockOptions.SectionName).Get<RedisLockOptions>()
+            ?? new RedisLockOptions();
+
+        services.AddSingleton<RedisDistributedLock>();
+        services.AddSingleton<IDistributedLock>(provider => new CooldownDistributedLock(
+            provider.GetRequiredService<RedisDistributedLock>(),
+            redisLock.Cooldown,
+            provider.GetRequiredService<TimeProvider>()));
 
         // TryAdd: several modules register a clock, and a test replacing one must win.
         services.TryAddSingleton(TimeProvider.System);

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Encore.Modules.Inventory.Adapters.Persistence;
+using Encore.Modules.Inventory.Adapters.Telemetry;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -156,6 +157,8 @@ internal sealed class OutboxDispatcher(
     {
         var utcNow = _timeProvider.GetUtcNow().UtcDateTime;
 
+        using var activity = StartDelivery(message);
+
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(_options.DeliveryTimeout);
 
@@ -163,6 +166,11 @@ internal sealed class OutboxDispatcher(
         {
             await _catalog.DispatchAsync(provider, message, deadline.Token).ConfigureAwait(false);
             message.MarkProcessed(utcNow);
+
+            RecordDelivery(message, "Delivered");
+            InventoryTelemetry.OutboxDeliveryLag.Record(
+                (utcNow - message.OccurredAt).TotalSeconds,
+                new KeyValuePair<string, object?>("event_type", message.EventType));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -174,7 +182,12 @@ internal sealed class OutboxDispatcher(
             var backoff = BackoffFor(message.Attempts);
             message.MarkFailed(utcNow, ex.ToString(), backoff);
 
-            if (message.Attempts >= _options.MaxAttempts)
+            var deadLettered = message.Attempts >= _options.MaxAttempts;
+
+            activity?.SetStatus(ActivityStatusCode.Error, ex.GetType().Name);
+            RecordDelivery(message, deadLettered ? "DeadLettered" : "Failed");
+
+            if (deadLettered)
             {
                 _logger.LogError(
                     ex,
@@ -204,4 +217,34 @@ internal sealed class OutboxDispatcher(
 
         return delay > _options.MaxBackoff ? _options.MaxBackoff : delay;
     }
+
+    /// <summary>
+    /// A consumer span that links to the trace which raised the event, rather than joining it:
+    /// that trace ended long ago, and a redelivery would give it a second child.
+    /// </summary>
+    internal static Activity? StartDelivery(OutboxMessage message)
+    {
+        ActivityLink[]? links = message.TraceParent is { } traceParent
+            && ActivityContext.TryParse(traceParent, traceState: null, out var raisedBy)
+                ? [new ActivityLink(raisedBy)]
+                : null;
+
+        var activity = InventoryTelemetry.Source.StartActivity(
+            ActivityKind.Consumer,
+            parentContext: default,
+            links: links,
+            name: $"outbox deliver {message.EventType}");
+
+        activity?.SetTag("messaging.message.id", message.MessageId);
+        activity?.SetTag("messaging.destination.name", message.EventType);
+        activity?.SetTag("encore.outbox.attempts", message.Attempts);
+
+        return activity;
+    }
+
+    private static void RecordDelivery(OutboxMessage message, string outcome) =>
+        InventoryTelemetry.OutboxDeliveries.Add(
+            1,
+            new KeyValuePair<string, object?>("event_type", message.EventType),
+            new KeyValuePair<string, object?>("outcome", outcome));
 }

@@ -396,6 +396,26 @@ public class SellSeatCommandHandlerTests
         Assert.Equal(2, seats.SaveCalls);
     }
 
+    /// <summary>
+    /// The retry's load discards the first loss; nothing discards the second but a third load,
+    /// or the seats that read Sold in memory would reach the next save on the same unit of work.
+    /// </summary>
+    [Fact]
+    public async Task HandleBatch_WhenBothAttemptsLoseTheRace_ShouldReloadTheSeats()
+    {
+        var batch = new[] { AnotherSeatHeldBy(ClientA, T0), AnotherSeatHeldBy(ClientA, T0) };
+        var retried = batch.Select(seat => HeldBy(Seat.Create(seat.Id, EventId), ClientA, T0)).ToArray();
+
+        var seats = FakeSeatRepository.Loading(batch, retried)
+            .WithSaveOutcomes(
+                new ConcurrentSeatModificationException(batch[1].Id),
+                new ConcurrentSeatModificationException(batch[1].Id));
+
+        await HandlerFor(seats).HandleAsync(BatchOf(batch));
+
+        Assert.Equal(3, seats.GetByIdCalls);
+    }
+
     [Fact]
     public async Task HandleBatch_WithASeatNamedTwice_ShouldThrow()
     {

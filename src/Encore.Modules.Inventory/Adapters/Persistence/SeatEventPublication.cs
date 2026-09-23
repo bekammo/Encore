@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Encore.Modules.Inventory.Adapters.Messaging;
 using Encore.Modules.Inventory.Contracts.Events;
@@ -55,7 +56,15 @@ internal static class SeatEventPublication
             Guid.CreateVersion7(),
             eventType,
             JsonSerializer.Serialize(contract, SerializerOptions),
-            occurredAt);
+            occurredAt,
+            CurrentTraceParent());
+
+    /// <summary>
+    /// The traced operation this save runs inside, if any. Null when nothing is listening,
+    /// since then no activity exists to name.
+    /// </summary>
+    private static string? CurrentTraceParent() =>
+        Activity.Current is { IdFormat: ActivityIdFormat.W3C } activity ? activity.Id : null;
 
     private static string ReasonOf(SeatReleaseReason reason) => reason switch
     {

@@ -80,6 +80,12 @@ services:
       # Overridden only by the chaos rig, to see whether the per-lock cost of a Redis
       # outage moves with it (019).
       Inventory__RedisLock__ConnectTimeoutMs: "${REDIS_CONNECT_TIMEOUT_MS:-1000}"
+      # How long the lock stops asking Redis after a refusal. 00:00:00 asks every time: the
+      # control for measuring what the cooldown saves (019).
+      Inventory__RedisLock__Cooldown: "${REDIS_LOCK_COOLDOWN:-00:00:01}"
+      # Telemetry is off unless this names a collector, so a load run measures the system
+      # without it. OTEL_ENDPOINT=http://lgtm:4317 with `--profile telemetry` turns it on (021).
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_ENDPOINT:-}"
 
   # Payments as its own process (018). Behind the `strangled` profile so the monolith's
   # workflow is unchanged. Same `payments` schema in the same database: the process
@@ -113,6 +119,7 @@ services:
       # raises the rate to produce TimedOut rows for reconciliation to settle.
       Payments__Simulation__TimeoutRate: "${PAYMENTS_TIMEOUT_RATE:-0}"
       Payments__Simulation__LostRequestRate: "${PAYMENTS_LOST_REQUEST_RATE:-0.5}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_ENDPOINT:-}"
 
   # The monolith with Payments cut out: same image as `api`, different configuration, so
   # the two arrangements can run side by side.
@@ -155,6 +162,20 @@ services:
       Payments__Reconciliation__PollInterval: "${RECONCILER_POLL:-00:01:00}"
       Logging__LogLevel__Encore: "${ENCORE_LOG_LEVEL:-Information}"
       Inventory__RedisLock__ConnectTimeoutMs: "${REDIS_CONNECT_TIMEOUT_MS:-1000}"
+      Inventory__RedisLock__Cooldown: "${REDIS_LOCK_COOLDOWN:-00:00:01}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_ENDPOINT:-}"
+
+  # Grafana, Tempo, Prometheus and Loki in one container, behind its own profile so nothing
+  # else starts it. Receives OTLP on 4317 (gRPC) and 4318 (HTTP); Grafana on 3000, anonymous
+  # admin. No volume: a session's telemetry is for looking at, not for keeping (021).
+  lgtm:
+    profiles: ["telemetry"]
+    image: grafana/otel-lgtm:0.33.1
+    container_name: encore-lgtm
+    ports:
+      - "3000:3000"
+      - "4317:4317"
+      - "4318:4318"
 
   # The load harness: k6 in a container, so the rig adds no project and no package the
   # build rules would have to reason about (019). `--build` is required, as for `tests`:
