@@ -15,8 +15,16 @@ public sealed record ReleaseSeatResult(ReleaseSeatOutcome Outcome)
     /// </summary>
     public static ReleaseSeatResult Released { get; } = new(ReleaseSeatOutcome.Released);
 
-    /// <summary>The seat is sold; releasing is not a way out of that.</summary>
+    /// <summary>The seat is sold to somebody else; releasing is not a way out of that.</summary>
     public static ReleaseSeatResult AlreadySold { get; } = new(ReleaseSeatOutcome.AlreadySold);
+
+    /// <summary>
+    /// The seat is sold to this client. Still a refusal — a sale is not undone by
+    /// releasing — but one that says the client's own purchase completed, which is
+    /// what an order being cancelled mid-confirm needs to hear before it gives
+    /// any money back (<c>DECISIONS.md</c> 077).
+    /// </summary>
+    public static ReleaseSeatResult SoldToYou { get; } = new(ReleaseSeatOutcome.SoldToYou);
 
     /// <summary>Somebody else holds it.</summary>
     public static ReleaseSeatResult NotTheHolder { get; } = new(ReleaseSeatOutcome.NotTheHolder);

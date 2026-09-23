@@ -393,7 +393,7 @@
           "200": { "description": "Released, or already available.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SeatActionResponse" } } } },
           "400": { "$ref": "#/components/responses/BadClientId" },
           "404": { "description": "reason: seat_not_found.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
-          "409": { "description": "reason: already_sold (sold is terminal), not_the_holder, lost_race.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+          "409": { "description": "reason: already_sold (sold to somebody else; terminal), sold_to_you (you bought it; terminal), not_the_holder, lost_race.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
         }
       }
     },
@@ -455,7 +455,7 @@
           "400": { "$ref": "#/components/responses/BadClientId" },
           "404": { "description": "reason: order_not_found.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
           "409": {
-            "description": "reason: order_not_pending, holds_expired, payment_declined, payment_timed_out, seats_unavailable, order_failed.",
+            "description": "reason: order_not_pending, holds_expired, payment_declined, payment_timed_out, seats_unavailable, order_failed, lost_race (retriable).",
             "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
           }
         }
@@ -465,13 +465,14 @@
       "post": {
         "tags": ["orders"],
         "summary": "Ends the order because the customer said so, releasing the seats.",
+        "description": "The seats go back first and the money second. If a confirm of the same order has already sold the seats, nothing is voided and the answer is lost_race: the retry finds the order confirmed.",
         "security": [{ "ClientId": [] }],
         "parameters": [{ "$ref": "#/components/parameters/OrderId" }],
         "responses": {
           "200": { "description": "Cancelled, seats released.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderResponse" } } } },
           "400": { "$ref": "#/components/responses/BadClientId" },
           "404": { "description": "reason: order_not_found.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
-          "409": { "description": "reason: order_not_pending. A confirmed order cannot be changed.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+          "409": { "description": "reason: order_not_pending (a confirmed order cannot be changed), lost_race (retriable; a confirm got there first).", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
         }
       }
     },

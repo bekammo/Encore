@@ -82,6 +82,8 @@ a superseding entry gets added instead.
 - [074](#074--the-discriminating-experiment-a-fixed-cost-that-is-not-connecttimeout-and-two-fixes-measured-by-the-run-that-motivated-them) — The discriminating experiment, a fixed cost that is not ConnectTimeout, and two fixes measured by the run that motivated them
 - [075](#075--three-and-three-and-068s-index-clears) — Three and three, and 068's index clears
 - [076](#076--a-confirm-sells-every-seat-or-none-and-the-seat-lock-goes) — A confirm sells every seat or none, and the seat lock goes
+- [077](#077--a-cancel-gives-the-seats-back-before-the-money) — A cancel gives the seats back before the money
+- [078](#078--a-second-audit-and-the-documents-that-stopped-at-073) — A second audit, and the documents that stopped at 073
 
 ---
 
@@ -4415,3 +4417,160 @@ path's saving — one round trip per order instead of one per seat — is in no 
 
 What this does not change: the money steps and their order (028), the confirm being two
 modules' transactions rather than one, and every seat invariant resting on `xmin`.
+
+---
+
+## 077 — A cancel gives the seats back before the money
+
+An audit of the tree after 076, on 2026-09-23, found one path that still ends with seats
+sold and nobody charged. 076 closed the partial sale and said a confirm "leaves no seat sold
+without a buyer". That holds for a confirm running alone. It did not hold for a confirm and
+a cancel of the same order running together, because 034 had cancel void first:
+
+1. confirm authorises: `Authorized`
+2. confirm sells: every hold is live, so every seat sells
+3. cancel voids: `Voided`. 034's guard looks for `AlreadyCaptured`, and nothing has been
+   captured yet
+4. cancel releases: every seat answers `AlreadySold`, which is ignored, and cancel writes
+   `Cancelled`
+5. confirm captures: `NoAuthorization`, so it writes `Failed` and loses the order row's
+   `xmin`
+
+End state: the seats are `Sold` to the client, the authorisation is voided, and
+Notifications has announced the sale. `Cancel_BetweenAConfirmsSaleAndItsCapture_…` runs
+exactly this against the old code and fails with the money `Voided`. The window is one
+gateway call wide, and in the extracted configuration that call crosses the network.
+Nothing in the load rig cancels, so no run could have seen it.
+
+A crashed confirm reaches the same state with no second request involved. If the process
+dies after the sale and before the capture, the order stays `Pending`, its seats are sold
+and the funds are held. Before this change, a cancel of that order voided the funds and
+wrote `Cancelled` over seats nobody had paid for.
+
+**The decision: a cancel releases the seats first and touches the money only once they are
+back.** If any seat answers `SoldToYou`, a confirm of this order has already sold it. Money
+is then the only step left to happen, so cancel returns `LostRace` and voids nothing. If no
+seat answers `SoldToYou`, the holds a sale would need are gone, no sale can follow, and the
+void is safe. This is 028's argument run in the other direction. The sale is the step that
+cannot be undone, so each flow keeps its reversible step on the far side of it: a confirm
+secures the money before selling, and a cancel releases the seats before giving the money
+back. 034 had the order backwards and did not notice, because its only guard (a capture that
+had already happened) covers the one interleaving where the money has finished moving.
+
+**Why a new contract member, rather than reading who owns the seat some other way.**
+`AlreadySold` meant "sold", with no buyer attached, and a cancel has to tell "my own confirm
+won" apart from "my hold lapsed and somebody else bought it". Only the second should still
+cancel and void. `Seat` keeps `HeldByClientId` when it sells, and the sell handler already
+reads it to make a repeated purchase idempotent. The release handler now reads it the same
+way. `ReleaseSeatStatus.SoldToYou` and `ReleaseSeatOutcome.SoldToYou` carry the answer, and
+over HTTP it is `409` with reason `sold_to_you`, not retriable. No rule moved: `Release`
+still refuses a sold seat for every caller, and only the reason given to the caller is more
+specific.
+
+**What the other interleavings do now**, each pinned by a test or argued from one:
+
+- *Cancel lands between the authorisation and the sale.* The seats go back, the sale finds
+  them `Available` and refuses, and both flows void. Nothing is sold and nothing is taken.
+  Whichever flow saves the order first writes the ending, so an order the customer
+  cancelled can read `Failed` if the confirm's save wins. The seats and the money are right
+  either way, and only the label depends on which save wins.
+- *Cancel lands after the sale.* `SoldToYou`, `LostRace`, and the confirm captures.
+- *A crashed confirm.* Cancel answers `LostRace` for as long as the seats are sold, and a
+  retried confirm completes the order. The authorisation is still live, the sale answers
+  sold for the client that owns the seats, and the capture takes the money. That is the
+  correct ending: the customer has the seats, so the customer pays.
+- *The defensive case.* `AlreadyCaptured` on the void is kept. No interleaving of this
+  module's own confirm and cancel reaches it, because a capture follows a complete sale and
+  that sale answers `SoldToYou` first. Payments saying the money was taken is still no
+  reason to write a cancellation over it.
+
+**What it costs.** A cancel of an order whose seats someone else bought through Inventory's
+own purchase route (not through this order's confirm) cannot be cancelled while it is
+`Pending`, because the seats answer `SoldToYou` for that client too. A confirm then completes
+the order and charges for seats the client does own. That is a customer sidestepping the
+order flow, and charging them for what they hold is the answer 033 would give.
+
+**What this does not do.** It adds no lock and no new order status. The order row's `xmin`
+still decides which ending is written, and Inventory still decides what happened to the
+seats. The latent double-lost-race in `SellSeatCommandHandler` that the same audit found
+(its catch leaves the seats reading `Sold` in the change tracker, where 076's reload covers
+only a refusal) is its own change. So is a k6 scenario that cancels.
+
+**About the number.** 076 said 077 would be where the client lock is measured against
+Postgres. Entries are numbered in the order they are written, so this one took 077 and that
+measurement has no entry yet. The documentation sweep after this change should record that,
+because 076 cannot be edited.
+
+---
+
+## 078 — A second audit, and the documents that stopped at 073
+
+The same audit that found 077 compared the prose with the tree once more, the way 065 did.
+The result had the same shape: the code was right, the suite was green (566 tests, all nine
+assemblies), and the documents had stopped at roughly 073. Four entries (074–077) had
+landed in two days, and each one updated the comments closest to the code it touched and
+nothing further out.
+
+**What was wrong, and is corrected here.**
+
+- `CLAUDE.md` cited **074** in three places for what **076** decided (no per-seat lock,
+  batched seat writes, no partial sale). It still called the Redis mechanism unconfirmed and
+  068's index the leading suspect, when 074 and 075 had settled both, and it never
+  mentioned the reconciler's lease. `CLAUDE.md` is gitignored and has been since it was
+  written, so this correction is real and not in the diff. It changes how an agent reads
+  the repository and nothing a reader of the repository sees.
+- `README.md`:
+  - said `Encore.Shared` holds exactly two things. It has held three since 070 added
+    `IReadinessCheck`.
+  - said "Notifications and Identity do not exist" directly above a paragraph about
+    Notifications.
+  - listed the expired-hold sweep as deliberately absent (built in 062).
+  - described the reconciler's single-owner rule as "a compose setting today rather than a
+    lease" (the lease arrived in 074).
+  - said no test fails when the OpenAPI document and the routes disagree (the test exists
+    since 059).
+  - gave a test count of 547.
+  - had nothing on 073–077.
+
+  The chaos section's 85× now reads as 064's number, with 073–075's results beside it.
+- Code comments:
+  - `InventoryModule` still said a hold takes two locks and still called 061's
+    single-owner rule an unpaid debt.
+  - `EfSeatRepository.FindExpiredHoldsAsync` said the index its query wants did not exist
+    and should not be built until measured. 068 built it.
+  - `SeatLocks` said the expired-hold sweep would take a lock (it takes none), and described
+    a stranded lock as keeping everyone off a seat, a lock 076 removed.
+  - `docker-compose.yml` and `chaos.sh` described fault 2 as pricing a missing lease. They
+    now say it tests the one that exists.
+  - Fault 3 now records that a purchase takes no lock since 076, which makes its buy half a
+    control and its hold half the reading that will measure `FailFast`.
+- The OpenAPI document listed neither confirm's nor cancel's `lost_race`. Cancel's is the
+  answer 077 depends on, so it is documented with what it means.
+
+**076's forward reference.** 076 said "077 is where [the client lock] is measured against
+Postgres". 077 went to the cancel race, because entries are numbered in the order they are
+written. The measurement 076 meant still has no entry: take the client lock away, let a
+Postgres-side serialisation of the cap check do its job, and compare. It is open, and this
+line is the place a reader following 076's reference will land.
+
+**What this does not add**, for 065's reason: a test that reads English. The drifts above
+were all found by deriving each claim from the code, and the two documents most prone to
+drift are the ones no mechanical check can read. The one machine-readable surface that
+drifted, the OpenAPI document, has a test for its routes and none for its reason strings.
+That is a gap, but a small one: the reason strings live in exhaustive switches that a unit
+test already maps member by member.
+
+**What is still open after the audit**, in the order it ranked them:
+
+1. A chaos session that measures `BacklogPolicy.FailFast` (074) and 076's removal of the
+   seat lock together. The hold latency in fault 3 separates them.
+2. A k6 scenario with multi-seat orders and cancels. Every checkout the rig makes is one
+   seat, and nothing cancels, so neither 076's atomic sale nor 077's race has ever been
+   under load.
+3. The latent double-lost-race in `SellSeatCommandHandler` that 077 named.
+4. The client lock measured against Postgres, as above.
+
+One question this entry deliberately does not answer is which phase the project is in.
+`CLAUDE.md` and `README.md` both still say Soundcheck is in progress. Its Payments
+extraction and outbox are done, and every entry since 064 has been Showtime's work. Closing
+a phase is a call like 043's, and it belongs to the owner rather than to a sweep.

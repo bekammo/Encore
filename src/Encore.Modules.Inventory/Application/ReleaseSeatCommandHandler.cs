@@ -136,7 +136,13 @@ public sealed class ReleaseSeatCommandHandler(
         }
         catch (SeatTransitionException ex) when (ex.Reason is SeatTransitionReason.SeatAlreadySold)
         {
-            return ReleaseSeatResult.AlreadySold;
+            // Seat keeps HeldByClientId when it sells, so the row can still say
+            // whose sale it was — the same fact the sell handler reads to make a
+            // retried purchase idempotent. Here it tells a cancel that is racing a
+            // confirm that the confirm won (077).
+            return seat.HeldByClientId == clientId
+                ? ReleaseSeatResult.SoldToYou
+                : ReleaseSeatResult.AlreadySold;
         }
         catch (SeatTransitionException ex) when (ex.Reason is SeatTransitionReason.NotTheHolder)
         {

@@ -22,8 +22,8 @@ namespace Encore.Modules.Inventory.Application;
 /// <b>Here rather than beside the port.</b> <c>Ports/</c> states a contract that
 /// adapters implement; none of this is part of that contract, and
 /// <see cref="ReleaseIfHeldAsync"/> in particular is a caller's discipline rather
-/// than an implementor's obligation. Every caller today is in this layer, and the
-/// expired-hold sweep will be too.
+/// than an implementor's obligation. The one caller is the hold handler; the
+/// expired-hold sweep takes no lock at all (062).
 /// </para>
 /// </remarks>
 internal static class SeatLocks
@@ -62,8 +62,8 @@ internal static class SeatLocks
     /// <see cref="CancellationToken.None"/>. This runs from a <c>finally</c>
     /// after the write has already happened, so a client that disconnected
     /// mid-request would otherwise cancel the release and strand the lock —
-    /// holding every other caller off the seat until the TTL runs out, on the one
-    /// path where releasing promptly matters most. Not accepting a token is what
+    /// refusing that client's next hold at this event as a concurrent request
+    /// until the TTL runs out. Not accepting a token is what
     /// stops a caller passing the wrong one; the port documents the rule, and this
     /// is the rule as code.
     /// </para>

@@ -117,6 +117,7 @@ internal sealed class InProcessSeatReservations(
         ReleaseSeatOutcome.NotTheHolder => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.NotTheHolder),
         ReleaseSeatOutcome.SeatNotFound => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.SeatNotFound),
         ReleaseSeatOutcome.LostRace => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.LostRace),
+        ReleaseSeatOutcome.SoldToYou => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.SoldToYou),
 
         _ => throw new ArgumentOutOfRangeException(
             nameof(result), result.Outcome, "Unmapped release outcome.")

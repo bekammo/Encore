@@ -52,10 +52,10 @@ Encore.sln
     ├── Encore.Modules.Inventory.UnitTests         domain + handlers, in memory
     ├── Encore.Modules.Inventory.IntegrationTests  adapters + the outbox, via Testcontainers
     ├── Encore.Modules.Catalog.IntegrationTests    schema + pricing projection
-    ├── Encore.Modules.Orders.UnitTests            the HTTP mapping, no database
+    ├── Encore.Modules.Orders.UnitTests            the HTTP mapping + the strangler switch, no database
     ├── Encore.Modules.Orders.IntegrationTests     checkout, against real Postgres
     ├── Encore.Modules.Payments.UnitTests          the state machine + the gateway
-    ├── Encore.Modules.Payments.IntegrationTests   the one-live-attempt index
+    ├── Encore.Modules.Payments.IntegrationTests   the one-live-attempt index, the ledger, reconciliation
     ├── Encore.Modules.Notifications.IntegrationTests  the consumer, and its idempotency
     └── Encore.ArchitectureTests                   the boundaries, over metadata and csprojs
 ```
@@ -70,9 +70,11 @@ see. `tests/Encore.ArchitectureTests` asserts the same boundaries again over
 compiled metadata and the declared project graph. EF Core, Redis and ASP.NET Core
 exist only on the far side of the ports.
 
-`Encore.Shared` holds exactly two things, and that is the shape of the rule: `IDomainEvent`,
-and `IIntegrationEventHandler<T>` — how a module is told that something happened elsewhere.
-Both are pure BCL, so the assembly the domain depends on stays as empty as it was.
+`Encore.Shared` holds exactly three things, and that is the shape of the rule: `IDomainEvent`;
+`IIntegrationEventHandler<T>`, which is how a module is told that something happened
+elsewhere; and `IReadinessCheck`, which is how a module contributes to `/health/ready`
+without the host learning that it has a database (`DECISIONS.md` 070). All three are pure
+BCL, so the assembly the domain depends on stays as empty as it was.
 
 `Encore.Modules.Shared.Persistence` is the one place the five modules share code, and the
 rules on it are the interesting part. It holds `ModuleMigrator<TContext>` and the
@@ -88,7 +90,10 @@ migrator behind its own flag, so extraction still takes one line. See `DECISIONS
 The seat is the whole problem. `Seat` is the aggregate root and the sole
 consistency boundary, and a hold is not a separate entity — it is the
 `HeldByClientId` / `HoldExpiresAt` pair on the seat row, so acquiring, losing or
-converting a hold is always a single-row write.
+converting a hold is always a change to one row. An order's seats are written in one
+transaction (all sold or none sold), but each seat still decides its own transition and
+carries its own concurrency token. The transaction makes the writes atomic and enforces no
+rule of its own (`DECISIONS.md` 076).
 
 - **Postgres is the source of truth.** Atomicity comes from optimistic
   concurrency: `RowVersion` maps to the Postgres `xmin` system column, so the
@@ -215,9 +220,9 @@ no CORS policy to configure and none exists.
 
 The document is written by hand and verified against a running instance, not generated.
 `Encore.Api` holds zero `PackageReference` items on purpose, which rules out both
-Swashbuckle and `Microsoft.AspNetCore.OpenApi` (`DECISIONS.md` 014). The honest cost is
-that nothing regenerates it and no test fails when a route changes and the document does
-not — `DECISIONS.md` 049 records that, and the two ways to close it.
+Swashbuckle and `Microsoft.AspNetCore.OpenApi` (`DECISIONS.md` 014). Nothing regenerates
+it. Instead, a test fails when the document and the mapped routes disagree in either
+direction (`DECISIONS.md` 059), and it also checks which host serves each route (071).
 
 ## Running the tests
 
@@ -225,7 +230,7 @@ not — `DECISIONS.md` 049 records that, and the two ways to close it.
 docker compose run --rm --build tests
 ```
 
-547 tests: 340 unit and architecture, 207 integration against real Postgres and
+572 tests: 352 unit and architecture, 220 integration against real Postgres and
 Testcontainers. `--build` is not optional: the image compiles the source into itself
 with no bind mount, so a run without it reports on the last build's binaries as though
 they were today's.
@@ -368,11 +373,22 @@ What the four runs showed (`DECISIONS.md` 064 has the tables and the caveats):
   failure with one reconciler.
 - **Redis stopped.** No oversell either side, and holds kept being won with no lock in
   sight — the claim that correctness comes from `xmin` alone, demonstrated under 250 VUs.
-  A hold costs about 85 times more without it, because discovering the lock is
-  unavailable waits out a five-second client timeout twice.
+  A hold cost about 85 times more without it, because discovering the lock is
+  unavailable waited out a five-second client timeout twice.
 - **The dispatcher stalled.** A twenty-second consumer outage produced a backlog of 2,200
   messages, a delivery-latency tail of 20,631 ms, a request path that did not notice
   (hold p99 23.6 ms) and no faults at all. Late is not wrong, measured.
+
+**The same session, run again after the audit** (`DECISIONS.md` 073–075), exited 0 on every
+run for the first time:
+- **Control window:** clean. It had zero unexpected responses, where 064 had 114.
+- **Two reconcilers:** checked row by row against the gateway's ledger, no attempt was
+  settled `Abandoned` while the gateway held funds.
+- **Redis stopped:** a hold now costs 22× rather than 85×. The remaining second per lock
+  attempt is not `ConnectTimeout`, and tripling that setting moved nothing.
+  `BacklogPolicy.FailFast` is the candidate fix. It is applied and not yet measured.
+- **Lease:** the reconciler now takes an advisory lock for each sweep, and with the lease
+  in place two reconcilers lost zero races between them.
 
 Reports land in `load/results/` beside the summaries, and are gitignored for the same
 reason.
@@ -395,7 +411,17 @@ extracted (`DECISIONS.md` 004). A confirm now authorises the order total, sells 
 seats and then captures — in that order, because a sold seat is terminal and money
 is the one of the two that can be given back. A sale that does not complete releases
 the authorisation, so a customer is never charged for an order they did not get.
-Notifications and Identity do not exist.
+Identity does not exist.
+
+**No path ends with seats sold and nobody paying** (`DECISIONS.md` 076–077). Two such paths
+existed, and both are closed:
+- **The partial sale.** An order's seats used to sell one at a time, so an order with one
+  lapsed hold could sell the rest and then refund them. They now sell in one transaction:
+  every seat or none.
+- **Cancel during a confirm.** A cancel that landed between a confirm's sale and its
+  capture used to void the authorisation the capture was about to take. Cancel now gives
+  the seats back before the money, and stops if Inventory says this client's own confirm
+  has already sold them.
 
 **The outbox is built, and Notifications is the fifth module** (`DECISIONS.md` 051–055).
 Every seat transition is drained into `inventory.outbox_messages` inside the seat's own
@@ -472,12 +498,14 @@ surface because a client that can charge itself has walked around the order flow
 caller holding a client id still gets a 401 here. Both arrangements run side by side:
 `docker compose --profile load up` is the monolith, `--profile strangled up` is the pair.
 
-Two things the extraction deliberately did not do. The `payments` schema did not move — the
-process boundary went first and the data boundary is its own change. And the reconciler must
-run in exactly one process, which is a compose setting today rather than a lease.
+The extraction deliberately did not move the `payments` schema: the process boundary went
+first, and the data boundary is its own change. It also left the reconciler with a
+single-owner rule that only compose enforced. The chaos harness then broke that rule on
+purpose (064), and a transaction-scoped Postgres advisory lock now holds it as a lease
+instead (`DECISIONS.md` 074).
 
-Deliberately absent, by roadmap phase rather than oversight: the expired-hold sweep, MediatR,
-MassTransit, SignalR, observability and any deployment story.
+Deliberately absent, by roadmap phase rather than oversight: MediatR, MassTransit, SignalR,
+observability and any deployment story.
 
 Nothing is open inside Load-In. The last gap — `ENCORE001` inspecting only direct
 `PackageReference` items, so infrastructure arriving transitively through a

@@ -248,9 +248,11 @@ services:
       # A variable rather than a literal since 063, defaulting to the same false,
       # because 061 recorded the single-owner rule as "a compose setting and a
       # comment" and an unenforced rule that cannot be broken on purpose cannot be
-      # measured either. `RECONCILER_EVERYWHERE=true` turns this on and runs the
-      # two sweeps 061 says must never both run, which is the only way to find out
-      # what that debt actually costs. Do not set it outside the chaos rig.
+      # measured either. `RECONCILER_EVERYWHERE=true` turns this on and runs two
+      # sweeps over one table. Since 074 an advisory-lock lease arbitrates them, so
+      # this is now how the lease gets tested rather than how its absence gets
+      # priced. Still off by default: one reconciler is the intended shape, and the
+      # lease is the guard, not the plan. Do not set it outside the chaos rig.
       Payments__Reconciliation__Enabled: "${RECONCILER_EVERYWHERE:-false}"
       Payments__Reconciliation__MinimumAge: "${RECONCILER_MIN_AGE:-00:05:00}"
       Payments__Reconciliation__PollInterval: "${RECONCILER_POLL:-00:01:00}"
