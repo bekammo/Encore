@@ -18,6 +18,12 @@ public static class CatalogEndpoints
 
     private const int MaxAddressLength = 500;
 
+    /// <summary>The price column is <c>numeric(19,4)</c> (<see cref="EventConfiguration"/>).</summary>
+    private const int PriceDecimals = 4;
+
+    /// <summary>Exclusive: <c>numeric(19,4)</c> leaves 15 whole digits.</summary>
+    private const decimal PriceLimit = 1_000_000_000_000_000m;
+
     public static IEndpointRouteBuilder MapCatalogEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var catalog = endpoints.MapGroup("/catalog");
@@ -159,10 +165,13 @@ public static class CatalogEndpoints
             onSaleAt = normalised;
         }
 
-        if (request.Price < 0)
+        if (!FitsPriceColumn(request.Price))
         {
             return CatalogResults.Invalid(
-                context.Request.Path, "Invalid event", "Price cannot be negative.", "invalid_price");
+                context.Request.Path,
+                "Invalid event",
+                $"Price must be at least 0, below 10^15, and have at most {PriceDecimals} decimal places.",
+                "invalid_price");
         }
 
         if (!IsCurrencyCode(request.Currency))
@@ -267,6 +276,13 @@ public static class CatalogEndpoints
             "Ambiguous timestamp",
             $"{field} must carry a timezone: end it with Z for UTC, or give an offset.",
             "ambiguous_timestamp");
+
+    /// <summary>
+    /// Whether the column holds the price exactly. Postgres refuses a 16th whole digit with an
+    /// overflow, which was a 500, and rounds a 5th decimal away without saying so.
+    /// </summary>
+    private static bool FitsPriceColumn(decimal price) =>
+        price is >= 0 and < PriceLimit && decimal.Round(price, PriceDecimals) == price;
 
     /// <summary>
     /// Three ASCII letters; a shape check, not a copy of ISO 4217.

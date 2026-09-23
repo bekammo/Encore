@@ -75,6 +75,48 @@ public partial class OpenApiDocumentTests
     }
 
     /// <summary>
+    /// A status a client branches on is a closed vocabulary, and it is the part of a response
+    /// shape that drifted (014 added <c>abandoned</c> unseen). The documented enum must name
+    /// exactly the members of the C# enum it is rendered from, snake-cased. Read from source,
+    /// like the routes.
+    /// </summary>
+    [Theory]
+    [InlineData("OrderResponse", "src/Encore.Modules.Orders/Models/OrderStatus.cs")]
+    [InlineData("PaymentResponse", "src/Encore.Modules.Payments/Models/PaymentStatus.cs")]
+    public void EveryDocumentedStatusShouldBeExactlyWhatTheCodeRenders(string schema, string enumSource)
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(DocumentPath));
+
+        var documented = document.RootElement
+            .GetProperty("components").GetProperty("schemas").GetProperty(schema)
+            .GetProperty("properties").GetProperty("status").GetProperty("enum")
+            .EnumerateArray()
+            .Select(value => value.GetString()!)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+
+        var rendered = EnumMemberPattern()
+            .Matches(File.ReadAllText(Path.Combine(EncoreTree.Root, enumSource)))
+            .Select(match => SnakeCase(match.Groups["name"].Value))
+            .Order(StringComparer.Ordinal)
+            .ToList();
+
+        Assert.NotEmpty(rendered);
+        Assert.Equal(rendered, documented);
+    }
+
+    /// <summary>An enum member with an explicit value, as every status enum is written: <c>TimedOut = 4,</c>.</summary>
+    [GeneratedRegex(@"^\s*(?<name>[A-Z]\w*)\s*=\s*\d+\s*,?\s*$", RegexOptions.Multiline)]
+    private static partial Regex EnumMemberPattern();
+
+    /// <summary>The spelling the response records use: <c>TimedOut</c> to <c>timed_out</c>.</summary>
+    private static string SnakeCase(string name) =>
+        string.Concat(name.Select((character, index) =>
+            char.IsUpper(character) && index > 0
+                ? $"_{char.ToLowerInvariant(character)}"
+                : char.ToLowerInvariant(character).ToString()));
+
+    /// <summary>
     /// A path carries its own <c>servers</c> entry exactly when the monolith, which serves
     /// the page, does not map it. Hosts are resolved by walking the call graph from each
     /// <c>Program.cs</c> through the <c>Map*</c> extensions.

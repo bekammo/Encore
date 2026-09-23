@@ -62,10 +62,13 @@ public sealed class Seat
     /// </summary>
     public SeatStatus Status { get; private set; }
 
-    /// <summary>The holder while held, and the buyer once sold.</summary>
+    /// <summary>
+    /// The holder while held, and the buyer once sold. After the sweep ends a lapsed hold it
+    /// still names that holder, so a swept seat answers a sale exactly as a lapsed one does.
+    /// </summary>
     public Guid? HeldByClientId { get; private set; }
 
-    /// <summary>UTC instant at which the current hold lapses.</summary>
+    /// <summary>UTC instant at which the current hold lapses, or at which a swept hold lapsed.</summary>
     public DateTime? HoldExpiresAt { get; private set; }
 
     /// <summary>Concurrency token, mapped to the Postgres <c>xmin</c> system column.</summary>
@@ -117,6 +120,10 @@ public sealed class Seat
     /// Ends a hold that has already lapsed and records it as expired. Used by
     /// <see cref="Hold"/> when reclaiming and by the background sweep.
     /// </summary>
+    /// <remarks>
+    /// Only the status changes. The lapsed holder and expiry stay on the row, because clearing
+    /// them would let the sweep change what <see cref="Sell"/> answers, and the sweep is cleanup.
+    /// </remarks>
     /// <returns>Whether a lapsed hold was ended. A live hold or a sold seat is left alone.</returns>
     public bool ExpireHold(DateTime utcNow)
     {
@@ -127,13 +134,9 @@ public sealed class Seat
             return false;
         }
 
-        var lapsedHolder = HeldByClientId;
-
         Status = SeatStatus.Available;
-        HeldByClientId = null;
-        HoldExpiresAt = null;
 
-        if (lapsedHolder is { } holder)
+        if (HeldByClientId is { } holder)
         {
             Raise(new SeatReleased(Id, EventId, holder, SeatReleaseReason.Expired, utcNow));
         }
@@ -180,11 +183,12 @@ public sealed class Seat
 
         if (EffectiveStatusAt(utcNow) is SeatStatus.Available)
         {
-            // "Your hold ran out" and "you never held this" are different answers.
-            var reason = (Status, HeldByClientId == clientId) switch
+            // "Your hold ran out" and "you never held this" are different answers. Read from the
+            // lapsed hold's record, not the status, so a swept row answers as an unswept one.
+            var reason = (HoldExpiresAt is not null, HeldByClientId == clientId) switch
             {
-                (SeatStatus.Held, true) => SeatTransitionReason.HoldExpired,
-                (SeatStatus.Held, false) => SeatTransitionReason.NotTheHolder,
+                (true, true) => SeatTransitionReason.HoldExpired,
+                (true, false) => SeatTransitionReason.NotTheHolder,
                 _ => SeatTransitionReason.NoActiveHold
             };
 

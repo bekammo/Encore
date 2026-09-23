@@ -1,8 +1,9 @@
 # Decisions
 
 The choices in Encore that are worth defending, each with the alternative it beat and what
-it costs. Entries are append-only: when a decision changes, a new entry supersedes it rather
-than rewriting it.
+it costs. A decision that changes is superseded by a new entry, never rewritten. Two edits
+happen in place: an entry's own open or deferred item is closed where it was raised, and a
+statement of fact the code has since overtaken, such as a test's name, is corrected.
 
 This log was consolidated on 2026-09-23 from an 80-entry working log into 001–020; later entries follow them.
 Corrections, audits and re-measurements were folded into the decision they concerned, and
@@ -32,6 +33,11 @@ log is in git: `git show 2e5ad70:DECISIONS.md`.
 - [019](#019--measure-first-then-break-it-on-purpose) — Measure first, then break it on purpose
 - [020](#020--a-claim-nothing-checks-reads-like-a-claim-that-holds) — A claim nothing checks reads like a claim that holds
 - [021](#021--telemetry-follows-the-asymmetry) — Telemetry follows the asymmetry
+- [022](#022--once-money-has-moved-nothing-stops-the-step-halfway) — Once money has moved, nothing stops the step halfway
+- [023](#023--a-swept-seat-keeps-the-record-of-its-lapsed-hold) — A swept seat keeps the record of its lapsed hold
+- [024](#024--the-outbox-promises-delivery-not-order) — The outbox promises delivery, not order
+- [025](#025--an-order-owed-its-capture-is-finished-by-a-sweep) — An order owed its capture is finished by a sweep
+- [026](#026--what-remains-of-the-roadmap-restated) — What remains of the roadmap, restated
 
 ---
 
@@ -180,9 +186,10 @@ hand-written script or a different provider turns it into an error, so
 reloading and re-asking turns a bare "you lost a race" into the accurate "somebody has it".
 Retrying harder when the system is busiest is how a thundering herd gets worse. The retry
 only means something with a genuinely fresh read: EF Core's identity map hands back the
-tracked instance with its stale token, so `EfSeatRepository` reloads a tracked seat instead
-— otherwise the retry re-attempts exactly the state that just lost. Domain events are
-cleared before each attempt, so a rejected attempt cannot publish a hold that never happened.
+tracked instance with its stale token, so `EfSeatRepository` detaches a tracked seat and
+reads it again — otherwise the retry re-attempts exactly the state that just lost. Domain
+events are cleared before each attempt, so a rejected attempt cannot publish a hold that never
+happened.
 
 **The lock can say "I don't know".** `IDistributedLock.TryAcquireAsync` returns a
 `LockAcquisition`: `Acquired`, `HeldByAnother` or `Unavailable`. The first version returned
@@ -389,7 +396,8 @@ directions, and a fourth test counts `Map*` calls against the ones it could read
 registration in an unreadable shape is a red test rather than a hole. One document covers two
 hosts (018), so **a path carries a `servers` entry exactly when the monolith does not map
 it**, and the test walks the call graph from each host's `Program.cs` to check that too.
-Response shapes remain unchecked.
+Response shapes remain unchecked, except each status enum, which a test pins to the C# enum it
+is rendered from: the one place a shape had already drifted.
 
 ---
 
@@ -418,6 +426,8 @@ likely to be "fixed" later:
 before `OnSaleAt` is refused `409 not_on_sale`, against Orders' clock. Skew there opens a sale
 a few seconds early or late, nothing is lost, and no second authority disagrees — Catalog
 states the instant and does not enforce it. It is a lower bound only: walk-up sales are real.
+It binds `/orders` only. Inventory's own hold route does not know the on-sale time, and a hold
+taken early carries into a later checkout, since re-holding your own live hold is a no-op.
 
 **Orders sends the holds, and the checks are ordered by cost.** A checkout validates the
 request, asks Catalog, checks for an open checkout, and takes holds last — holds are writes
@@ -574,9 +584,10 @@ stops a confirm and a cancel writing different answers to the same row.
 `order_id` over `Pending`, `Authorized`, `Captured` and `TimedOut`, and it — not the read that
 precedes it — is the real guard against a double charge. `Declined`, `Voided` and `Abandoned`
 moved no money, so they do not stop a new attempt. **`TimedOut` counts as live on purpose**:
-"the gateway never answered" honestly reads as "possibly holding funds". The filter is a SQL
-literal no compiler checks, so `Payment.LiveStatuses` is the one C# definition and
-`IsLive_ShouldMatchTheIndexFilter` pins the two together.
+"the gateway never answered" honestly reads as "possibly holding funds". `Payment.LiveStatuses`
+is the one definition, and the filter is built from it, so changing the list changes the model
+and `MigrateAsync` refuses to run until a migration moves the index too.
+`TheLiveAttemptIndex_ShouldFilterOnExactlyTheLiveStatuses` reads the filter back from the model.
 
 **The row is written before every gateway call.** A crash between them leaves a `Pending` row
 holding the slot, and the next attempt asks again under the same key. Writing afterwards would
@@ -860,9 +871,10 @@ second workload competing for the same database. Do not "optimise" the outbox by
 drain's atomicity, which is the entire product.
 
 **The chaos rig** (`load/chaos.sh`): k6 measures and asserts, the script injects faults and
-reads the aftermath from Postgres. A marker row pins the two clocks together, faults land
-between scenarios, anything measured as a number runs as a paired control window and broken
-window, and each fault gets its own run so one aftermath does not feed the next.
+reads the aftermath from Postgres. A marker row pins the two clocks together. A fault measured
+as a number lands between scenarios, as a paired control window and broken window. The stall
+lands inside a paced window, since a backlog needs a sustained rate, and the reconciler faults
+are startup settings. Each fault gets its own run so one aftermath does not feed the next.
 
 | Fault | Invariants | What it exposed |
 |---|---|---|
@@ -995,3 +1007,143 @@ lever, and it is not measured.
 - The delivery-lag histogram used the SDK's default boundaries, which are sized for
   milliseconds. Every delivery landed in the 0–5 bucket, and the dashboard read p99 = 5 s. With
   boundaries in seconds, deliveries take 0.1–2.5 s, which is the dispatcher's 1 s poll showing.
+
+---
+
+## 022 — Once money has moved, nothing stops the step halfway
+
+An audit found three ways a payment step could be abandoned between the gateway and the row
+that records it. Each ends with funds held that nothing releases, which 010 and 014 exist to
+prevent. This amends 013 and 014.
+
+**A confirm or cancel honours the request's token only while it loads the order.** Every
+later step is irreversible or undoes one, so it runs to the end. Before, a client that hung up
+after the authorisation threw out of the sale, and left the order `Pending` and the
+authorisation live with no void coming. Inside Payments, once the attempt's row is committed,
+the gateway call and the save of its answer ignore the caller's token for the same reason. This
+is the rule 004 already applies to releasing a lock. The cost is that a confirm keeps working
+for a client that has gone, for as long as the gateway's own timeouts allow.
+
+**The reconciler holds a row lock from the lookup to the save.** Before, it voided the funds at
+the gateway and only then tried its `xmin`-checked save. A confirm that retried the row in
+between won the save and asked again under the same key, and the gateway answered with the
+authorisation just released. The seats sold, and the capture went against a void. The
+alternative was a `Reconciling` status, which would add a state to every switch and to the
+live index. The lock costs a confirm on that one row a wait of one gateway round trip, after
+which it answers `lost_race` and the next confirm pays under a fresh key.
+
+**A `Pending` attempt is fenced, and it is found.** A confirm that finds one resumes it with
+a write, so `xmin` orders two confirms instead of letting both save over each other. A save
+that loses answers from the winner's row, not with a 500. 013 relied on "the next attempt
+asks again", but nothing guarantees a next attempt: a cancel voids nothing on a `Pending` row.
+So a `Pending` attempt older than the reconciler's minimum age is taken to be one a crash left
+behind. It is claimed as `TimedOut` under the row lock and settled like any other, and the
+readiness check counts it.
+
+The simulator still never refuses a capture, so it could not have shown the capture against a
+void. That gap is 014's, and it is unchanged.
+
+---
+
+## 023 — A swept seat keeps the record of its lapsed hold
+
+`ExpireHold` used to clear `HeldByClientId` and `HoldExpiresAt`, and `Sell` picked its
+refusal from the status. So the sweep changed the answer. Before it reached a seat, the lapsed
+holder heard `HoldExpired` and anyone else heard `NotTheHolder`. After it, both heard
+`NoActiveHold`. Orders records an order `Expired` only when every refusal is `HoldExpired`, so
+the same lapsed order ended `Expired` or `Failed` depending on the sweep's timing. That breaks
+006: the sweep is cleanup, and turning it off must change nothing.
+
+Now `ExpireHold` sets only the status, and the lapsed pair stays on the row as a record. `Sell`
+reads the pair rather than the status, so a swept seat answers exactly as an unswept one does.
+Only a release, a sale or a new hold changes the pair. Nothing that counts holds reads it
+without the status: the cap, the sweep and the partial index all filter on `Held`.
+
+The alternative was to make the lazy path forget as well, answering `NoActiveHold` to
+everyone. That is simpler, but it throws away the one distinction Orders uses to tell a customer
+their time ran out. The cost is an `Available` row that still names a client, which the field's
+documentation now says.
+
+---
+
+## 024 — The outbox promises delivery, not order
+
+015 said one save's events arrive in order, and gave a reclaim's `SeatReleased(Expired)` then
+`SeatHeld` as the reason. The dispatcher never did that. When a handler fails, its message is
+backed off and the next row claimed in the same tick overtakes it, and that row can be its
+sibling from the same save. `SKIP LOCKED` can also hand two rows of one save to two
+dispatchers. Keeping the promise would need a per-save id and a claim that stops behind a
+failed sibling. That is head-of-line blocking, which 016 rejected so that one bad row does not
+stop the good ones. So the promise is withdrawn. **Delivery is at least once, in no order a
+consumer may rely on.** A consumer deduplicates by `MessageId` and reads each event on its own.
+Nothing depended on the ordering: the only consumer handles `SeatSold`, and a sale raises one
+event.
+
+**A payload is read strictly.** Deserialising was lenient, so a row missing a member reached
+its handler with `Guid.Empty` and was marked delivered. Now it fails, is retried, and ends as
+a dead letter someone can see, which is 016's rule. The cost is that any member added to a V1
+contract must have a default. The wire names now ship on the contracts as attributes, so a
+consumer holding only `Inventory.Contracts` reads what Inventory writes. Before, the names
+lived only in Inventory's internal serializer options. A test pins each contract's payload.
+
+**"A consumer can be added later; history cannot" is narrower than it read.** An event type
+registered with no handler is marked delivered as soon as it is claimed. A consumer added
+later is handed only new rows. The retained ones are still in the table for the retention
+window, so it can replay them, but nothing delivers them to it.
+
+---
+
+## 025 — An order owed its capture is finished by a sweep
+
+This supersedes 010's "`AwaitingCapture` is resolved by the next confirm, not a job". 010
+rejected a job as load-bearing in the way 006 forbids. But 006's test is that everything stays
+correct with the timer off, and a capture sweep passes it exactly as the payment reconciler
+does (014). With the sweep off, the next confirm still finishes the order. The reasoning did
+not separate the two. The cost of relying on the next confirm was real. The confirm that left
+an order awaiting capture had answered 200, "you have every seat", so nobody asked again. One
+chaos run ended with 80 orders awaiting capture and 80 authorisations untouched. When those
+lapse at the gateway, the seats have been given away.
+
+**`CaptureSweeper` confirms them again, as a customer would.** It adds no rule of its own:
+it calls the same `ConfirmAsync`, once a minute, for orders owed their capture for more than a
+minute. It is behind `Orders:CaptureSweep:Enabled` and takes an advisory-lock lease per sweep,
+like the reconciler.
+
+**The sale is recorded before the capture is asked for.** A confirm now writes
+`AwaitingCapture` and `SoldAt` as soon as every seat sells. Before, the order row was first
+written after the capture round trip, so a confirm that died there left seats sold and money
+held under an order that still read `Pending`, and nothing could find it. `SoldAt` is also how
+the sweep leaves a confirm still waiting on its own capture alone. The cost is one more write
+to the order row per confirm. It also changes what 012's cancel sees: once the sale is recorded,
+a cancel finds `order_not_pending` rather than `lost_race`. `lost_race` remains only for the
+moment between the sale and its record. Orders already awaiting capture when this shipped were
+given their placement time, so the sweep picks them up.
+
+---
+
+## 026 — What remains of the roadmap, restated
+
+**On Tour's "cloud deploy" becomes a measurement run on more than one machine.** Every claim
+here is a load or chaos result, and each carries the same caveat: one laptop, with k6, the
+system and the telemetry collector sharing a CPU (019, 021). A standing cloud deployment would
+not remove that caveat, and it would add cost without evidence. The chaos rig stops containers
+with `docker compose`, so it could reproduce none of its faults against managed services. A
+public deployment would also expose `/purchase` and seat-map creation to anyone, with a
+development service token, which is Identity and secrets work the roadmap does not include.
+So the remaining item is a throwaway run: the unchanged stack on one host, k6 and the
+collector on another, the baseline and the chaos runs repeated, and everything torn down
+afterwards. It needs `load/chaos.sh` pointed at a remote Docker context, with k6's
+`ENCORE_BASE_URL` pointed at that host. A standing deployment stays on the deferred list, and
+now the list and the roadmap say the same thing.
+
+**Soundcheck reads pairwise: Payments via the strangler, Notifications via the outbox.** That
+is what was built. Moving Notifications into its own process would need a transport, and
+013 already made cross-process delivery a message bus's job, with the bus deferred. So it is
+deferred until a bus exists, and the roadmap row no longer suggests it was forgotten.
+
+**The strongest cross-module claim is now a check.** "No order partly sold, sold without
+money, or paid without its seats" rested on chaos.sh rows that were printed and never
+compared. `CheckoutCompositionTests` composes the real Inventory and Payments modules behind
+checkout, races every confirm against its cancel, and asserts the same three invariants on
+every test run. chaos.sh now exits non-zero when any row it reports as "must be 0" is not.
+This does not reopen 020: the check is about rows, not latency.

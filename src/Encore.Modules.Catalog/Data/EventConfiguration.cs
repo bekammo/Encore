@@ -7,7 +7,8 @@ namespace Encore.Modules.Catalog.Data;
 /// <summary>Maps <see cref="Event"/> to the <c>catalog.events</c> table.</summary>
 /// <remarks>
 /// Money is <c>numeric(19,4)</c>: never a float, never Postgres <c>money</c>. No foreign key to
-/// venues; the endpoint checks the venue exists, and the index serves the query.
+/// venues; the endpoint checks the venue exists. No index on the venue either, until something
+/// lists events by venue.
 /// </remarks>
 public sealed class EventConfiguration : IEntityTypeConfiguration<Event>
 {
@@ -41,10 +42,5 @@ public sealed class EventConfiguration : IEntityTypeConfiguration<Event>
         builder.Property(@event => @event.Currency)
             .HasMaxLength(3)
             .IsRequired();
-
-        // "What is on at this venue."
-        builder
-            .HasIndex(@event => @event.VenueId)
-            .HasDatabaseName("ix_events_venue");
     }
 }

@@ -21,8 +21,9 @@ public sealed class PaymentReconciliationOptions
     public int BatchSize { get; set; } = 20;
 
     /// <summary>
-    /// How long an attempt must be timed out before this touches it: one hold duration, after
-    /// which no confirm for it can still succeed.
+    /// How long an attempt must go unanswered before this touches it: the confirm that made it
+    /// gets that long to retry by itself. A confirm arriving later still can, since a client can
+    /// re-hold its lapsed seats; it waits for the row lock and finds the attempt settled.
     /// </summary>
     public TimeSpan MinimumAge { get; set; } = TimeSpan.FromMinutes(5);
 }

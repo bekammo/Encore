@@ -1,12 +1,16 @@
 {
+  "$schema": "https://json.schemastore.org/launchsettings.json",
   "profiles": {
-    "Encore.Payments.Api": {
+    "http": {
       "commandName": "Project",
-      "launchBrowser": true,
+      "dotnetRunMessages": true,
+      "launchBrowser": false,
+      "applicationUrl": "http://localhost:5108",
       "environmentVariables": {
-        "ASPNETCORE_ENVIRONMENT": "Development"
-      },
-      "applicationUrl": "https://localhost:61550;http://localhost:61551"
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Payments__MigrateOnStartup": "true",
+        "Payments__ServiceToken": "local-development-token"
+      }
     }
   }
 }

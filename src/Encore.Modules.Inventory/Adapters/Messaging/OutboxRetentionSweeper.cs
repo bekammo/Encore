@@ -1,4 +1,5 @@
 using Encore.Modules.Inventory.Adapters.Persistence;
+using Encore.Modules.Inventory.Adapters.Scheduling;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -32,39 +33,14 @@ internal sealed class OutboxRetentionSweeper(
             _options.BatchSize,
             _options.PollInterval);
 
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            int deleted;
-
-            try
-            {
-                deleted = await SweepBatchAsync(stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Outbox retention sweep failed. Retrying after {PollInterval}.", _options.PollInterval);
-                deleted = 0;
-            }
-
-            // A full batch means there is more to remove.
-            if (deleted >= _options.BatchSize)
-            {
-                continue;
-            }
-
-            try
-            {
-                await Task.Delay(_options.PollInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
+        await PollingLoop.RunAsync(
+            SweepBatchAsync,
+            _options.BatchSize,
+            _options.PollInterval,
+            _timeProvider,
+            _logger,
+            "Outbox retention sweep",
+            stoppingToken).ConfigureAwait(false);
 
         _logger.LogInformation("Outbox retention sweep stopped.");
     }
@@ -78,10 +54,12 @@ internal sealed class OutboxRetentionSweeper(
         using var scope = _scopeFactory.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
 
-        // The subquery bounds the batch; EF has no Take() on ExecuteDelete.
+        // The subquery bounds the batch; EF has no Take() on ExecuteDelete. By Id, which is
+        // assigned in insert order and indexed, so the batch walks the primary key from the
+        // oldest rows and stops. ProcessedAt has no index, and sorting by it scanned the table.
         var doomed = context.OutboxMessages
             .Where(message => message.ProcessedAt != null && message.ProcessedAt < cutoff)
-            .OrderBy(message => message.ProcessedAt)
+            .OrderBy(message => message.Id)
             .Take(_options.BatchSize)
             .Select(message => message.Id);
 

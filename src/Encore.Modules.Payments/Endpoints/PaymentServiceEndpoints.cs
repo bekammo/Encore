@@ -2,6 +2,7 @@ using Encore.Modules.Payments.Contracts;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Outcomes = Encore.Modules.Payments.Contracts.PaymentsServiceApi.Outcomes;
 
 namespace Encore.Modules.Payments.Endpoints;
 
@@ -23,8 +24,7 @@ public static class PaymentServiceEndpoints
         ArgumentNullException.ThrowIfNull(endpoints);
         ArgumentException.ThrowIfNullOrWhiteSpace(serviceToken);
 
-        // A literal, not PaymentsServiceApi.Prefix, so the OpenAPI drift test can read it.
-        // PaymentsServiceApiTests keeps the two in step.
+        // A literal, so the OpenAPI drift test can read it; that test pins it too.
         var group = endpoints
             .MapGroup("/internal/payments")
             .AddEndpointFilter(new ServiceTokenEndpointFilter(serviceToken));
@@ -38,107 +38,91 @@ public static class PaymentServiceEndpoints
 
     /// <summary>Opens or reuses this order's authorisation.</summary>
     private static async Task<IResult> AuthorizeAsync(
-        AuthorizeAttemptRequest request,
+        AuthorizePaymentRequest request,
         HttpContext http,
         IOrderPayments payments,
         CancellationToken cancellationToken)
     {
         var response = await payments
-            .AuthorizeAsync(
-                new AuthorizePaymentRequest(
-                    request.OrderId, request.ClientId, request.Amount, request.Currency),
-                cancellationToken)
+            .AuthorizeAsync(request, cancellationToken)
             .ConfigureAwait(false);
 
         return response.Status switch
         {
             // Answers, not refusals: a retry gets back what it already has.
             AuthorizePaymentStatus.Authorized =>
-                Ok("authorized", response.PaymentId),
+                Ok(Outcomes.Authorized, response.PaymentId),
             AuthorizePaymentStatus.AlreadyCaptured =>
-                Ok("already_captured", response.PaymentId),
+                Ok(Outcomes.AlreadyCaptured, response.PaymentId),
 
             AuthorizePaymentStatus.Declined => Refused(
                 http, StatusCodes.Status402PaymentRequired,
-                "Payment declined", "declined", response.PaymentId),
+                "Payment declined", Outcomes.Declined, response.PaymentId),
 
             // 504: the upstream gateway did not answer. The reconciler will settle it.
             AuthorizePaymentStatus.TimedOut => Refused(
                 http, StatusCodes.Status504GatewayTimeout,
-                "The gateway did not answer", "timed_out", response.PaymentId),
+                "The gateway did not answer", Outcomes.TimedOut, response.PaymentId),
 
             AuthorizePaymentStatus.ConcurrentAttemptInFlight => Refused(
                 http, StatusCodes.Status409Conflict,
                 "Another attempt for this order is in flight",
-                "concurrent_attempt_in_flight", response.PaymentId),
-
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(request), response.Status, "Unmapped authorize status.")
+                Outcomes.ConcurrentAttemptInFlight, response.PaymentId)
         };
     }
 
     /// <summary>Takes the funds this order's attempt is holding.</summary>
     private static async Task<IResult> CaptureAsync(
-        OrderAttemptRequest request,
+        CapturePaymentRequest request,
         HttpContext http,
         IOrderPayments payments,
         CancellationToken cancellationToken)
     {
         var response = await payments
-            .CaptureAsync(
-                new CapturePaymentRequest(request.OrderId, request.ClientId),
-                cancellationToken)
+            .CaptureAsync(request, cancellationToken)
             .ConfigureAwait(false);
 
         return response.Status switch
         {
-            CapturePaymentStatus.Captured => Ok("captured", response.PaymentId),
+            CapturePaymentStatus.Captured => Ok(Outcomes.Captured, response.PaymentId),
 
             CapturePaymentStatus.TimedOut => Refused(
                 http, StatusCodes.Status504GatewayTimeout,
-                "The gateway did not answer", "timed_out", response.PaymentId),
+                "The gateway did not answer", Outcomes.TimedOut, response.PaymentId),
 
             CapturePaymentStatus.NoAuthorization => Refused(
                 http, StatusCodes.Status409Conflict,
-                "There is nothing held for this order", "no_authorization", response.PaymentId),
-
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(request), response.Status, "Unmapped capture status.")
+                "There is nothing held for this order", Outcomes.NoAuthorization, response.PaymentId)
         };
     }
 
     /// <summary>Releases what this order's attempt is holding.</summary>
     private static async Task<IResult> VoidAsync(
-        OrderAttemptRequest request,
+        VoidPaymentRequest request,
         HttpContext http,
         IOrderPayments payments,
         CancellationToken cancellationToken)
     {
         var response = await payments
-            .VoidAsync(
-                new VoidPaymentRequest(request.OrderId, request.ClientId),
-                cancellationToken)
+            .VoidAsync(request, cancellationToken)
             .ConfigureAwait(false);
 
         return response.Status switch
         {
-            VoidPaymentStatus.Voided => Ok("voided", response.PaymentId),
+            VoidPaymentStatus.Voided => Ok(Outcomes.Voided, response.PaymentId),
 
             VoidPaymentStatus.TimedOut => Refused(
                 http, StatusCodes.Status504GatewayTimeout,
-                "The gateway did not answer", "timed_out", response.PaymentId),
+                "The gateway did not answer", Outcomes.TimedOut, response.PaymentId),
 
             // Orders reads this as a lost race.
             VoidPaymentStatus.AlreadyCaptured => Refused(
                 http, StatusCodes.Status409Conflict,
-                "That attempt has already been captured", "already_captured", response.PaymentId),
+                "That attempt has already been captured", Outcomes.AlreadyCaptured, response.PaymentId),
 
             VoidPaymentStatus.NoAuthorization => Refused(
                 http, StatusCodes.Status409Conflict,
-                "There is nothing held for this order", "no_authorization", response.PaymentId),
-
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(request), response.Status, "Unmapped void status.")
+                "There is nothing held for this order", Outcomes.NoAuthorization, response.PaymentId)
         };
     }
 

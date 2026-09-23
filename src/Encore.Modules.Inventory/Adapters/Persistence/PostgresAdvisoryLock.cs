@@ -6,8 +6,9 @@ namespace Encore.Modules.Inventory.Adapters.Persistence;
 
 /// <summary>
 /// <see cref="IDistributedLock"/> on a Postgres session-level advisory lock: the same "try, do
-/// not wait" as the Redis lock, taken on a connection held until release. The experiment 005
-/// left open, selected with <c>Inventory:HoldCapLock = Postgres</c>.
+/// not wait" as the Redis lock, taken on a connection held until release. Selected with
+/// <c>Inventory:HoldCapLock = Postgres</c>, so the cap holds through a Redis outage, at the
+/// throughput cost 005 measured.
 /// </summary>
 /// <remarks>
 /// The key is <c>hashtextextended(resource, 0)</c>, computed by the server. A collision makes two

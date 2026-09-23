@@ -108,7 +108,10 @@ public sealed class Payment
 
     public DateTime AttemptedAt { get; private set; }
 
-    /// <summary>When the attempt reached a state with no move left. Null while pending or authorised.</summary>
+    /// <summary>
+    /// When the attempt got its answer: an ending, or a timeout. A timed-out attempt still has
+    /// moves left, and the reconciler ages it by this. Null while pending or authorised.
+    /// </summary>
     public DateTime? ResolvedAt { get; private set; }
 
     /// <summary>Concurrency token (<c>xmin</c>). A confirm and a cancel can race this row.</summary>
@@ -116,8 +119,8 @@ public sealed class Payment
 
     /// <summary>
     /// Statuses in which the attempt might hold or have taken money. <see cref="PaymentStatus.TimedOut"/>
-    /// is included: no answer may mean yes. The unique index repeats this list in SQL, and
-    /// <c>PaymentTests.IsLive_ShouldMatchTheIndexFilter</c> keeps the two in step.
+    /// is included: no answer may mean yes. The unique index's filter is built from this list,
+    /// so a change to it is a model change that needs a migration.
     /// </summary>
     public static IReadOnlyList<PaymentStatus> LiveStatuses { get; } =
     [
@@ -176,14 +179,24 @@ public sealed class Payment
     public void Retry(DateTime utcNow)
     {
         GuardUtc(utcNow);
-
-        if (Status is not PaymentStatus.TimedOut)
-        {
-            throw new PaymentTransitionException(Id, PaymentTransitionReason.NotTimedOut);
-        }
+        GuardTimedOut();
 
         Status = PaymentStatus.Pending;
         ResolvedAt = null;
+        AttemptedAt = utcNow;
+    }
+
+    /// <summary>
+    /// Asks again about an attempt that was recorded but never answered, under the same key.
+    /// Restamps <see cref="AttemptedAt"/>, so the reconciler sees a live attempt rather than
+    /// one a crash abandoned, and the save is a write that <c>xmin</c> can order.
+    /// </summary>
+    /// <exception cref="PaymentTransitionException">The attempt is no longer pending.</exception>
+    public void Resume(DateTime utcNow)
+    {
+        GuardUtc(utcNow);
+        GuardPending();
+
         AttemptedAt = utcNow;
     }
 

@@ -3,6 +3,7 @@ using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Adapters.Scheduling;
 using Encore.Modules.Inventory.Contracts.Events;
 using Encore.Modules.Inventory.Domain;
+using Encore.Modules.Inventory.Domain.Exceptions;
 using Encore.Modules.Inventory.Ports;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -62,8 +63,31 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
         var seat = await LoadAsync(seatId);
 
         Assert.Equal(SeatStatus.Available, seat.Status);
-        Assert.Null(seat.HeldByClientId);
-        Assert.Null(seat.HoldExpiresAt);
+
+        // The lapsed hold stays on record, so the sweep cannot change what a sale answers.
+        Assert.Equal(_clientA, seat.HeldByClientId);
+        Assert.Equal(LapsedAt + Seat.HoldDuration, seat.HoldExpiresAt);
+    }
+
+    /// <summary>
+    /// After the sweep, a sale is refused as it was before it: the lapsed holder hears its hold
+    /// expired, and anyone else that they never held it. The sweep is cleanup (006).
+    /// </summary>
+    [Fact]
+    public async Task Sweep_ThenASale_ShouldBeRefusedForTheSameReasonAsBeforeIt()
+    {
+        var seatId = await SeedHeldAsync(_clientA, LapsedAt);
+
+        await using var host = Host();
+        await host.Sweeper.SweepBatchAsync(CancellationToken.None);
+
+        var swept = await LoadAsync(seatId);
+
+        var holder = Assert.Throws<SeatTransitionException>(() => swept.Sell(_clientA, _now));
+        var stranger = Assert.Throws<SeatTransitionException>(() => swept.Sell(_clientB, _now));
+
+        Assert.Equal(SeatTransitionReason.HoldExpired, holder.Reason);
+        Assert.Equal(SeatTransitionReason.NotTheHolder, stranger.Reason);
     }
 
     /// <summary>The sweep publishes SeatReleased(Expired), which a bulk UPDATE would have lost.</summary>

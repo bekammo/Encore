@@ -143,7 +143,7 @@ money_evidence() {
   report 'payments by status (0 pending, 1 authorized, 2 captured, 3 declined, 4 timed_out, 5 voided, 6 abandoned)'
   report "$(psql_q 'SELECT "Status", count(*) FROM payments.payments GROUP BY 1 ORDER BY 1;')"
   report ''
-  report "orders with more than one live payment attempt (must be 0): $(psql_q 'SELECT count(*) FROM (SELECT "OrderId" FROM payments.payments WHERE "Status" IN (0, 1, 4) GROUP BY 1 HAVING count(*) > 1) AS breaches;')"
+  report "orders with more than one live payment attempt, live as ux_payments_order_live counts it (must be 0): $(psql_q 'SELECT count(*) FROM (SELECT "OrderId" FROM payments.payments WHERE "Status" IN (0, 1, 2, 4) GROUP BY 1 HAVING count(*) > 1) AS breaches;')"
   report '```'
 }
 
@@ -674,3 +674,14 @@ for run in "${RUNS[@]}"; do
 done
 
 say "report written to ${REPORT}"
+
+# The "(must be 0)" rows are invariants, not statistics, so a breach fails the session and
+# anything running this can tell (020). A row with no number is a failure too: the query
+# did not answer, and silence is not a pass.
+breaches=$(grep -F '(must be 0)' "$REPORT" | grep -Ev '\(must be 0\)[^0-9]*[^0-9]0[[:space:]]*$')
+
+if [ -n "$breaches" ]; then
+  say "invariant breached"
+  printf '%s\n' "$breaches"
+  exit 1
+fi

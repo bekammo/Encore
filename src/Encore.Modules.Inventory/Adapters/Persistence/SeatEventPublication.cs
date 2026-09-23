@@ -14,9 +14,17 @@ namespace Encore.Modules.Inventory.Adapters.Persistence;
 /// </summary>
 internal static class SeatEventPublication
 {
-    /// <summary>Web defaults (camelCase), matching the HTTP surface.</summary>
+    /// <summary>
+    /// Web defaults, matching the HTTP surface, and strict on the way in: a row missing a member
+    /// fails to read and is dead-lettered, instead of reaching a handler as <c>Guid.Empty</c>
+    /// and being marked delivered. So a member added to a V1 contract must have a default.
+    /// </summary>
     internal static readonly JsonSerializerOptions SerializerOptions =
-        new(JsonSerializerDefaults.Web);
+        new(JsonSerializerDefaults.Web)
+        {
+            RespectRequiredConstructorParameters = true,
+            RespectNullableAnnotations = true
+        };
 
     /// <summary>Maps one domain event to the row that will publish it.</summary>
     internal static OutboxMessage ToOutboxMessage(IDomainEvent domainEvent) => domainEvent switch
@@ -60,8 +68,8 @@ internal static class SeatEventPublication
             CurrentTraceParent());
 
     /// <summary>
-    /// The traced operation this save runs inside, if any. Null when nothing is listening,
-    /// since then no activity exists to name.
+    /// The traced operation this save runs inside, if any. Null outside any activity. ASP.NET
+    /// Core starts a request activity even without OpenTelemetry, so HTTP-driven rows carry one.
     /// </summary>
     private static string? CurrentTraceParent() =>
         Activity.Current is { IdFormat: ActivityIdFormat.W3C } activity ? activity.Id : null;
@@ -69,10 +77,7 @@ internal static class SeatEventPublication
     private static string ReasonOf(SeatReleaseReason reason) => reason switch
     {
         SeatReleaseReason.Cancelled => SeatReleasedV1.Cancelled,
-        SeatReleaseReason.Expired => SeatReleasedV1.Expired,
-
-        // No catch-all: a new reason must get its own published spelling.
-        _ => throw new NotSupportedException(
-            $"No published spelling for {nameof(SeatReleaseReason)}.{reason}.")
+        // No catch-all: a new reason must get its own published spelling, or the build fails.
+        SeatReleaseReason.Expired => SeatReleasedV1.Expired
     };
 }

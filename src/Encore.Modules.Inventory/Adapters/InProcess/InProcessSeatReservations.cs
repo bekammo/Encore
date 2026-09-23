@@ -47,19 +47,19 @@ internal sealed class InProcessSeatReservations(
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var results = await _releaseSeat
+        var outcomes = await _releaseSeat
             .HandleAsync(
                 new ReleaseSeatsCommand(request.EventId, request.SeatIds, request.ClientId),
                 cancellationToken)
             .ConfigureAwait(false);
 
-        foreach (var result in results)
+        foreach (var outcome in outcomes)
         {
-            InventoryTelemetry.RecordSeat("release", result.Outcome);
+            InventoryTelemetry.RecordSeat("release", outcome);
         }
 
         return new ReleaseSeatsResponse(
-            [.. request.SeatIds.Zip(results, (seatId, result) => ToResponse(seatId, result))]);
+            [.. request.SeatIds.Zip(outcomes, (seatId, outcome) => ToResponse(seatId, outcome))]);
     }
 
     /// <inheritdoc />
@@ -104,36 +104,30 @@ internal sealed class InProcessSeatReservations(
         HoldSeatOutcome.LostRace => new HoldSeatResponse(seatId, HoldSeatStatus.LostRace),
         HoldSeatOutcome.HoldCapReached => new HoldSeatResponse(seatId, HoldSeatStatus.HoldCapReached),
         HoldSeatOutcome.ConcurrentRequestInFlight =>
-            new HoldSeatResponse(seatId, HoldSeatStatus.ConcurrentRequestInFlight),
-
-        _ => throw new ArgumentOutOfRangeException(
-            nameof(result), result.Outcome, "Unmapped hold outcome.")
+            new HoldSeatResponse(seatId, HoldSeatStatus.ConcurrentRequestInFlight)
     };
 
-    private static ReleaseSeatResponse ToResponse(Guid seatId, ReleaseSeatResult result) => result.Outcome switch
+    private static ReleaseSeatResponse ToResponse(Guid seatId, ReleaseSeatOutcome outcome) => outcome switch
     {
         ReleaseSeatOutcome.Released => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.Released),
         ReleaseSeatOutcome.AlreadySold => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.AlreadySold),
         ReleaseSeatOutcome.NotTheHolder => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.NotTheHolder),
         ReleaseSeatOutcome.SeatNotFound => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.SeatNotFound),
         ReleaseSeatOutcome.LostRace => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.LostRace),
-        ReleaseSeatOutcome.SoldToYou => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.SoldToYou),
-
-        _ => throw new ArgumentOutOfRangeException(
-            nameof(result), result.Outcome, "Unmapped release outcome.")
+        ReleaseSeatOutcome.SoldToYou => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.SoldToYou)
     };
 
     private static SellSeatResponse ToResponse(Guid seatId, SellSeatOutcome outcome) => outcome switch
     {
-        SellSeatOutcome.Sold => new SellSeatResponse(seatId, SellSeatStatus.Sold),
+        // Only refusals are mapped: a sale is an empty refusal list.
+        SellSeatOutcome.Sold => throw new ArgumentOutOfRangeException(
+            nameof(outcome), outcome, "A sale is not a refusal."),
+
         SellSeatOutcome.AlreadySold => new SellSeatResponse(seatId, SellSeatStatus.AlreadySold),
         SellSeatOutcome.NotTheHolder => new SellSeatResponse(seatId, SellSeatStatus.NotTheHolder),
         SellSeatOutcome.HoldExpired => new SellSeatResponse(seatId, SellSeatStatus.HoldExpired),
         SellSeatOutcome.NoActiveHold => new SellSeatResponse(seatId, SellSeatStatus.NoActiveHold),
         SellSeatOutcome.SeatNotFound => new SellSeatResponse(seatId, SellSeatStatus.SeatNotFound),
-        SellSeatOutcome.LostRace => new SellSeatResponse(seatId, SellSeatStatus.LostRace),
-
-        _ => throw new ArgumentOutOfRangeException(
-            nameof(outcome), outcome, "Unmapped sell outcome.")
+        SellSeatOutcome.LostRace => new SellSeatResponse(seatId, SellSeatStatus.LostRace)
     };
 }

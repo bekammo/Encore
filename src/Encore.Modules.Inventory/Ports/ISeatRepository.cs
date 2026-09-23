@@ -21,18 +21,28 @@ public interface ISeatRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>Saves a seat as one write guarded by its concurrency token.</summary>
+    /// <remarks>Commits the whole unit of work, as the batch overload does.</remarks>
     /// <exception cref="ConcurrentSeatModificationException">The seat changed since it was loaded.</exception>
     Task SaveAsync(Seat seat, CancellationToken cancellationToken = default);
 
     /// <summary>Saves several seats in one transaction: all of them, or none.</summary>
+    /// <remarks>
+    /// Commits the whole unit of work: any other seat changed through the same scope is written
+    /// too, and <paramref name="seats"/> only names one to blame on a conflict. After a lost race,
+    /// reload the seats rather than leave changes in memory for a later save to find.
+    /// </remarks>
     /// <exception cref="ConcurrentSeatModificationException">One of the seats changed, so nothing was written.</exception>
     Task SaveAsync(IReadOnlyCollection<Seat> seats, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// The seats at one event a client holds live as of <paramref name="utcNow"/>, for the
-    /// per-client hold cap. Ids rather than a count, so a re-hold is not counted as new.
+    /// What a hold needs in one read: the seats it asks for, loaded as
+    /// <see cref="GetByIdsAsync"/> loads them, and the ids of every seat at the event this
+    /// client holds live as of <paramref name="utcNow"/>, for the per-client cap. Ids rather
+    /// than a count, so a re-hold is not counted as new. The cap's other seats are only
+    /// counted, never handed back to be changed.
     /// </summary>
-    Task<IReadOnlyCollection<Guid>> FindLiveHoldsAsync(
+    Task<SeatsForHold> GetForHoldAsync(
+        IReadOnlyCollection<Guid> seatIds,
         Guid clientId,
         Guid eventId,
         DateTime utcNow,

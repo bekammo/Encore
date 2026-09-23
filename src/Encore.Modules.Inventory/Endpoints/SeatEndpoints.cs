@@ -9,8 +9,13 @@ namespace Encore.Modules.Inventory.Endpoints;
 /// <summary>
 /// Inventory's HTTP surface. Actions (<c>hold</c>, <c>release</c>, <c>purchase</c>) rather
 /// than a <c>/holds</c> resource, because a hold is two fields on the seat, not an entity.
-/// Every action is idempotent, so retrying a POST is safe.
+/// The three actions are idempotent, so retrying one is safe. Creating a seat map is not:
+/// each call adds a fresh set of seats.
 /// </summary>
+/// <remarks>
+/// The actions go around the order: no price, no payment, no on-sale check. They stay open
+/// until Identity can restrict them, as every route does (008, 012).
+/// </remarks>
 public static class SeatEndpoints
 {
     /// <summary>Maps the seat routes under <c>/events/{eventId}</c>.</summary>
@@ -102,10 +107,10 @@ public static class SeatEndpoints
     {
         var command = new ReleaseSeatCommand(eventId, seatId, ClientIdEndpointFilter.ClientId(context));
 
-        var result = await handler.HandleAsync(command, cancellationToken).ConfigureAwait(false);
-        InventoryTelemetry.RecordSeat("release", result.Outcome);
+        var outcome = await handler.HandleAsync(command, cancellationToken).ConfigureAwait(false);
+        InventoryTelemetry.RecordSeat("release", outcome);
 
-        return SeatResults.ForRelease(seatId, result, context.Request.Path);
+        return SeatResults.ForRelease(seatId, outcome, context.Request.Path);
     }
 
     private static async Task<IResult> PurchaseAsync(
@@ -117,9 +122,9 @@ public static class SeatEndpoints
     {
         var command = new SellSeatCommand(eventId, seatId, ClientIdEndpointFilter.ClientId(context));
 
-        var result = await handler.HandleAsync(command, cancellationToken).ConfigureAwait(false);
-        InventoryTelemetry.RecordSeat("sell", result.Outcome);
+        var outcome = await handler.HandleAsync(command, cancellationToken).ConfigureAwait(false);
+        InventoryTelemetry.RecordSeat("sell", outcome);
 
-        return SeatResults.ForSell(seatId, result, context.Request.Path);
+        return SeatResults.ForSell(seatId, outcome, context.Request.Path);
     }
 }

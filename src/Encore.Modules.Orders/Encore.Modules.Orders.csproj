@@ -7,8 +7,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
-
     <!-- Other modules are reached only through their .Contracts assemblies. -->
     <ProjectReference Include="..\Encore.Modules.Inventory.Contracts\Encore.Modules.Inventory.Contracts.csproj" />
 

@@ -508,8 +508,72 @@ public class SeatTests
         Assert.True(seat.ExpireHold(AfterHold));
 
         Assert.Equal(SeatStatus.Available, seat.Status);
-        Assert.Null(seat.HeldByClientId);
-        Assert.Null(seat.HoldExpiresAt);
+    }
+
+    /// <summary>
+    /// The lapsed hold stays on the row as a record, so a swept seat can still tell the lapsed
+    /// holder "your hold expired" rather than "you never held this".
+    /// </summary>
+    [Fact]
+    public void ExpireHold_WhenHoldHasLapsed_ShouldKeepTheLapsedHoldOnRecord()
+    {
+        var seat = HeldBy(ClientA, T0);
+
+        seat.ExpireHold(AfterHold);
+
+        Assert.Equal(ClientA, seat.HeldByClientId);
+        Assert.Equal(AtExpiry, seat.HoldExpiresAt);
+    }
+
+    /// <summary>
+    /// The sweep is cleanup (006): after it, a sale is refused for the same reason as before it,
+    /// whoever asks. Otherwise an order would end Failed or Expired depending on whether the
+    /// sweep had passed.
+    /// </summary>
+    [Theory]
+    [InlineData("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", SeatTransitionReason.HoldExpired)]
+    [InlineData("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", SeatTransitionReason.NotTheHolder)]
+    public void Sell_AfterTheSweep_ShouldBeRefusedAsBeforeIt(string client, SeatTransitionReason expected)
+    {
+        var clientId = Guid.Parse(client);
+
+        var lazy = HeldBy(ClientA, T0);
+        var swept = HeldBy(ClientA, T0);
+        swept.ExpireHold(AfterHold);
+
+        var before = Assert.Throws<SeatTransitionException>(() => lazy.Sell(clientId, AfterHold));
+        var after = Assert.Throws<SeatTransitionException>(() => swept.Sell(clientId, AfterHold));
+
+        Assert.Equal(expected, before.Reason);
+        Assert.Equal(expected, after.Reason);
+    }
+
+    /// <summary>A released hold leaves no record, so a sale finds no hold at all.</summary>
+    [Fact]
+    public void Sell_AfterTheHolderReleased_ShouldSayNoActiveHold()
+    {
+        var seat = HeldBy(ClientA, T0);
+        seat.Release(ClientA, WithinHold);
+
+        var ex = Assert.Throws<SeatTransitionException>(() => seat.Sell(ClientA, WithinHold));
+        Assert.Equal(SeatTransitionReason.NoActiveHold, ex.Reason);
+    }
+
+    /// <summary>A swept seat is available to its lapsed holder like any other client, and raises no second release.</summary>
+    [Fact]
+    public void ExpireHold_ThenHoldByTheLapsedHolder_ShouldHoldAfreshWithOneRelease()
+    {
+        var seat = HeldBy(ClientA, T0);
+        seat.ExpireHold(AfterHold);
+
+        seat.Hold(ClientA, AfterHold);
+
+        Assert.Equal(SeatStatus.Held, seat.Status);
+        Assert.Equal(AfterHold + Seat.HoldDuration, seat.HoldExpiresAt);
+        Assert.Collection(
+            seat.DomainEvents,
+            e => Assert.IsType<SeatReleased>(e),
+            e => Assert.IsType<SeatHeld>(e));
     }
 
     [Fact]

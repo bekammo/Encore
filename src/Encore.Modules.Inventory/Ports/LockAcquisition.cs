@@ -4,7 +4,7 @@ namespace Encore.Modules.Inventory.Ports;
 /// The result of trying to take a distributed lock: an outcome, plus the
 /// ownership token when — and only when — the lock was actually taken.
 /// </summary>
-/// <param name="Outcome">What happened.</param>
+/// <param name="Outcome">What happened; each case is described on <see cref="LockOutcome"/>.</param>
 /// <param name="Token">
 /// The ownership token to release with. Non-null exactly when
 /// <paramref name="Outcome"/> is <see cref="LockOutcome.Acquired"/>.
@@ -15,17 +15,11 @@ public readonly record struct LockAcquisition(LockOutcome Outcome, string? Token
     public static LockAcquisition Acquired(string token) =>
         new(LockOutcome.Acquired, token);
 
-    /// <summary>Somebody else holds it.</summary>
+    /// <summary><see cref="LockOutcome.HeldByAnother"/>.</summary>
     public static LockAcquisition HeldByAnother { get; } =
         new(LockOutcome.HeldByAnother, null);
 
-    /// <summary>The locking service could not answer.</summary>
+    /// <summary><see cref="LockOutcome.Unavailable"/>.</summary>
     public static LockAcquisition Unavailable { get; } =
         new(LockOutcome.Unavailable, null);
-
-    /// <summary>
-    /// True when this caller took the lock. Where true, <see cref="Token"/> is
-    /// non-null.
-    /// </summary>
-    public bool IsAcquired => Outcome is LockOutcome.Acquired;
 }

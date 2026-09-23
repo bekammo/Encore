@@ -228,6 +228,8 @@ services:
   # their own throwaway instances, so a run never touches the database in use by hand.
   tests:
     profiles: ["tests"]
+    # Named, so CI can build it with a layer cache and run exactly that image.
+    image: encore-tests:latest
     build:
       context: .
       dockerfile: tests/Dockerfile

@@ -10,7 +10,7 @@ namespace Encore.Modules.Payments.Endpoints;
 /// <param name="Currency">ISO 4217 code for <paramref name="Amount"/>.</param>
 /// <param name="GatewayReference">The gateway's handle on the hold, if there is one.</param>
 /// <param name="AttemptedAt">When the current attempt was made, in UTC.</param>
-/// <param name="ResolvedAt">When the attempt reached an ending, if it has.</param>
+/// <param name="ResolvedAt">When the attempt got its answer, an ending or a timeout, if it has.</param>
 public sealed record PaymentResponse(
     Guid Id,
     Guid OrderId,

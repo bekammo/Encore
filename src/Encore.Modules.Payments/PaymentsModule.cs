@@ -55,7 +55,14 @@ public static class PaymentsModule
     {
         var section = configuration.GetSection(PaymentReconciliationOptions.SectionName);
 
-        services.Configure<PaymentReconciliationOptions>(section);
+        services.AddOptions<PaymentReconciliationOptions>()
+            .Bind(section)
+            .Validate(
+                reconciliation => reconciliation.BatchSize > 0
+                    && reconciliation.PollInterval > TimeSpan.Zero
+                    && reconciliation.MinimumAge >= TimeSpan.Zero,
+                $"{PaymentReconciliationOptions.SectionName}: BatchSize and PollInterval must be positive, and MinimumAge not negative.")
+            .ValidateOnStart();
 
         var options = section.Get<PaymentReconciliationOptions>() ?? new PaymentReconciliationOptions();
 

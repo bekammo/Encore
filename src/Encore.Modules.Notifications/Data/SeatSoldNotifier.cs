@@ -3,6 +3,7 @@ using Encore.Modules.Notifications.Models;
 using Encore.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 
 namespace Encore.Modules.Notifications.Data;
 
@@ -57,11 +58,11 @@ internal sealed class SeatSoldNotifier(
     }
 
     /// <summary>
-    /// Whether this is the unique index refusing a redelivery. Matched narrowly by constraint
-    /// name, so a dropped connection is never mistaken for "already handled".
+    /// Whether this is the unique index refusing a redelivery. Matched by SQL state and
+    /// constraint name, so no other failure that happens to mention the index, and no
+    /// dropped connection, is mistaken for "already handled".
     /// </summary>
     private static bool IsDuplicateMessage(DbUpdateException exception) =>
-        exception.InnerException?.Message.Contains(
-            "ux_notifications_message_id",
-            StringComparison.Ordinal) is true;
+        exception.InnerException is PostgresException { SqlState: "23505" } postgres
+        && postgres.ConstraintName == NotificationConfiguration.MessageIdIndex;
 }

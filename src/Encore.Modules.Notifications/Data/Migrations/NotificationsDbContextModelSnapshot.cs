@@ -55,10 +55,6 @@ namespace Encore.Modules.Notifications.Data.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_notifications_message_id");
 
-                    b.HasIndex("ClientId", "OccurredAt")
-                        .IsDescending(false, true)
-                        .HasDatabaseName("ix_notifications_client_occurred");
-
                     b.ToTable("notifications", "notifications");
                 });
 #pragma warning restore 612, 618

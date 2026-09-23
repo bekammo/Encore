@@ -8,7 +8,7 @@ public enum SellSeatOutcome
 {
     /// <summary>
     /// The seat belongs to the client. Returned both for a sale made now and for
-    /// one this client had already made — see <see cref="SellSeatResult.Sold"/>.
+    /// one this client had already made, so a resubmitted purchase is not told it failed.
     /// </summary>
     Sold = 0,
 

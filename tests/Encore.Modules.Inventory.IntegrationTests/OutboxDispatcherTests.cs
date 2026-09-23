@@ -92,9 +92,13 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         Assert.Single(handler.Delivered);
     }
 
-    /// <summary>Messages reach handlers in the order their ids were assigned.</summary>
+    /// <summary>
+    /// A tick claims by due time, then id, which is the order the unprocessed index keeps.
+    /// Rows due in the order they were written reach handlers in that order. It is a property
+    /// of the claim, not a promise to consumers (024).
+    /// </summary>
     [Fact]
-    public async Task Dispatch_ShouldDeliverInIdOrder()
+    public async Task Dispatch_ShouldClaimInDueOrder()
     {
         var first = Guid.NewGuid();
         var second = Guid.NewGuid();
@@ -225,6 +229,29 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         Assert.All(await MessagesAsync(), message => Assert.NotNull(message.ProcessedAt));
     }
 
+    /// <summary>
+    /// Each message is delivered in its own scope. A shared one let a handler's failed insert,
+    /// still tracked by its scoped context, be written by the next message's save, and a
+    /// duplicate of that row then passed for the next message being handled.
+    /// </summary>
+    [Fact]
+    public async Task Dispatch_ShouldDeliverEachMessageInItsOwnScope()
+    {
+        await SeedSoldAsync(Guid.NewGuid());
+        await SeedSoldAsync(Guid.NewGuid());
+
+        var seen = new ConcurrentQueue<ScopedHandler>();
+
+        await using var host = Host(services =>
+        {
+            services.AddSingleton(seen);
+            services.AddScoped<IIntegrationEventHandler<SeatSoldV1>, ScopedHandler>();
+        });
+
+        Assert.Equal(2, await host.Dispatcher.DispatchBatchAsync(CancellationToken.None));
+        Assert.Equal(2, seen.Distinct().Count());
+    }
+
     /// <summary>Past its attempt budget a message becomes a dead letter: kept, no longer claimed.</summary>
     [Fact]
     public async Task Dispatch_WhenAMessageExhaustsItsAttempts_ShouldStopClaimingIt()
@@ -340,8 +367,14 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
             .ToListAsync();
     }
 
+    /// <summary>The same handler instance for the dispatcher and the assertions.</summary>
     private DispatcherHost Host(
         IIntegrationEventHandler<SeatSoldV1> handler,
+        Action<OutboxOptions>? configure = null) =>
+        Host(services => services.AddSingleton(handler), configure);
+
+    private DispatcherHost Host(
+        Action<IServiceCollection> registerHandlers,
         Action<OutboxOptions>? configure = null)
     {
         var options = new OutboxOptions();
@@ -352,8 +385,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         services.AddDbContext<InventoryDbContext>(builder =>
             builder.UseInventoryNpgsql(_connectionString));
 
-        // The same instance for the dispatcher and the assertions.
-        services.AddSingleton(handler);
+        registerHandlers(services);
 
         var provider = services.BuildServiceProvider();
 
@@ -373,6 +405,16 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         internal OutboxDispatcher Dispatcher { get; } = dispatcher;
 
         public ValueTask DisposeAsync() => provider.DisposeAsync();
+    }
+
+    /// <summary>A scoped handler that records which instance served each message.</summary>
+    private sealed class ScopedHandler(ConcurrentQueue<ScopedHandler> seen) : IIntegrationEventHandler<SeatSoldV1>
+    {
+        public Task HandleAsync(SeatSoldV1 integrationEvent, Guid messageId, CancellationToken cancellationToken)
+        {
+            seen.Enqueue(this);
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>A hand-written, thread-safe recording handler.</summary>

@@ -22,14 +22,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The documented command. The container copies each test project by name, so a
-      # project missing from tests/Dockerfile fails here. --build is required: without it
-      # the image's previous build is tested.
+      # The image is built first, with its layers cached between runs, so the restore layer
+      # is reused whenever no project file changed. The container copies each test project by
+      # name, so a project missing from tests/Dockerfile fails here, as it does locally.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: tests/Dockerfile
+          tags: encore-tests:latest
+          load: true
+          cache-from: type=gha,scope=tests
+          cache-to: type=gha,mode=max,scope=tests
+
+      # The documented command, on the image just built. Locally, --build does the building.
       - name: Run the suite
         id: suite
         run: |
           set -uo pipefail
-          docker compose run --rm --build tests 2>&1 | tee suite.log
+          docker compose run --rm tests 2>&1 | tee suite.log
           echo "compose exit: ${PIPESTATUS[0]}"
 
       # `docker compose run` exits 0 even when the daemon is unreachable, so the verdict

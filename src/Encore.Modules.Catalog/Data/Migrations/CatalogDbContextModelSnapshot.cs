@@ -52,9 +52,6 @@ namespace Encore.Modules.Catalog.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("VenueId")
-                        .HasDatabaseName("ix_events_venue");
-
                     b.ToTable("events", "catalog");
                 });
 

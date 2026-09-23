@@ -105,7 +105,8 @@ first version voided first, and a cancel racing a confirm could end with seats s
 paying. Under load, across 1,943 orders — 1,298 of them multi-seat, with cancels fired at
 random points inside each confirm — no order was partly sold, none had seats without money and
 none had money without seats. In 92 of them the cancel arrived after the sale and correctly
-stepped back.
+stepped back. The same three invariants are now a test that composes the real modules and
+races every confirm against its cancel, so the claim is checked on every run, not only here.
 
 ## The sale and its announcement cannot disagree
 
@@ -145,12 +146,14 @@ A k6 harness drives a contention scenario (50 clients fighting over 5 seats) and
 is deliberately no latency threshold: an SLO invented before the first measurement is a guess
 wearing a test's clothing.
 
-The chaos rig injects one fault per run, in the gaps between scenario windows, each with a
-control window of identical shape beside it, and reads the aftermath out of Postgres:
+The chaos rig injects one fault per run and reads the aftermath out of Postgres. A fault that
+asks a question about a number lands between scenario windows, beside a control window of the
+same shape. The dispatcher stall lands inside a paced window instead, because a backlog needs a
+steady rate to build, and the reconciler faults are settings that hold for the whole run:
 
 | Fault | Invariants | What it exposed |
 |---|---|---|
-| Payments stopped | held | the extraction was inert; then, that a stopped container swallows connections, so every confirm waited out a 10 s timeout |
+| Payments stopped | held | the extraction was inert; then, that a stopped container swallows connections, so every confirm waited out a 10 s timeout (a one-second connect timeout now bounds that) |
 | Two reconcilers | held | the simulated gateway's memory was per process: a restart settled 120 of 121 timed-out payments as abandoned |
 | Redis stopped | held; no oversell | a hold cost 85× without Redis |
 | Dispatcher stalled 20 s | held | the claim transaction stayed open the whole time |
@@ -192,9 +195,9 @@ buckets in seconds, deliveries take 0.1–2.5 s, which is the dispatcher's one-s
 
 ## What is not here
 
-No MediatR, no message bus, no Polly, no frontend and no deployment, by choice rather than
-oversight. The client identity is a claimed header, a stand-in for an Identity module that does
+No MediatR, no message bus, no Polly, no frontend and no standing deployment, by choice rather
+than oversight. The client identity is a claimed header, a stand-in for an Identity module that does
 not exist. Payments still shares the database: the process boundary moved and the data boundary
 did not. And everything above was measured on one laptop, mostly one run per configuration —
 the counts and the mechanisms behind them are strong; latency comparisons across sessions are
-not.
+not. The next step is to repeat the runs with the load generator on a machine of its own.

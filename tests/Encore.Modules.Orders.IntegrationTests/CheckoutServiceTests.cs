@@ -285,14 +285,15 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         await using var context = new OrdersDbContext(_options);
         var service = ServiceFor(context, seats);
 
-        Assert.Equal(
-            CheckoutOutcome.Created,
-            (await service.CheckoutAsync(clientId, eventId, [first])).Outcome);
+        var opened = await service.CheckoutAsync(clientId, eventId, [first]);
+        Assert.Equal(CheckoutOutcome.Created, opened.Outcome);
 
         await using var another = new OrdersDbContext(_options);
         var result = await ServiceFor(another, seats).CheckoutAsync(clientId, eventId, [second]);
 
+        // Named, so a client whose first 201 was lost can still confirm or cancel it.
         Assert.Equal(CheckoutOutcome.CheckoutAlreadyOpen, result.Outcome);
+        Assert.Equal(opened.Order!.Id, result.OpenOrderId);
     }
 
     /// <summary>The one-open-checkout index is scoped to the client and the event together.</summary>
@@ -330,7 +331,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         var clientId = Guid.NewGuid();
         var order = await AnOpenOrderAsync(clientId, seatCount: 1);
 
-        var seats = new FakeSeatReservations { DefaultSell = SellSeatStatus.Sold };
+        var seats = new FakeSeatReservations { DefaultSell = null };
 
         await using var context = new OrdersDbContext(_options);
 
@@ -359,9 +360,38 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
 
         Assert.Equal(OrderStatus.Confirmed, stored.Status);
         Assert.Equal(Now, stored.ClosedAt);
+        Assert.Equal(Now, stored.SoldAt);
 
         // Cleared because it describes an order that can still be completed.
         Assert.Null(stored.HoldsExpireAt);
+    }
+
+    /// <summary>
+    /// The sale is recorded before the capture is asked for, so a confirm that dies while the
+    /// gateway is answering leaves an order anyone can see is owed its money.
+    /// </summary>
+    [Fact]
+    public async Task Confirm_WhileTheCaptureIsInFlight_ShouldAlreadyShowTheOrderAwaitingCapture()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 2);
+
+        var seats = new StatefulSeatReservations(order);
+        var payments = new StatefulOrderPayments();
+
+        Order? duringCapture = null;
+        payments.BeforeCapture = async () =>
+        {
+            await using var reader = new OrdersDbContext(_options);
+            duringCapture = await reader.Orders.AsNoTracking().SingleAsync(candidate => candidate.Id == order.Id);
+        };
+
+        await using var context = new OrdersDbContext(_options);
+        await ServiceFor(context, seats, payments: payments).ConfirmAsync(clientId, order.Id);
+
+        Assert.Equal(OrderStatus.AwaitingCapture, duringCapture!.Status);
+        Assert.Equal(Now, duringCapture.SoldAt);
+        Assert.Null(duringCapture.ClosedAt);
     }
 
     /// <summary>Nothing sold and every refusal an expiry ends the order Expired.</summary>
@@ -798,8 +828,8 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
     // -- Confirm and cancel together --------------------------------------
 
     /// <summary>
-    /// A cancel runs between the confirm's sale and its capture. It sees its own confirm sold the
-    /// seats and leaves the money alone.
+    /// A cancel runs between the confirm's sale and its capture. The confirm has recorded the
+    /// sale, so the cancel finds the order awaiting capture, and nothing is released or voided.
     /// </summary>
     [Fact]
     public async Task Cancel_BetweenAConfirmsSaleAndItsCapture_ShouldLeaveTheSaleToBePaidFor()
@@ -824,12 +854,42 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.All(seats.Seats.Values, seat => Assert.Equal(SeatState.Sold, seat));
         Assert.Equal(MoneyState.Captured, payments.Money);
 
-        Assert.Equal(OrderActionOutcome.LostRace, cancel!.Outcome);
+        Assert.Equal(OrderActionOutcome.NotPending, cancel!.Outcome);
         Assert.Equal(OrderActionOutcome.Completed, confirm.Outcome);
 
         await using var reader = new OrdersDbContext(_options);
         var stored = await reader.Orders.SingleAsync(candidate => candidate.Id == order.Id);
         Assert.Equal(OrderStatus.Confirmed, stored.Status);
+    }
+
+    /// <summary>
+    /// A cancel in the moment after the sale and before the confirm records it still finds the
+    /// order pending. Its seats answer sold-to-you, so it backs off and voids nothing (012).
+    /// </summary>
+    [Fact]
+    public async Task Cancel_BeforeAConfirmRecordsItsSale_ShouldBackOffAndLeaveTheMoney()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 2);
+
+        var seats = new StatefulSeatReservations(order);
+        var payments = new StatefulOrderPayments();
+
+        OrderActionResult? cancel = null;
+        seats.AfterSell = async () =>
+        {
+            await using var other = new OrdersDbContext(_options);
+            cancel = await ServiceFor(other, seats, payments: payments).CancelAsync(clientId, order.Id);
+        };
+
+        await using var context = new OrdersDbContext(_options);
+        var confirm = await ServiceFor(context, seats, payments: payments).ConfirmAsync(clientId, order.Id);
+
+        Assert.All(seats.Seats.Values, seat => Assert.Equal(SeatState.Sold, seat));
+        Assert.Equal(MoneyState.Captured, payments.Money);
+
+        Assert.Equal(OrderActionOutcome.LostRace, cancel!.Outcome);
+        Assert.Equal(OrderActionOutcome.Completed, confirm.Outcome);
     }
 
     /// <summary>
@@ -860,6 +920,65 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
 
         Assert.Equal(OrderActionOutcome.Completed, cancel!.Outcome);
         Assert.Equal(OrderActionOutcome.LostRace, confirm.Outcome);
+
+        await using var reader = new OrdersDbContext(_options);
+        var stored = await reader.Orders.SingleAsync(candidate => candidate.Id == order.Id);
+        Assert.Equal(OrderStatus.Cancelled, stored.Status);
+    }
+
+    /// <summary>
+    /// The client hangs up once the money is held. The confirm still sells and captures:
+    /// stopping there would leave an authorisation that nothing ever voids.
+    /// </summary>
+    [Fact]
+    public async Task Confirm_WhenTheClientHangsUpAfterTheAuthorisation_ShouldStillFinish()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 2);
+
+        var seats = new StatefulSeatReservations(order);
+        var payments = new StatefulOrderPayments();
+
+        using var hangUp = new CancellationTokenSource();
+        payments.AfterAuthorize = hangUp.Cancel;
+
+        await using var context = new OrdersDbContext(_options);
+        var confirm = await ServiceFor(context, seats, payments: payments)
+            .ConfirmAsync(clientId, order.Id, hangUp.Token);
+
+        Assert.Equal(OrderActionOutcome.Completed, confirm.Outcome);
+        Assert.All(seats.Seats.Values, seat => Assert.Equal(SeatState.Sold, seat));
+        Assert.Equal(MoneyState.Captured, payments.Money);
+
+        await using var reader = new OrdersDbContext(_options);
+        var stored = await reader.Orders.SingleAsync(candidate => candidate.Id == order.Id);
+        Assert.Equal(OrderStatus.Confirmed, stored.Status);
+    }
+
+    /// <summary>
+    /// The client hangs up once the seats are back. The cancel still releases the money:
+    /// released seats with funds still held is what a cancel exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_WhenTheClientHangsUpAfterTheSeatsGoBack_ShouldStillReleaseTheMoney()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 2);
+
+        var seats = new StatefulSeatReservations(order);
+        var payments = new StatefulOrderPayments();
+        await payments.AuthorizeAsync(new AuthorizePaymentRequest(order.Id, clientId, order.Total, order.Currency));
+
+        using var hangUp = new CancellationTokenSource();
+        seats.AfterRelease = hangUp.Cancel;
+
+        await using var context = new OrdersDbContext(_options);
+        var cancel = await ServiceFor(context, seats, payments: payments)
+            .CancelAsync(clientId, order.Id, hangUp.Token);
+
+        Assert.Equal(OrderActionOutcome.Completed, cancel.Outcome);
+        Assert.All(seats.Seats.Values, seat => Assert.Equal(SeatState.Available, seat));
+        Assert.Equal(MoneyState.Voided, payments.Money);
 
         await using var reader = new OrdersDbContext(_options);
         var stored = await reader.Orders.SingleAsync(candidate => candidate.Id == order.Id);
@@ -924,7 +1043,8 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
 
         public Dictionary<Guid, SellSeatStatus> SellRefusals { get; } = [];
 
-        public SellSeatStatus DefaultSell { get; set; } = SellSeatStatus.Sold;
+        /// <summary>How a seat with no entry in <see cref="SellRefusals"/> answers; null sells it.</summary>
+        public SellSeatStatus? DefaultSell { get; set; }
 
         public Dictionary<Guid, ReleaseSeatStatus> ReleaseAnswers { get; } = [];
 
@@ -964,10 +1084,9 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
             Sells.Add(request);
 
             var refusals = request.SeatIds
-                .Select(seatId => new SellSeatResponse(
-                    seatId,
-                    SellRefusals.TryGetValue(seatId, out var refusal) ? refusal : DefaultSell))
-                .Where(answer => answer.Status is not SellSeatStatus.Sold)
+                .Select(seatId => (SeatId: seatId, Refusal: SellRefusals.TryGetValue(seatId, out var refusal) ? refusal : DefaultSell))
+                .Where(answer => answer.Refusal is not null)
+                .Select(answer => new SellSeatResponse(answer.SeatId, answer.Refusal!.Value))
                 .ToList();
 
             return Task.FromResult(new SellSeatsResponse(refusals));
@@ -1045,7 +1164,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
 
     /// <summary>
     /// Inventory as state for one order, so a cancel can run between two of a confirm's steps
-    /// and the ending can be read off the seats.
+    /// and the ending can be read off the seats. Honours the token, as Npgsql would.
     /// </summary>
     private sealed class StatefulSeatReservations(Order order) : ISeatReservations
     {
@@ -1054,6 +1173,12 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
 
         /// <summary>Runs once, before the next sale looks at any seat.</summary>
         public Func<Task>? BeforeSell { get; set; }
+
+        /// <summary>Runs once, after the next sale has sold every seat.</summary>
+        public Func<Task>? AfterSell { get; set; }
+
+        /// <summary>Runs after every release, once the seats are back.</summary>
+        public Action? AfterRelease { get; set; }
 
         public Task<HoldSeatsResponse> HoldAsync(
             HoldSeatsRequest request,
@@ -1064,6 +1189,8 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
             SellSeatsRequest request,
             CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (BeforeSell is { } hook)
             {
                 BeforeSell = null;
@@ -1082,6 +1209,12 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
                 {
                     Seats[seatId] = SeatState.Sold;
                 }
+
+                if (AfterSell is { } after)
+                {
+                    AfterSell = null;
+                    await after();
+                }
             }
 
             return new SellSeatsResponse(refusals);
@@ -1091,6 +1224,8 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
             ReleaseSeatsRequest request,
             CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var answers = new List<ReleaseSeatResponse>();
 
             foreach (var seatId in request.SeatIds)
@@ -1105,11 +1240,16 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
                 answers.Add(new ReleaseSeatResponse(seatId, ReleaseSeatStatus.Released));
             }
 
+            AfterRelease?.Invoke();
+
             return Task.FromResult(new ReleaseSeatsResponse(answers));
         }
     }
 
-    /// <summary>Payments as state: one attempt that a void releases and a capture takes.</summary>
+    /// <summary>
+    /// Payments as state: one attempt that a void releases and a capture takes. Honours the
+    /// token, as the HTTP client would.
+    /// </summary>
     private sealed class StatefulOrderPayments : IOrderPayments
     {
         public MoneyState Money { get; private set; } = MoneyState.Nothing;
@@ -1117,16 +1257,23 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         /// <summary>Runs once, before the next capture looks at the money.</summary>
         public Func<Task>? BeforeCapture { get; set; }
 
+        /// <summary>Runs after every authorisation, once the money is held.</summary>
+        public Action? AfterAuthorize { get; set; }
+
         public Task<AuthorizePaymentResponse> AuthorizeAsync(
             AuthorizePaymentRequest request,
             CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (Money is MoneyState.Captured)
             {
                 return Task.FromResult(new AuthorizePaymentResponse(AuthorizePaymentStatus.AlreadyCaptured, Guid.NewGuid()));
             }
 
             Money = MoneyState.Authorized;
+            AfterAuthorize?.Invoke();
+
             return Task.FromResult(new AuthorizePaymentResponse(AuthorizePaymentStatus.Authorized, Guid.NewGuid()));
         }
 
@@ -1134,6 +1281,8 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
             CapturePaymentRequest request,
             CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (BeforeCapture is { } hook)
             {
                 BeforeCapture = null;
@@ -1153,6 +1302,8 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
             VoidPaymentRequest request,
             CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             switch (Money)
             {
                 case MoneyState.Captured:

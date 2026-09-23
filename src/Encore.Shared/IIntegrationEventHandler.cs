@@ -13,7 +13,7 @@ public interface IIntegrationEventHandler<in TEvent>
 {
     /// <param name="integrationEvent">What happened, as the publisher described it.</param>
     /// <param name="messageId">Stable identity of the event, for deduplicating redeliveries.</param>
-    /// <param name="cancellationToken">Cancelled when the host is shutting down.</param>
+    /// <param name="cancellationToken">Cancelled when the host shuts down, or when the dispatcher's per-delivery deadline passes; the message is then retried.</param>
     Task HandleAsync(
         TEvent integrationEvent,
         Guid messageId,

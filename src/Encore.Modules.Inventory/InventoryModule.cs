@@ -90,9 +90,9 @@ public static class InventoryModule
 
     /// <summary>
     /// Registers the lock that serialises the hold cap's count (005). Redis by default;
-    /// <c>Inventory:HoldCapLock = Postgres</c> takes an advisory lock instead, so the two can
-    /// be measured against each other. Singletons: the cooldown's window and the advisory
-    /// lock's held sessions are per process.
+    /// <c>Inventory:HoldCapLock = Postgres</c> takes an advisory lock instead, which keeps the
+    /// cap through a Redis outage at the throughput cost 005 measured. Singletons: the
+    /// cooldown's window and the advisory lock's held sessions are per process.
     /// </summary>
     private static void AddHoldCapLock(IServiceCollection services, IConfiguration configuration)
     {
@@ -126,7 +126,12 @@ public static class InventoryModule
     {
         var section = configuration.GetSection(ExpiredHoldSweepOptions.SectionName);
 
-        services.Configure<ExpiredHoldSweepOptions>(section);
+        services.AddOptions<ExpiredHoldSweepOptions>()
+            .Bind(section)
+            .Validate(
+                sweep => sweep.BatchSize > 0 && sweep.PollInterval > TimeSpan.Zero,
+                $"{ExpiredHoldSweepOptions.SectionName}: BatchSize and PollInterval must be positive.")
+            .ValidateOnStart();
 
         var options = section.Get<ExpiredHoldSweepOptions>() ?? new ExpiredHoldSweepOptions();
 
@@ -144,7 +149,18 @@ public static class InventoryModule
     {
         var section = configuration.GetSection(OutboxOptions.SectionName);
 
-        services.Configure<OutboxOptions>(section);
+        services.AddOptions<OutboxOptions>()
+            .Bind(section)
+            .Validate(
+                outbox => outbox.BatchSize > 0
+                    && outbox.PollInterval > TimeSpan.Zero
+                    && outbox.MaxAttempts > 0
+                    && outbox.DeliveryTimeout > TimeSpan.Zero
+                    && outbox.MaxBatchDuration > TimeSpan.Zero
+                    && outbox.BaseBackoff >= TimeSpan.Zero
+                    && outbox.MaxBackoff >= outbox.BaseBackoff,
+                $"{OutboxOptions.SectionName}: sizes, attempts, intervals and timeouts must be positive, and MaxBackoff at least a non-negative BaseBackoff.")
+            .ValidateOnStart();
 
         services.AddSingleton(_ => new OutboxEventCatalog()
             .Register<SeatHeldV1>(InventoryEventTypes.SeatHeld)
@@ -170,7 +186,15 @@ public static class InventoryModule
     {
         var section = configuration.GetSection(OutboxRetentionOptions.SectionName);
 
-        services.Configure<OutboxRetentionOptions>(section);
+        // A negative window would put the cutoff in the future and delete on delivery.
+        services.AddOptions<OutboxRetentionOptions>()
+            .Bind(section)
+            .Validate(
+                retention => retention.BatchSize > 0
+                    && retention.PollInterval > TimeSpan.Zero
+                    && retention.KeepDelivered >= TimeSpan.Zero,
+                $"{OutboxRetentionOptions.SectionName}: BatchSize and PollInterval must be positive, and KeepDelivered not negative.")
+            .ValidateOnStart();
 
         var options = section.Get<OutboxRetentionOptions>() ?? new OutboxRetentionOptions();
 

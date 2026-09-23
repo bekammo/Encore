@@ -32,6 +32,12 @@ public sealed class Order
     /// <summary>When the order reached a terminal status, if it has.</summary>
     public DateTime? ClosedAt { get; set; }
 
+    /// <summary>
+    /// When every seat sold, so the capture became owed. Recorded before the capture is asked
+    /// for, which is what lets the capture sweep find an order a confirm left unfinished.
+    /// </summary>
+    public DateTime? SoldAt { get; set; }
+
     /// <summary>Sum of the lines, snapshotted at checkout.</summary>
     public decimal Total { get; set; }
 

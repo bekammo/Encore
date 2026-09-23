@@ -12,8 +12,8 @@ namespace Encore.Modules.Inventory.Application;
 /// <remarks>
 /// Each seat is answered on its own, and the holds that succeed are written in one
 /// transaction. A client + event lock serialises the cap check: if another request by
-/// the same client holds it, this one is refused; if Redis is unavailable, the attempt
-/// proceeds and the cap may be exceeded. A lost race is retried once.
+/// the same client holds it, this one is refused; if the lock service is unavailable,
+/// the attempt proceeds and the cap may be exceeded. A lost race is retried once.
 /// </remarks>
 public sealed class HoldSeatCommandHandler(
     ISeatRepository seats,
@@ -49,10 +49,10 @@ public sealed class HoldSeatCommandHandler(
     {
         SeatBatch.EnsureValid(command.SeatIds);
 
-        var clientResource = SeatLocks.ForClient(command.ClientId, command.EventId);
+        var clientResource = ClientHoldLock.Resource(command.ClientId, command.EventId);
 
         var clientLock = await _distributedLock
-            .TryAcquireAsync(clientResource, SeatLocks.Ttl, cancellationToken)
+            .TryAcquireAsync(clientResource, ClientHoldLock.Ttl, cancellationToken)
             .ConfigureAwait(false);
 
         // Another request by this client is mid-count; letting both through could breach the cap.
@@ -65,9 +65,21 @@ public sealed class HoldSeatCommandHandler(
         {
             var attempt = await AttemptAsync(command, cancellationToken).ConfigureAwait(false);
 
-            return attempt.LostRace
-                ? (await AttemptAsync(command, cancellationToken).ConfigureAwait(false)).Results
-                : attempt.Results;
+            if (!attempt.LostRace)
+            {
+                return attempt.Results;
+            }
+
+            // The retry's load discards the first attempt's changes.
+            var retry = await AttemptAsync(command, cancellationToken).ConfigureAwait(false);
+
+            if (retry.LostRace)
+            {
+                // Nothing else will: reload so holds that exist only in memory cannot reach a later save (011).
+                await _seats.GetByIdsAsync(command.SeatIds, cancellationToken).ConfigureAwait(false);
+            }
+
+            return retry.Results;
         }
         finally
         {
@@ -83,10 +95,13 @@ public sealed class HoldSeatCommandHandler(
     {
         var utcNow = _timeProvider.GetUtcNow().UtcDateTime;
 
-        var loaded = await _seats.GetByIdsAsync(command.SeatIds, cancellationToken).ConfigureAwait(false);
+        // One read: the seats asked for, and the client's live holds for the cap.
+        var loaded = await _seats
+            .GetForHoldAsync(command.SeatIds, command.ClientId, command.EventId, utcNow, cancellationToken)
+            .ConfigureAwait(false);
 
         // The event id is checked, never trusted.
-        var seats = loaded
+        var seats = loaded.Seats
             .Where(seat => seat.EventId == command.EventId)
             .ToDictionary(seat => seat.Id);
 
@@ -95,10 +110,7 @@ public sealed class HoldSeatCommandHandler(
             return new Attempt([.. command.SeatIds.Select(_ => HoldSeatResult.SeatNotFound)], LostRace: false);
         }
 
-        var liveHolds = await _seats
-            .FindLiveHoldsAsync(command.ClientId, command.EventId, utcNow, cancellationToken)
-            .ConfigureAwait(false);
-
+        var liveHolds = loaded.LiveHolds;
         var holding = liveHolds.Count;
         var results = new HoldSeatResult[command.SeatIds.Count];
 

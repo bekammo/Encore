@@ -13,9 +13,6 @@ public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options)
     /// <summary>The orders, and the record of how each one ended.</summary>
     public DbSet<Order> Orders => Set<Order>();
 
-    /// <summary>The seats on those orders, at the price they were bought for.</summary>
-    public DbSet<OrderLine> OrderLines => Set<OrderLine>();
-
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

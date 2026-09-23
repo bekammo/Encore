@@ -56,7 +56,7 @@ Encore.sln
     ├── Encore.Modules.Catalog.IntegrationTests    schema + pricing projection
     ├── Encore.Modules.Orders.UnitTests            the HTTP mapping + the strangler switch, no database
     ├── Encore.Modules.Orders.IntegrationTests     checkout, against real Postgres
-    ├── Encore.Modules.Payments.UnitTests          the state machine + the gateway
+    ├── Encore.Modules.Payments.UnitTests          the state machine + the service header
     ├── Encore.Modules.Payments.IntegrationTests   the one-live-attempt index, the ledger, reconciliation
     ├── Encore.Modules.Notifications.IntegrationTests  the consumer, and its idempotency
     └── Encore.ArchitectureTests                   the boundaries, over metadata and csprojs
@@ -188,7 +188,7 @@ dotnet build
 dotnet run --project src/Encore.Api
 ```
 
-The run profiles set `Catalog__`, `Inventory__`, `Orders__` and `Payments__MigrateOnStartup`,
+The run profiles set `Catalog__`, `Inventory__`, `Orders__`, `Payments__` and `Notifications__MigrateOnStartup`,
 so a fresh `docker compose up` gets its schema from `dotnet run`. Nothing
 deployed does that — applying migrations is a deliberate step
 (`dotnet ef database update`), for the reasons in `DECISIONS.md` 017.
@@ -220,11 +220,12 @@ with every route, every `reason` code and the `X-Client-Id` header wired into th
 Authorize box so **Try it out** works — the page and the API share an origin, so there is
 no CORS policy to configure and none exists.
 
-The document is written by hand and verified against a running instance, not generated.
+The document is written by hand, not generated.
 `Encore.Api` holds zero `PackageReference` items on purpose, which rules out both
 Swashbuckle and `Microsoft.AspNetCore.OpenApi` (`DECISIONS.md` 008). Nothing regenerates
 it. Instead, a test fails when the document and the mapped routes disagree in either
-direction, and it also checks which host serves each route (`DECISIONS.md` 008).
+direction, checks which host serves each route, and pins each documented status enum to the
+C# enum behind it (`DECISIONS.md` 008).
 
 ## Running the tests
 
@@ -256,8 +257,9 @@ docker compose run --rm --build tests --filter "FullyQualifiedName~SeatTests"
 
 ## Continuous integration
 
-[`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs that same command on
-every push. Not `dotnet test` on the runner, which would be faster and would be a
+[`.github/workflows/tests.yml`](.github/workflows/tests.yml) builds the test image with
+its layers cached between runs, then runs that same command against it, on every pull request
+and every push to main. Not `dotnet test` on the runner, which would be faster and would be a
 different thing being tested: `tests/Dockerfile` copies each project file in by name, so
 a new test project nobody added to it fails `dotnet restore` at solution level — a
 failure that looks nothing like its cause, and one only this path can catch.
@@ -357,16 +359,18 @@ Four faults, one run each, against the extracted configuration, plus an orders r
 below. k6 drives the traffic
 and asserts the invariants; it has no access to the Docker daemon and never breaks
 anything. `load/chaos.sh` owns the timeline, stops the containers, takes the locks, and
-reads the aftermath out of Postgres into one report. Faults are injected in the *gaps*
-between scenario windows, and each fault that asks a question about a number runs a
-control window of identical shape beside the broken one.
+reads the aftermath out of Postgres into one report. A fault that asks a question about a
+number is injected in the *gaps* between scenario windows, beside a control window of
+identical shape. The dispatcher stall lands inside a paced window, since a backlog needs a
+steady rate to build, and the reconciler faults are settings for the whole run.
 
 What the four runs showed (`DECISIONS.md` 019 has the tables and the caveats):
 
 - **Payments stopped.** Every invariant held: no order confirmed, every confirm read
   `payment_timed_out`, no 5xx, and the 133 orders left `pending` map one-to-one onto the
   133 seats still held. The cost is that a stopped container swallows connections rather
-  than refusing them, so every confirm pays the full ten-second client timeout.
+  than refusing them, so every confirm paid the full ten-second client timeout. A one-second
+  connect timeout now bounds that: a request that never connected never reached the gateway.
 - **Two reconcilers over one table.** No attempt was settled twice, 82 sweeps lost the
   race on `xmin` and wrote nothing, and no order ever had more than one live attempt. But
   the process that had never authorised anything settled 379 attempts as `abandoned`,
@@ -405,7 +409,9 @@ Postgres afterwards. Across 1,943 orders in two runs, 1,298 of them multi-seat:
 - no order had money taken for seats that did not sell.
 
 In the second run, 92 cancels arrived after their confirm had sold the seats. Each heard
-`SoldToYou` and stepped back.
+`SoldToYou` and stepped back. The script exits non-zero when any row it reports as "must be
+0" is not, and `CheckoutCompositionTests` asserts the same three order invariants on every
+test run (`DECISIONS.md` 026).
 
 Reports land in `load/results/` beside the summaries, and are gitignored for the same
 reason.
@@ -443,18 +449,22 @@ otherwise be a one-span trace every second.
 ## Status
 
 Load-In and Showtime are closed, and Soundcheck's two outcomes, the outbox and the Payments
-extraction, are built. On Tour has begun: observability and the write-up are done, and
-deployment remains.
+extraction, are built. On Tour has begun: observability and the write-up are done, and what
+remains is a measurement run across more than one machine (`DECISIONS.md` 026).
 
 - **Inventory is complete**: aggregate, ports, adapters, use cases, HTTP surface, outbox,
   expired-hold sweep, and the concurrency tests that prove it.
 - **Catalog, Orders, Payments and Notifications are implemented and flat.** Orders prices
   through Catalog, holds through Inventory and charges through Payments without referencing
   any of them.
-- **A confirm authorises, sells, then captures** (`DECISIONS.md` 010), and **no path ends
+- **A confirm authorises, sells, then captures** (`DECISIONS.md` 010), and **no order ends
   with seats sold and nobody paying**: an order's seats sell in one transaction (011), and a
-  cancel gives the seats back before the money (012).
-- **Timed-out payments are reconciled** by asking the gateway what it actually did (014).
+  cancel gives the seats back before the money (012). That holds for `/orders`. Inventory's own
+  `/hold` and `/purchase` routes skip the order, its price, its payment and the on-sale gate,
+  and stay open until Identity can restrict them (008, 012).
+- **Timed-out payments are reconciled** by asking the gateway what it actually did (014), and
+  so are attempts a crash left pending. Once money has moved, no step is abandoned halfway:
+  not by a client hanging up, and not by a confirm racing the reconciler (022).
 - **Payments runs as its own service** (018). The extraction was inert for four days — a
   `services.Replace` that ran before the registration it meant to replace — and the chaos rig
   found it by stopping the service and watching confirms keep succeeding.
@@ -476,11 +486,12 @@ Open, and named rather than hidden:
 - Identity does not exist, so `X-Client-Id` remains a claimed identity.
 
 Deliberately absent, by roadmap phase rather than oversight: MediatR, MassTransit, SignalR
-and any deployment story.
+and a standing deployment, which would expose unauthenticated routes before Identity exists.
+Notifications stays in process until a message bus exists (026).
 
 | Phase | Weeks | Focus |
 |---|---|---|
 | Load-In | 1–3 | Modular monolith, DDD tactical patterns, TDD foundation |
-| Soundcheck | 4–6 | Extract Payments and Notifications via Strangler Fig + Outbox |
+| Soundcheck | 4–6 | Extract Payments via Strangler Fig; Notifications as the outbox's consumer |
 | Showtime | 7–10 | Inventory concurrency, load testing, chaos experiments |
-| **On Tour** | 11–12+ | Cloud deploy, observability, write-up |
+| **On Tour** | 11–12+ | Observability, write-up, a multi-host measurement run |

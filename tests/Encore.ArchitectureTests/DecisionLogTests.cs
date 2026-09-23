@@ -18,6 +18,18 @@ public partial class DecisionLogTests
     [GeneratedRegex(@"^- \[(?<number>\d{3})\]\(#(?<anchor>[^)]+)\) — (?<title>.+)$", RegexOptions.Multiline)]
     private static partial Regex IndexPattern();
 
+    /// <summary>Any numbered heading, however it is punctuated.</summary>
+    [GeneratedRegex(@"^## \d{3}\b", RegexOptions.Multiline)]
+    private static partial Regex AnyNumberedHeading();
+
+    /// <summary>
+    /// A heading written with a hyphen instead of the em dash would match nothing above and pass
+    /// every other test unseen. Counting headings loosely catches it.
+    /// </summary>
+    [Fact]
+    public void EveryNumberedHeadingShouldBeWrittenAsAnEntry() =>
+        Assert.Equal(AnyNumberedHeading().Matches(Log()).Count, Headings().Count);
+
     /// <summary>Sanity: an empty index matches an empty log, and the tests below would pass vacuously.</summary>
     [Fact]
     public void ThereShouldBeEntriesAndIndexLinesToCompare()
