@@ -1,44 +1,13 @@
 <Project>
 
-  <!-- Repo-wide build rules.
+  <!-- Repo-wide build rules. A project opts in by property rather than being selected by
+       name, so a rename cannot silently change what is checked:
 
-       Directory.Build.props holds settings; this file holds the rules that can
-       fail a build. They live here rather than in the projects they guard for
-       one reason: a build guard *is* the rule, so a second copy is a second
-       thing to keep correct, and a copy that drifts is a project that has
-       quietly stopped being guarded. DECISIONS 017 accepted sixty duplicated
-       lines per module precisely because that code is inert — "a bug in one
-       copy cannot be a bug in another" — and by its own criterion this is the
-       opposite case.
+         EncoreZeroDependency   - all three rules, for projects allowed only the BCL.
+         EncoreNoDirectPackages - ENCORE001 only, for hosts: they get ASP.NET Core from the
+                                  Web SDK and EF Core through the modules they compose. -->
 
-       Opt-in by property rather than selected by project name. A project
-       declares what it is and this file says what that declaration costs, so
-       renaming a project can never silently change what the build checks, and
-       a reader of the csproj can see that it is guarded without knowing this
-       file exists. The declaration sits directly under the comment in each
-       csproj that already claims the property, which is what turns that
-       comment from an assertion into something the compiler checks.
-
-       Two opt-ins, because two different projects want different amounts:
-
-         EncoreZeroDependency   — all three rules. For the five projects that
-                                  are allowed the BCL and nothing else.
-         EncoreNoDirectPackages — ENCORE001 alone. For Encore.Api, which holds
-                                  no packages of its own (DECISIONS 014, 017)
-                                  but legitimately gets ASP.NET Core from the
-                                  Web SDK and EF Core transitively through the
-                                  modules it composes. -->
-
-  <!-- ====================================================================
-       ENCORE001 — no direct PackageReference.
-
-       The original rule, unchanged in meaning and unchanged in code, moved
-       out of Encore.Modules.Inventory.Domain.csproj so that four other
-       projects can have it too. The code is deliberately the same string it
-       has always been: it is quoted in CLAUDE.md, README.md, DECISIONS 002,
-       017, 024 and 033, and in a source comment. Retargeting it to mean
-       something broader would retroactively falsify all of them.
-       ==================================================================== -->
+  <!-- ENCORE001: no direct PackageReference. -->
   <Target Name="EncoreEnforceNoDirectPackages"
           BeforeTargets="CoreCompile"
           Condition="'$(EncoreZeroDependency)' == 'true' or '$(EncoreNoDirectPackages)' == 'true'">
@@ -47,25 +16,8 @@
            Text="$(MSBuildProjectName) must have zero PackageReference items. Found: @(PackageReference->'%(Identity)', ', '). Put the dependency behind a port in Encore.Modules.Inventory/Ports and implement it in Adapters." />
   </Target>
 
-  <!-- ====================================================================
-       ENCORE002 — no FrameworkReference but the one the SDK adds anyway.
-
-       A single <FrameworkReference Include="Microsoft.AspNetCore.App" /> puts
-       the entire ASP.NET Core surface on the compile surface with zero
-       PackageReference items to show for it, so ENCORE001 sees nothing at
-       all. That is not hypothetical: DECISIONS 024 declined to promote the
-       duplicated ClientIdEndpointFilter into Encore.Shared, and this is the
-       door that decision was keeping shut.
-
-       Microsoft.NETCore.App is excluded because the SDK adds it implicitly to
-       every net10.0 project — it is the BCL, which is exactly what these
-       projects are allowed to have. Filtering on identity rather than on
-       IsImplicitlyDefined keeps the rule true whether the SDK's mechanism for
-       adding it changes or not.
-
-       This sees only *direct* framework references. One arriving through a
-       ProjectReference shows up as resolved assemblies and is ENCORE003's.
-       ==================================================================== -->
+  <!-- ENCORE002: no FrameworkReference other than the implicit Microsoft.NETCore.App. A
+       framework reference brings a whole platform with no PackageReference to show for it. -->
   <Target Name="EncoreEnforceNoFrameworkReferences"
           BeforeTargets="CoreCompile"
           Condition="'$(EncoreZeroDependency)' == 'true'">
@@ -78,36 +30,10 @@
            Text="$(MSBuildProjectName) must declare no FrameworkReference other than Microsoft.NETCore.App. Found: @(_EncoreForbiddenFrameworkReference->'%(Identity)', ', '). A framework reference carries a whole platform surface with no PackageReference to show for it, so ENCORE001 cannot see it." />
   </Target>
 
-  <!-- ====================================================================
-       ENCORE003 — nothing outside the BCL in the resolved reference closure.
-
-       This is the rule that closes the gap CLAUDE.md carried from the day
-       ENCORE001 was written. It does not read what the csproj declares; it
-       reads what the compiler is about to be handed. A package arriving
-       transitively through a ProjectReference is therefore caught by exactly
-       the same check as a direct one, and so is a framework reference that
-       arrived the same way.
-
-       How it tells them apart, verified against the SDK rather than assumed
-       (dotnet build -t:ResolveReferences -getItem:ReferencePath):
-
-         - BCL assemblies carry NuGetPackageId = Microsoft.NETCore.App.Ref and
-           FrameworkReferenceName = Microsoft.NETCore.App.
-         - ASP.NET Core carries Microsoft.AspNetCore.App.Ref, and every real
-           package carries its own id — Npgsql, StackExchange.Redis and the
-           three Microsoft.EntityFrameworkCore.* among them.
-         - An assembly resolved from a ProjectReference carries no
-           NuGetPackageId at all, which is why Encore.Shared passes.
-
-       So "carries a NuGetPackageId that is not the base targeting pack" is
-       precisely "arrived from outside the BCL and outside this repo". The
-       FrameworkReferenceName clause is belt and braces for the case where a
-       future SDK attributes the targeting pack one way rather than the other.
-
-       Hooked on CoreCompile rather than on ResolveReferences so it fires on a
-       real build and stays out of design-time builds, and so the error lands
-       at the same point in the build that ENCORE001 always did.
-       ==================================================================== -->
+  <!-- ENCORE003: nothing outside the BCL in the resolved reference closure, which catches
+       packages arriving transitively through a ProjectReference. BCL assemblies carry
+       NuGetPackageId Microsoft.NETCore.App.Ref, packages carry their own id, and project
+       outputs carry none. Runs before CoreCompile, so design-time builds are unaffected. -->
   <Target Name="EncoreEnforceReferenceClosure"
           BeforeTargets="CoreCompile"
           DependsOnTargets="ResolveReferences"

@@ -1,17 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Flat CRUD module. Endpoints / Data / Models, no layering ceremony.
-       Infrastructure packages sit right next to the endpoints on purpose —
-       this module has no hard problem in it, so it gets no abstraction. -->
+  <!-- Flat module: Endpoints / Data / Models, no layering. -->
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
-  <!-- The in-process pricing adapter is internal so that the registration in
-       CatalogModule stays the only place the implementation is chosen. Its
-       tests still need to construct it, and proving the projection against real
-       Postgres beats inferring it from a consumer's behaviour. -->
   <ItemGroup>
     <InternalsVisibleTo Include="Encore.Modules.Catalog.IntegrationTests" />
   </ItemGroup>
@@ -19,9 +13,6 @@
   <ItemGroup>
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
 
-    <!-- Catalog's public face, and the assembly its own in-process adapter
-         implements. Referencing it here is what lets CatalogModule register
-         that adapter without any consumer learning the type. -->
     <ProjectReference Include="..\Encore.Modules.Catalog.Contracts\Encore.Modules.Catalog.Contracts.csproj" />
   </ItemGroup>
 
@@ -34,11 +25,7 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
-  <!-- The startup migrator and the Npgsql/history-table wiring, shared since
-       DECISIONS 058. The edge runs this way and only this way: a module names
-       this project, and this project names nothing at all — least of all a
-       module. It carries EF Core and Npgsql on purpose, which is exactly why
-       nothing zero-dependency is allowed to reach it. -->
+  <!-- Shared startup migrator and Npgsql wiring. It names no module. -->
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Shared.Persistence\Encore.Modules.Shared.Persistence.csproj" />
   </ItemGroup>

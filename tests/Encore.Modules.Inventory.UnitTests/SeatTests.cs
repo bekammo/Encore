@@ -5,10 +5,8 @@ using Encore.Modules.Inventory.Domain.Exceptions;
 namespace Encore.Modules.Inventory.UnitTests;
 
 /// <summary>
-/// The seat state machine: legal transitions, refused transitions, and lazy
-/// expiry. Time is passed in, never read, so "the hold lapsed a minute ago" is a
-/// parameter rather than a sleep — every test here runs in microseconds and
-/// touches no infrastructure.
+/// The seat state machine: legal and refused transitions, and lazy expiry. Time is passed in,
+/// so every test runs in microseconds with no infrastructure.
 /// </summary>
 public class SeatTests
 {
@@ -24,27 +22,12 @@ public class SeatTests
     private static readonly DateTime AfterHold = T0.AddMinutes(6);
 
     /// <summary>
-    /// The exact instant a hold taken at <see cref="T0"/> expires. DECISIONS 007
-    /// settles the boundary as exclusive — a hold at exactly this moment is over
-    /// — and until DECISIONS 040 nothing tested either side of it: WithinHold and
-    /// AfterHold both sit a comfortable minute away.
+    /// The exact instant a hold taken at <see cref="T0"/> expires. The boundary is exclusive:
+    /// a hold at this instant is over. Written as a literal so a change to the constant is caught.
     /// </summary>
-    /// <remarks>
-    /// Written as AddMinutes(5) rather than T0 + Seat.HoldDuration, matching the
-    /// rest of this file and for the same reason: a test that reads the constant
-    /// cannot catch the constant changing.
-    /// </remarks>
     private static readonly DateTime AtExpiry = T0.AddMinutes(5);
 
-    /// <summary>
-    /// One tick before expiry: the last instant at which the hold is still live.
-    /// </summary>
-    /// <remarks>
-    /// A tick is 100ns, below the microsecond Postgres stores. That is fine here
-    /// because nothing in this file round-trips through a database, and it is
-    /// deliberately not a trick to copy into the integration suite, which
-    /// truncates its instants for exactly that reason.
-    /// </remarks>
+    /// <summary>One tick before expiry: the last live instant. Fine here; nothing round-trips a database.</summary>
     private static readonly DateTime JustBeforeExpiry = AtExpiry.AddTicks(-1);
 
     private static Seat Available() => Seat.Create(SeatId, EventId);
@@ -67,11 +50,7 @@ public class SeatTests
 
     // -- Create -----------------------------------------------------------
 
-    /// <summary>
-    /// The postcondition DECISIONS 005 spends its length arguing for, asserted
-    /// rather than assumed. Every seat is born Available with no holder and no
-    /// expiry, and the only routes out are the transition methods.
-    /// </summary>
+    /// <summary>Every seat is born Available with no holder and no expiry.</summary>
     [Fact]
     public void Create_ShouldProduceAnAvailableSeatWithNoHolderAndNoExpiry()
     {
@@ -83,9 +62,7 @@ public class SeatTests
         Assert.Null(seat.HeldByClientId);
         Assert.Null(seat.HoldExpiresAt);
 
-        // Creation raises nothing. A deliberate absence — there is no SeatCreated
-        // — and worth pinning before the outbox arrives and makes every raised
-        // event something that leaves the process.
+        // Creation raises nothing: there is no SeatCreated.
         Assert.Empty(seat.DomainEvents);
     }
 
@@ -171,10 +148,7 @@ public class SeatTests
         Assert.Empty(seat.DomainEvents);
     }
 
-    /// <summary>
-    /// The lazy half of expiry. This must pass with no sweep having run anywhere
-    /// near this seat — if it ever needs one, the sweep has become load-bearing.
-    /// </summary>
+    /// <summary>Lazy expiry: must pass without any sweep having run.</summary>
     [Fact]
     public void Hold_WhenExistingHoldHasAlreadyExpired_ShouldSucceed()
     {
@@ -232,18 +206,9 @@ public class SeatTests
     }
 
     /// <summary>
-    /// The edge DECISIONS 007 left open and 040 settles: a client re-holding a
-    /// seat after their <i>own</i> hold lapsed reclaims it, rather than being
-    /// refused for squatting.
+    /// A client re-holding after their own hold lapsed reclaims it. The two events are asserted
+    /// by type and order, not just counted.
     /// </summary>
-    /// <remarks>
-    /// Asserting the two events by type and order, not merely counting them, is
-    /// the point of this test. A count of two is satisfied by any pair, and the
-    /// question here is precisely <i>which</i> of the two overlapping rules wins:
-    /// the client is released from their own lapsed hold and then granted a new
-    /// one, rather than the re-hold being folded into a silent no-op the way an
-    /// unexpired re-hold is.
-    /// </remarks>
     [Fact]
     public void Hold_WhenSameClientHoldsAfterOwnHoldExpired_ShouldReclaim()
     {
@@ -330,17 +295,9 @@ public class SeatTests
     }
 
     /// <summary>
-    /// "No-op" means literally nothing changed, which is less obvious than it
-    /// sounds: the natural guess is that Release tidies the stale columns on its
-    /// way past.
+    /// A no-op release on a lapsed hold changes nothing: the stale row is left for the next
+    /// Hold to reclaim, so the release path has no opinion about expiry.
     /// </summary>
-    /// <remarks>
-    /// It deliberately does not. The row still reads Held by ClientA with an
-    /// expiry in the past, and the next Hold reclaims it lazily. Tidying here
-    /// would give the release path an opinion about expiry, which is how the
-    /// background sweep acquires authority the design says it must never have
-    /// (DECISIONS 007, 040).
-    /// </remarks>
     [Fact]
     public void Release_WhenOwnHoldAlreadyExpired_ShouldLeaveTheStaleRowUntouched()
     {
@@ -418,10 +375,8 @@ public class SeatTests
     }
 
     /// <summary>
-    /// The refusal reason turns on who is asking, not on what the row says. A
-    /// client who never held the seat is told so, even though the lapsed hold
-    /// still sitting on the row makes their request look, to the row alone,
-    /// exactly like the holder's own expired one.
+    /// The refusal depends on who asks: a client who never held the seat is told so, even over
+    /// someone else's lapsed hold.
     /// </summary>
     [Fact]
     public void Sell_WhenAnotherClientsHoldHasLapsed_ShouldSayNotTheHolder()
@@ -472,11 +427,8 @@ public class SeatTests
     // -- The expiry boundary ----------------------------------------------
 
     /// <summary>
-    /// The four tests below are the whole of DECISIONS 007's exclusive boundary,
-    /// asserted for the first time. The rule lives in one comparison —
-    /// <c>HoldExpiresAt &lt;= utcNow</c> — and flipping it to <c>&lt;</c> would
-    /// change behaviour at exactly one instant, which is precisely the kind of
-    /// change every other test in this file is a minute too far away to notice.
+    /// The exclusive expiry boundary, tested one tick either side. Flipping <c>&lt;=</c> to
+    /// <c>&lt;</c> would change behaviour at exactly one instant.
     /// </summary>
     [Fact]
     public void Hold_WhenExistingHoldIsOneTickFromExpiry_ShouldBeRefused()
@@ -545,22 +497,9 @@ public class SeatTests
     // -- ExpireHold -------------------------------------------------------
 
     /// <summary>
-    /// The transition the background sweep drives, and the same one <see
-    /// cref="Seat.Hold"/> performs on itself when it reclaims a lapsed hold.
+    /// The sweep's transition. It decides nothing: it refuses any seat whose hold has not
+    /// actually lapsed, so a wrong candidate writes nothing.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// DECISIONS 062. It exists so that cleanup can produce exactly the state and
-    /// exactly the event a lazy reclaim would have produced, rather than a bulk
-    /// UPDATE producing the state and silently dropping the event.
-    /// </para>
-    /// <para>
-    /// The property every test below is really protecting is that this method
-    /// <i>decides nothing</i>. It refuses every seat whose hold has not actually
-    /// lapsed, so a sweep that selects the wrong candidate writes nothing — which
-    /// is what keeps the sweep from acquiring the authority 007 denies it.
-    /// </para>
-    /// </remarks>
     [Fact]
     public void ExpireHold_WhenHoldHasLapsed_ShouldMakeTheSeatAvailable()
     {
@@ -586,10 +525,7 @@ public class SeatTests
         Assert.Equal(AfterHold, released.OccurredAt);
     }
 
-    /// <summary>
-    /// The one that makes the sweep cleanup rather than policy: a live hold is
-    /// none of its business, and it says so by doing nothing at all.
-    /// </summary>
+    /// <summary>A live hold is left alone.</summary>
     [Fact]
     public void ExpireHold_WhenHoldIsStillLive_ShouldChangeNothing()
     {
@@ -615,16 +551,9 @@ public class SeatTests
     }
 
     /// <summary>
-    /// A sold seat is refused with <see langword="false"/> rather than an
-    /// exception, unlike every other transition on this aggregate.
+    /// A sold seat returns false rather than throwing: a sale between the sweep's query and
+    /// its visit is an ordinary outcome.
     /// </summary>
-    /// <remarks>
-    /// The sweep selects candidates with one query and acts on them one at a
-    /// time, so a seat can be sold in between — and a sale is the sweep getting
-    /// the outcome it wanted, not an error to report. The other three methods
-    /// throw because a caller asked for something the rules forbid; this one is
-    /// not asking for anything.
-    /// </remarks>
     [Fact]
     public void ExpireHold_WhenSeatIsSold_ShouldChangeNothingRatherThanThrow()
     {
@@ -637,11 +566,7 @@ public class SeatTests
         Assert.Empty(seat.DomainEvents);
     }
 
-    /// <summary>
-    /// The same exclusive boundary the rest of the aggregate uses (007, 040),
-    /// asserted here too because a sweep is the one caller that will meet it
-    /// constantly rather than by accident.
-    /// </summary>
+    /// <summary>The same exclusive boundary, which the sweep meets constantly.</summary>
     [Fact]
     public void ExpireHold_AtExactlyTheExpiryInstant_ShouldExpire()
     {
@@ -658,10 +583,7 @@ public class SeatTests
         Assert.False(seat.ExpireHold(JustBeforeExpiry));
     }
 
-    /// <summary>
-    /// Idempotent, which is what lets two sweeps run over the same row without
-    /// the second one announcing a release that already happened.
-    /// </summary>
+    /// <summary>Idempotent, so two sweeps over one row announce one release.</summary>
     [Fact]
     public void ExpireHold_WhenCalledTwice_ShouldRaiseOneEvent()
     {
@@ -674,14 +596,9 @@ public class SeatTests
     }
 
     /// <summary>
-    /// The equivalence the whole design rests on: whether the sweep got there
-    /// first or the next client did, the log reads the same and says it once.
+    /// Whether the sweep or the next client gets there first, the event log reads the same.
+    /// This is why disabling the sweep cannot change an invariant.
     /// </summary>
-    /// <remarks>
-    /// Without this, "the sweep is cleanup only" is a claim about timing. With
-    /// it, it is a claim about outcomes — the two orderings are observationally
-    /// identical, which is why disabling the sweep cannot change an invariant.
-    /// </remarks>
     [Fact]
     public void ExpireHold_ThenHoldByAnotherClient_ShouldLeaveTheSameLogAsALazyReclaim()
     {
@@ -709,17 +626,9 @@ public class SeatTests
     // -- utcNow must be UTC -------------------------------------------------
 
     /// <summary>
-    /// DECISIONS 039. The domain receives the clock as a parameter, which makes
-    /// "this is a UTC instant" a precondition of these three methods rather than
-    /// a convention somewhere upstream. Unspecified is refused alongside Local:
-    /// a wall clock with no zone is a different instant in London and in Los
-    /// Angeles, so treating it as UTC would be a guess.
+    /// Every transition requires a UTC instant; <c>Local</c> and <c>Unspecified</c> are refused
+    /// with an error naming the parameter.
     /// </summary>
-    /// <remarks>
-    /// Before this guard the mistake surfaced at the Npgsql boundary, several
-    /// layers from the caller that made it, as a provider error about a
-    /// timestamptz. Now it surfaces here, naming the parameter.
-    /// </remarks>
     [Theory]
     [InlineData(DateTimeKind.Local)]
     [InlineData(DateTimeKind.Unspecified)]
@@ -756,12 +665,7 @@ public class SeatTests
         Assert.Equal("utcNow", exception.ParamName);
     }
 
-    /// <summary>
-    /// The sweep reads its instant from <c>TimeProvider</c> like the handlers do,
-    /// so this guard is as tautological at its one call site as the other three
-    /// are — and it is here for 039's reason, which is that the precondition
-    /// belongs to the method rather than to whoever happens to call it today.
-    /// </summary>
+    /// <summary>ExpireHold has the same UTC precondition.</summary>
     [Theory]
     [InlineData(DateTimeKind.Local)]
     [InlineData(DateTimeKind.Unspecified)]
@@ -774,11 +678,7 @@ public class SeatTests
         Assert.Equal("utcNow", exception.ParamName);
     }
 
-    /// <summary>
-    /// The same wall-clock reading as <see cref="WithinHold"/>, wearing the wrong
-    /// Kind. Same numbers, so a test that fails does so because of the Kind and
-    /// nothing else.
-    /// </summary>
+    /// <summary>The same wall-clock reading as <see cref="WithinHold"/> with the wrong Kind.</summary>
     private static DateTime NotUtc(DateTimeKind kind) =>
         DateTime.SpecifyKind(WithinHold, kind);
 }

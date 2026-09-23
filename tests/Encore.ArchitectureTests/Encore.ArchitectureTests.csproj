@@ -1,13 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The rules the build guards cannot reach.
-
-       Directory.Build.targets stops a forbidden dependency arriving at the five
-       zero-dependency projects. It has nothing to say about the shape of the
-       rest of the graph: that Orders must not reference Inventory, that nothing
-       may reference the host, that every type in the Domain lives in the Domain's
-       own namespace. DECISIONS 002 anticipated this suite; 037 records why it
-       exists and why it has no architecture-test library in it. -->
+  <!-- Architecture rules the build guards cannot reach: module boundaries, nothing
+       referencing the host, Domain namespaces. No architecture-test library needed. -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>
@@ -20,14 +14,8 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
   </ItemGroup>
 
-  <!-- Build-order edges only. ReferenceOutputAssembly="false" means these
-       projects are built before this one and their output is NOT placed on this
-       project's compile surface.
-
-       That property is what makes this suite credible rather than circular. It
-       asserts things about assemblies it cannot see, names them as strings, and
-       loads them from disk. A test proving that nothing references Encore.Api,
-       from a project that references Encore.Api, would be its own counterexample. -->
+  <!-- Build-order edges only: ReferenceOutputAssembly="false" keeps these outputs off this
+       project's compile surface, so the suite never depends on what it inspects. -->
   <ItemGroup>
     <ProjectReference Include="..\..\src\Encore.Api\Encore.Api.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Encore.Shared\Encore.Shared.csproj" ReferenceOutputAssembly="false" />
@@ -42,9 +30,7 @@
     <ProjectReference Include="..\..\src\Encore.Modules.Payments.Contracts\Encore.Modules.Payments.Contracts.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
-  <!-- Where to find those outputs, injected at build time rather than discovered
-       at run time by walking up from the test binary looking for a .sln. Exact on
-       the host and inside the test container alike, because each builds its own. -->
+  <!-- Where to find those outputs, injected at build time. -->
   <ItemGroup>
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>EncoreRepositoryRoot</_Parameter1>

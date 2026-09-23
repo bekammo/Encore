@@ -1,10 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Schema tests against real Postgres, spun up per-run by Testcontainers.
-       Catalog has no rules to unit-test — it is CRUD over uncontended tables —
-       so what is worth proving is that the mapping says what it means: the
-       migration applies, money keeps its precision, and timestamps survive the
-       round trip as UTC. No Redis here; Catalog never touches it. -->
+  <!-- Schema tests against real Postgres via Testcontainers. -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>

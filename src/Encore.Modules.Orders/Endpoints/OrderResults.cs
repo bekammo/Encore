@@ -5,32 +5,10 @@ using Microsoft.AspNetCore.Http;
 namespace Encore.Modules.Orders.Endpoints;
 
 /// <summary>
-/// Turns a service outcome into an HTTP response. The only place in this module
-/// that knows a status code.
+/// Maps service outcomes to HTTP responses. Refusals about the state of the world are 409;
+/// a missing order is 404; a request wrong on its own terms (such as more seats than the
+/// published cap) is 400. Every switch is exhaustive.
 /// </summary>
-/// <remarks>
-/// <para>
-/// This <i>is</i> the twin of <c>SeatResults</c>, where <c>CatalogResults</c>
-/// deliberately was not. Catalog had no outcome enums to switch over; this
-/// module has three, and something has to decide exhaustively what each case
-/// deserves. Every switch below has no default arm, so adding an outcome breaks
-/// the build — which is the whole reason those enums are closed sets.
-/// </para>
-/// <para>
-/// The status rule is 014's, unchanged: the code carries the class of failure
-/// and a <c>reason</c> member carries which one. Refusals about the state of the
-/// world are 409; only an order that is not there is 404; a request that is
-/// wrong on its own terms is 400.
-/// </para>
-/// <para>
-/// <b>The 400/409 split is the interesting line here.</b> Asking for more seats
-/// than the published cap is a 400, because the request contradicts a number the
-/// client could have read before sending it. Being told
-/// <c>hold_cap_reached</c> by Inventory is a 409, because that is a fact about
-/// the world — seats held in another tab count. Both can happen on one checkout,
-/// and they are not the same mistake.
-/// </para>
-/// </remarks>
 internal static class OrderResults
 {
     /// <summary>Maps the outcome of a checkout.</summary>
@@ -59,8 +37,7 @@ internal static class OrderResults
             CheckoutOutcome.EventNotFound => Conflict(
                 path, "event_not_found", "No event with that id.", retriable: false),
 
-            // The one refusal here that stops being true on its own, so the flag
-            // is the honest answer to "is another attempt worth making".
+            // Becomes possible on its own once the sale opens.
             CheckoutOutcome.NotOnSale => Conflict(
                 path, "not_on_sale", "Tickets for this event are not on sale yet.", retriable: true),
 
@@ -105,23 +82,17 @@ internal static class OrderResults
             extensions: new Dictionary<string, object?> { ["reason"] = "order_not_found" });
 
     /// <summary>
-    /// A confirm ran and the order reached an ending. Which ending is on the
-    /// order, because that is where the fact lives.
+    /// A confirm ran; the ending is on the order.
     /// </summary>
     private static IResult ForEnding(Order order, PathString path) =>
         order.Status switch
         {
             OrderStatus.Confirmed => TypedResults.Ok(OrderResponse.From(order)),
 
-            // 200, not a conflict. The customer has every seat they asked for and
-            // nothing has failed from where they are standing — the only thing
-            // outstanding is ours to finish, and the status field says so for any
-            // client that cares to look.
+            // 200: the customer has every seat; only the capture is outstanding.
             OrderStatus.AwaitingCapture => TypedResults.Ok(OrderResponse.From(order)),
 
-            // Not retriable: the holds are gone, and this module is not the thing
-            // that could get them back. A client that still wants the seats starts
-            // a new checkout, which is a different request.
+            // Not retriable: the holds are gone; a new checkout is a different request.
             OrderStatus.Expired => Conflict(
                 path,
                 "holds_expired",
@@ -131,13 +102,10 @@ internal static class OrderResults
             OrderStatus.Failed => Conflict(
                 path,
                 "order_failed",
-                // Since 076 no order is partly sold, so this no longer says so.
                 "This order could not be completed and needs to be looked at.",
                 retriable: false),
 
-            // Confirm never leaves an order Pending or Cancelled, so reaching
-            // here means the service and this mapping disagree about the state
-            // machine, which is a bug rather than a response.
+            // Confirm never leaves an order Pending or Cancelled; this would be a bug.
             OrderStatus.Pending or OrderStatus.Cancelled => throw new ArgumentOutOfRangeException(
                 nameof(order), order.Status, "A completed action left the order in a non-terminal status."),
 
@@ -151,10 +119,7 @@ internal static class OrderResults
         {
             OrderActionOutcome.OrderNotFound => NotFound(path),
 
-            // The status is rendered through OrderResponse rather than formatted
-            // here, so a client reads one spelling of a status whether it arrives
-            // in a body or in a sentence. It matters now that one of them is two
-            // words.
+            // Rendered through OrderResponse so the status is spelled the same everywhere.
             OrderActionOutcome.NotPending => Conflict(
                 path,
                 "order_not_pending",
@@ -167,10 +132,7 @@ internal static class OrderResults
                 "The order changed while your request was in flight.",
                 retriable: true),
 
-            // Retriable, and this is the one place in the module where that flag
-            // means "try again with something different" rather than "try the
-            // identical request again". The order is untouched and its holds are
-            // still live, which is the whole reason a decline does not end it.
+            // Retriable with a different card: the order and its holds are untouched.
             OrderActionOutcome.PaymentDeclined => Conflict(
                 path,
                 "payment_declined",
@@ -192,15 +154,9 @@ internal static class OrderResults
         };
 
     /// <summary>
-    /// One or more seats could not be held, so nothing was written.
+    /// One or more seats could not be held, so nothing was written. The top-level
+    /// <c>retriable</c> is true only if every per-seat refusal is.
     /// </summary>
-    /// <remarks>
-    /// The top-level <c>retriable</c> answers a precise question: could sending
-    /// this identical request again succeed? Only if every refusal is itself
-    /// retriable — one sold seat makes the whole list a lost cause, however many
-    /// of the others merely lost a race. The per-seat flags are what a client
-    /// uses to decide which seats to swap out.
-    /// </remarks>
     private static IResult SeatsUnavailable(IReadOnlyList<SeatRefusal> refusals, PathString path)
     {
         var seats = refusals
@@ -227,9 +183,7 @@ internal static class OrderResults
     }
 
     /// <summary>
-    /// Inventory's status as a reason string, using Inventory's own vocabulary
-    /// so a client sees one set of words whether it called that module directly
-    /// or reached it through a checkout.
+    /// Inventory's status as a reason string, in Inventory's own vocabulary.
     /// </summary>
     private static string ReasonFor(HoldSeatStatus status) =>
         status switch
@@ -250,9 +204,7 @@ internal static class OrderResults
     private static bool IsRetriable(HoldSeatStatus status) =>
         status switch
         {
-            // Somebody else holds it, but a hold lapses; the cap frees up as this
-            // client's own holds lapse or complete; a lost race and an in-flight
-            // request are the system refusing rather than the seat.
+            // Holds lapse, the cap frees up, and races are transient.
             HoldSeatStatus.AlreadyHeld => true,
             HoldSeatStatus.LostRace => true,
             HoldSeatStatus.HoldCapReached => true,
@@ -281,9 +233,7 @@ internal static class OrderResults
             });
 
     /// <summary>
-    /// The request is wrong on its own terms. Carries a <c>reason</c> like the
-    /// others: 018 settled that the status names the class of failure and the
-    /// reason names which one, and that is as useful at 400 as at 409.
+    /// The request is wrong on its own terms. Carries a <c>reason</c> like the 409s.
     /// </summary>
     private static IResult Invalid(PathString path, string reason, string detail, int? limit = null)
     {

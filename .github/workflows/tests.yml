@@ -1,28 +1,15 @@
-# Runs Encore's test suite on every push.
-#
-# This is the automation DECISIONS 043 deferred to On Tour and 072 brought
-# forward, for the reason 065 made concrete: this repository's whole argument is
-# that a claim nobody checks reads exactly like a claim that holds, and until now
-# nothing ran the checks except a person remembering to.
+# Runs the test suite on pull requests and pushes to main.
 name: tests
 
 on:
-  # Work lands here through pull requests — both changes before this one did — so
-  # the PR is where the gate belongs and `main` is where the answer is recorded
-  # after a merge.
-  #
-  # Deliberately not `branches: ['**']`. With a wildcard push trigger and this
-  # one, every commit on a PR branch runs the suite twice: once for the push and
-  # once for the synchronize. The cost of the narrower pair is that a push to a
-  # branch with no PR open runs nothing — which is the right trade while every
-  # branch here becomes a PR, and `workflow_dispatch` covers the exception.
+  # Not a wildcard push trigger: with both, every commit on a PR branch would run twice.
+  # workflow_dispatch covers a branch with no PR.
   pull_request:
   push:
     branches: [main]
   workflow_dispatch:
 
-# A second push supersedes the first. The suite takes minutes and nobody wants
-# the answer to a commit that has already been replaced.
+# A newer push cancels the older run.
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
@@ -35,16 +22,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The same command CLAUDE.md gives a developer, unchanged. Running
-      # `dotnet test` directly on the runner would be faster and would be a
-      # different thing being tested: `tests/Dockerfile` copies each csproj in by
-      # name, so a new test project that nobody added to it fails `dotnet
-      # restore` at solution level — a failure that looks nothing like its cause
-      # and that only this path can catch.
-      #
-      # `--build` is not optional. The image compiles the source into itself with
-      # no bind mount, so without it the run reports on whatever was compiled last
-      # time. That is how a green suite tests code that no longer exists.
+      # The documented command. The container copies each test project by name, so a
+      # project missing from tests/Dockerfile fails here. --build is required: without it
+      # the image's previous build is tested.
       - name: Run the suite
         id: suite
         run: |
@@ -52,11 +32,8 @@ jobs:
           docker compose run --rm --build tests 2>&1 | tee suite.log
           echo "compose exit: ${PIPESTATUS[0]}"
 
-      # CLAUDE.md's documented hazard, encoded rather than trusted: `docker
-      # compose run` exits 0 when it cannot reach the daemon at all, so anything
-      # deciding "tests passed" from the exit status decides it while nothing ran.
-      # A real run ends in one `Passed!` line per test assembly. These three
-      # assertions are what the shell's exit code is not.
+      # `docker compose run` exits 0 even when the daemon is unreachable, so the verdict
+      # comes from the per-assembly `Passed!` lines instead of the exit code.
       - name: Check the summary lines, not the exit code
         run: |
           set -uo pipefail
@@ -75,10 +52,7 @@ jobs:
             exit 1
           fi
 
-          # Catches two different silent failures with one comparison: nothing
-          # ran at all (passed == 0), and a project that exists in tests/ but
-          # never reached the runner because the solution or tests/Dockerfile
-          # does not know about it (passed < expected).
+          # Fails when nothing ran, and when a test project never reached the runner.
           if [ "$passed" -ne "$expected" ]; then
             echo "::error::Expected $expected test assemblies to report, got $passed. A project in tests/ did not run — check Encore.sln and tests/Dockerfile."
             exit 1
@@ -86,8 +60,7 @@ jobs:
 
           echo "All $passed test assemblies passed."
 
-      # The log is the evidence. A failure that only exists in a collapsed step
-      # is a failure somebody has to reproduce before they can read it.
+      # Keep the log as evidence.
       - name: Upload the run log
         if: always()
         uses: actions/upload-artifact@v4

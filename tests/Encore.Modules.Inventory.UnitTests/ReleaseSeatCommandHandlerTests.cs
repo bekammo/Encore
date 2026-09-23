@@ -6,10 +6,8 @@ using Encore.Modules.Inventory.Ports;
 namespace Encore.Modules.Inventory.UnitTests;
 
 /// <summary>
-/// The give-it-back use case. The theme worth reading for is that almost
-/// everything here is a success: a client asking not to hold a seat gets what
-/// they asked for whether or not they were holding it, because the state they
-/// want already holds.
+/// The release use case. Almost everything is a success: a client who asks not to hold a seat
+/// gets that state whether or not they held it.
 /// </summary>
 public class ReleaseSeatCommandHandlerTests
 {
@@ -122,10 +120,7 @@ public class ReleaseSeatCommandHandlerTests
         Assert.Empty(seat.DomainEvents);
     }
 
-    /// <summary>
-    /// The hold lapsed while the request was in flight. The client wanted not to
-    /// be holding the seat; they are not. Refusing would be pedantry.
-    /// </summary>
+    /// <summary>The hold lapsed while the request was in flight: still a success.</summary>
     [Fact]
     public async Task Handle_WhenOwnHoldHasAlreadyLapsed_ShouldReturnReleased()
     {
@@ -161,11 +156,7 @@ public class ReleaseSeatCommandHandlerTests
         Assert.Equal(0, seats.SaveCalls);
     }
 
-    /// <summary>
-    /// Still a refusal, but a different one: the client's own purchase went
-    /// through. A cancel racing a confirm reads this as "the confirm won" and
-    /// keeps its hands off the money (077).
-    /// </summary>
+    /// <summary>Sold to this client: a cancel racing its own confirm reads this and backs off.</summary>
     [Fact]
     public async Task Handle_WhenSeatIsSoldToThisClient_ShouldReturnSoldToYou()
     {
@@ -227,12 +218,9 @@ public class ReleaseSeatCommandHandlerTests
         Assert.Equal(2, seats.SaveCalls);
     }
 
-    // -- Batches (DECISIONS 076) -------------------------------------------
+    // -- Batches ------------------------------------------------------------
 
-    /// <summary>
-    /// Cancelling an order gives every seat back in one write, and a seat that
-    /// cannot be released does not keep the others held (034).
-    /// </summary>
+    /// <summary>Every seat goes back in one write; one that cannot does not keep the others held.</summary>
     [Fact]
     public async Task HandleBatch_WhenOneSeatIsNotTheirs_ShouldStillReleaseTheOthersInOneSave()
     {
@@ -265,11 +253,7 @@ public class ReleaseSeatCommandHandlerTests
 
     // -- Fakes ------------------------------------------------------------
 
-    /// <summary>
-    /// Answers each load from a script: one entry per call, the last repeated.
-    /// The params constructor scripts one seat per call, which is every
-    /// single-seat test; <see cref="Holding"/> scripts a whole batch.
-    /// </summary>
+    /// <summary>Answers each load from a script: one entry per call, the last repeated.</summary>
     private sealed class FakeSeatRepository : ISeatRepository
     {
         private readonly IReadOnlyList<IReadOnlyList<Seat>> _loads;
@@ -318,11 +302,7 @@ public class ReleaseSeatCommandHandlerTests
             return outcome is null ? Task.CompletedTask : Task.FromException(outcome);
         }
 
-        /// <summary>
-        /// Never called here: releasing gives hold capacity back rather than
-        /// consuming it, so the cap has nothing to say. Throwing keeps that a
-        /// fact the tests would notice changing.
-        /// </summary>
+        /// <summary>Releasing never consults the hold cap, so this throws.</summary>
         public Task<IReadOnlyCollection<Guid>> FindLiveHoldsAsync(
             Guid clientId,
             Guid eventId,
@@ -330,11 +310,7 @@ public class ReleaseSeatCommandHandlerTests
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Releasing does not consult the hold cap.");
 
-        /// <summary>
-        /// The sweep's query, and no handler makes it. Throwing rather than
-        /// returning an empty list, so a handler that quietly grew a dependency on
-        /// the sweep's candidate list fails a test instead of passing one.
-        /// </summary>
+        /// <summary>The sweep's query; no handler calls it, so it throws.</summary>
         public Task<IReadOnlyList<Guid>> FindExpiredHoldsAsync(
             DateTime utcNow,
             int limit,

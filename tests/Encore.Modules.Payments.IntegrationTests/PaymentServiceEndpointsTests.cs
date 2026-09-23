@@ -19,21 +19,10 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Payments.IntegrationTests;
 
 /// <summary>
-/// The service API, over a real socket and against real Postgres. DECISIONS 061.
+/// The Payments service API over a real socket and real Postgres, composed as a host composes
+/// it, so the token filter and the problem+json shape are part of what is tested.
+/// <c>HttpOrderPaymentsTests</c> pins the reading side.
 /// </summary>
-/// <remarks>
-/// <para>
-/// The other half of <c>HttpOrderPaymentsTests</c> in the Orders suite: that one
-/// pins how the adapter reads these bodies, this one pins that the endpoints emit
-/// them. Neither is worth much alone.
-/// </para>
-/// <para>
-/// The module is composed here the way a host composes it, rather than the endpoints
-/// being called directly, because two of the things worth checking — that the token
-/// filter runs before the handler, and that a refusal comes back as problem+json
-/// with a <c>reason</c> — are properties of the pipeline rather than of a method.
-/// </para>
-/// </remarks>
 public sealed class PaymentServiceEndpointsTests : IAsyncLifetime
 {
     private const string Token = "a-token-for-this-test-only";
@@ -59,12 +48,9 @@ public sealed class PaymentServiceEndpointsTests : IAsyncLifetime
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["ConnectionStrings:Payments"] = _postgres.GetConnectionString(),
-            // The sweep is a background workload and this suite is about the request
-            // path; leaving it on would race the assertions for no benefit.
+            // The reconciler would race the assertions.
             ["Payments:Reconciliation:Enabled"] = "false",
-            // A gateway that always agrees, so an outcome here is the endpoint's
-            // doing. The ones that refuse get their own tests below by arranging the
-            // row, not by rolling dice.
+            // A gateway that always agrees; refusals are arranged through the row.
             ["Payments:Simulation:DeclineRate"] = "0",
             ["Payments:Simulation:TimeoutRate"] = "0",
             ["Payments:Simulation:MinLatency"] = "00:00:00",
@@ -108,12 +94,9 @@ public sealed class PaymentServiceEndpointsTests : IAsyncLifetime
         await _postgres.DisposeAsync();
     }
 
-    // -- the token is the whole of the authentication ---------------------
+    // -- the service token ------------------------------------------------
 
-    /// <summary>
-    /// DECISIONS 033's argument, kept true. A caller that cannot present the token
-    /// cannot authorise money, and a customer has no way to obtain one.
-    /// </summary>
+    /// <summary>A caller without the token cannot reach the routes.</summary>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -139,10 +122,7 @@ public sealed class PaymentServiceEndpointsTests : IAsyncLifetime
         }
     }
 
-    /// <summary>
-    /// A client id buys nothing here. It is the header the read routes take, and
-    /// sending it instead of the token is exactly the mistake 033 is about.
-    /// </summary>
+    /// <summary>A client id instead of the token gets 401.</summary>
     [Fact]
     public async Task Authorize_WithAClientIdInsteadOfTheToken_ShouldRefuse()
     {
@@ -169,10 +149,7 @@ public sealed class PaymentServiceEndpointsTests : IAsyncLifetime
         Assert.NotEqual(Guid.Empty, body.GetProperty("paymentId").GetGuid());
     }
 
-    /// <summary>
-    /// The property the whole extraction rests on: a repeat is an answer, not a
-    /// second charge.
-    /// </summary>
+    /// <summary>A repeated authorisation is an answer, not a second charge.</summary>
     [Fact]
     public async Task Authorize_Twice_ShouldReturnTheSameAttempt()
     {
@@ -233,10 +210,7 @@ public sealed class PaymentServiceEndpointsTests : IAsyncLifetime
         Assert.Equal("voided", body.GetProperty("outcome").GetString());
     }
 
-    /// <summary>
-    /// The money has moved and the endpoint says so rather than pretending to refund.
-    /// Orders reads this as a lost race.
-    /// </summary>
+    /// <summary>Voiding captured money is refused; Orders reads it as a lost race.</summary>
     [Fact]
     public async Task Void_AfterCapturing_ShouldRefuseWithAlreadyCaptured()
     {
@@ -260,9 +234,7 @@ public sealed class PaymentServiceEndpointsTests : IAsyncLifetime
         Assert.Equal("no_authorization", body.GetProperty("reason").GetString());
     }
 
-    /// <summary>
-    /// Authorising an order that is already paid is an answer, not a second charge.
-    /// </summary>
+    /// <summary>Authorising an order already paid is an answer, not a second charge.</summary>
     [Fact]
     public async Task Authorize_AfterCapturing_ShouldAnswerAlreadyCaptured()
     {
@@ -276,10 +248,7 @@ public sealed class PaymentServiceEndpointsTests : IAsyncLifetime
         Assert.Equal("already_captured", body.GetProperty("outcome").GetString());
     }
 
-    /// <summary>
-    /// Every refusal carries the <c>reason</c> the adapter branches on, in the shape
-    /// 049 gave every refusal in this codebase.
-    /// </summary>
+    /// <summary>Every refusal carries a <c>reason</c> in problem+json.</summary>
     [Fact]
     public async Task ARefusal_ShouldBeProblemJsonCarryingAReason()
     {
@@ -306,9 +275,6 @@ public sealed class PaymentServiceEndpointsTests : IAsyncLifetime
         return (response.StatusCode, await response.Content.ReadFromJsonAsync<JsonElement>());
     }
 
-    /// <summary>
-    /// One client per order, derived rather than random, so a second call about the
-    /// same order presents the same owner. An attempt is scoped to both.
-    /// </summary>
+    /// <summary>The client derived from the order, so repeat calls present the same owner.</summary>
     private static Guid ClientFor(Guid orderId) => orderId;
 }

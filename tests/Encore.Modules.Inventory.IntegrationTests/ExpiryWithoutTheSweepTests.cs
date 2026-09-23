@@ -8,37 +8,10 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// Expiry with no sweep anywhere: the falsification test <c>DECISIONS.md</c> 007
-/// asks for, and 062 finally writes.
+/// Expiry with no sweep and no Redis: if any of these needed the sweep, the design would be
+/// broken. Lapsed rows stay <c>Held</c> in Postgres throughout, and the invariants hold anyway.
+/// Covers reclaiming, selling against a lapsed hold, the hold cap and the oversell invariant.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>What makes this falsifiable rather than decorative.</b> 007 states the
-/// criterion as a challenge — "if a test cannot pass with the sweep disabled, the
-/// sweep has become load-bearing and the design is broken" — and until the sweep
-/// existed, that was satisfied trivially by there being nothing to disable. Now
-/// there is, so the claim needs a test that would actually fail if it stopped
-/// being true. <see cref="ExpiredHoldSweeper"/> is not referenced anywhere in this
-/// file, not registered, and not constructed. Every row here whose hold has lapsed
-/// still reads <c>Held</c> in Postgres for the whole test, and the invariants hold
-/// anyway.
-/// </para>
-/// <para>
-/// <b>Redis is absent too, and that is not scope creep.</b> The claim under test
-/// is that correctness comes from the aggregate and from <c>xmin</c>; a lock that
-/// serialised the racers would hide whether the seat rules or the lock produced
-/// the result. The lock here always grants, so it protects nothing —
-/// <see cref="ConcurrentHoldTests"/> makes the same choice for the same reason.
-/// </para>
-/// <para>
-/// <b>These four are the paths that could plausibly have grown a dependency on the
-/// sweep</b>, rather than a sample: reclaiming a lapsed hold, selling against one,
-/// the multi-row hold cap, and the oversell invariant itself. The cap is the least
-/// obvious and the most valuable — it is counted in SQL rather than in the
-/// aggregate, so it is the one place where a second copy of the expiry rule could
-/// have gone stale without anybody noticing until a client was capped forever.
-/// </para>
-/// </remarks>
 public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
 {
     /// <summary>How many clients pile onto the one lapsed seat.</summary>
@@ -78,16 +51,13 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
     /// <inheritdoc />
     public async Task DisposeAsync() => await _postgres.DisposeAsync();
 
-    /// <summary>
-    /// The row still says <c>Held</c> by somebody else, and the next client gets
-    /// the seat anyway.
-    /// </summary>
+    /// <summary>The row still says Held by someone else, and the next client gets the seat.</summary>
     [Fact]
     public async Task Hold_WhenTheHolderLapsed_ShouldBeReclaimedWithNoSweep()
     {
         var seatId = await SeedHeldAsync(_clientA, LapsedAt);
 
-        // The stale row is still stale: nothing has tidied it, and nothing will.
+        // The stale row is still stale: nothing tidied it.
         Assert.Equal(SeatStatus.Held, (await LoadAsync(seatId)).Status);
 
         var result = await HoldAsync(seatId, _clientB);
@@ -96,10 +66,7 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
         Assert.Equal(_clientB, (await LoadAsync(seatId)).HeldByClientId);
     }
 
-    /// <summary>
-    /// The lapsed holder cannot sell, which is the invariant a sweep-driven design
-    /// would have made depend on a timer.
-    /// </summary>
+    /// <summary>The lapsed holder cannot sell.</summary>
     [Fact]
     public async Task Sell_WhenTheHoldLapsed_ShouldBeRefusedWithNoSweep()
     {
@@ -112,17 +79,9 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The seat is effectively available because somebody else's hold lapsed, and
-    /// a passer-by still cannot buy it without holding it first.
+    /// A passer-by cannot buy an effectively available seat without holding it first; the
+    /// refusal is NotTheHolder because the row still names the old holder.
     /// </summary>
-    /// <remarks>
-    /// 007's no-direct-Available-to-Sold rule, checked on the one path where the
-    /// row's column and its truth disagree — and this is the case that makes the
-    /// rule matter, because if a lapsed hold could be sold around, the hold step
-    /// would be skippable by simply waiting five minutes. The refusal is
-    /// <c>NotTheHolder</c> rather than <c>NoActiveHold</c>: the row still names
-    /// <c>_clientA</c>, and 041 records why the reason turns on who is asking.
-    /// </remarks>
     [Fact]
     public async Task Sell_WhenAnotherClientsHoldLapsed_ShouldStillRefuseWithNoSweep()
     {
@@ -135,24 +94,9 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The hold cap frees itself as holds lapse, with no sweep to free it.
+    /// The hold cap reopens as holds lapse. The cap is a SQL count with its own copy of the
+    /// expiry rule, so this checks that copy while all four stale rows still read Held.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The subtlest of the four. The cap spans rows, so it is a Postgres
-    /// <c>COUNT</c> rather than an aggregate rule (006) — which means the lapsed-hold
-    /// rule exists there in a second form, in SQL. If that copy said only
-    /// <c>Status = Held</c>, this client would be capped until a background job
-    /// happened to run, and every test that did not involve waiting would still
-    /// pass. <c>FindLiveHoldsAsync</c> puts <c>HoldExpiresAt &gt; utcNow</c> in the
-    /// predicate, so the count is of live holds rather than of rows, and the cap
-    /// reopens the moment the holds lapse rather than the moment somebody tidies up.
-    /// </para>
-    /// <para>
-    /// Every one of the four stale rows is still <c>Held</c> in the database when
-    /// the fifth hold succeeds, which the assertion checks rather than assumes.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task Hold_WhenAllOfAClientsHoldsLapsed_ShouldReopenTheCapWithNoSweep()
     {
@@ -179,18 +123,9 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The headline invariant, on the path where the sweep might have been load
-    /// bearing: thirty clients reclaim one lapsed seat at once and exactly one
-    /// gets it.
+    /// Thirty clients reclaim one lapsed seat at once and exactly one gets it, with no lock and
+    /// no sweep.
     /// </summary>
-    /// <remarks>
-    /// <see cref="ConcurrentHoldTests"/> proves this for an available seat. This is
-    /// the same proof for a seat that is only <i>effectively</i> available — where
-    /// every racer must first agree that a hold it can see in the row has lapsed,
-    /// and then race on <c>xmin</c> like everybody else. No lock, no sweep: if
-    /// expiry needed either of them to be a real state change, this is where two
-    /// winners would appear.
-    /// </remarks>
     [Fact]
     public async Task Hold_WhenManyClientsReclaimOneLapsedSeat_ExactlyOneShouldWinWithNoSweep()
     {
@@ -229,9 +164,7 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
 
             Assert.Equal(1, won);
 
-            // Nobody failed in a way this test does not sanction — in particular
-            // nothing threw, and nothing came back SeatNotFound because a racer
-            // read a row mid-flight.
+            // Nothing threw, and no racer read a row mid-flight as missing.
             Assert.All(results, result => Assert.Contains(result.Outcome, new[]
             {
                 HoldSeatOutcome.Held,
@@ -310,14 +243,7 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
         return await context.Seats.AsNoTracking().SingleAsync(seat => seat.Id == seatId);
     }
 
-    /// <summary>
-    /// A lock that grants everything, which is to say no lock at all.
-    /// </summary>
-    /// <remarks>
-    /// Present because the handlers take the port, not because anything here wants
-    /// serialising. Every racer holds it at once, so whatever these tests prove is
-    /// proved by the aggregate and by <c>xmin</c>.
-    /// </remarks>
+    /// <summary>A lock that grants everything, so the results rest on the aggregate and xmin alone.</summary>
     private sealed class AlwaysGrantingLock : IDistributedLock
     {
         public Task<LockAcquisition> TryAcquireAsync(
@@ -333,10 +259,7 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
             Task.FromResult(true);
     }
 
-    /// <summary>
-    /// A clock that does not move, so "lapsed" is a property of the seeded data
-    /// rather than of how long the test took.
-    /// </summary>
+    /// <summary>A clock that does not move, so "lapsed" comes from the seeded data.</summary>
     private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => new(utcNow, TimeSpan.Zero);

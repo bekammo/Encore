@@ -9,12 +9,10 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Encore.Modules.Catalog;
 
 /// <summary>
-/// The Catalog module's single composition seam. The host knows these two
-/// methods and nothing else about this module.
+/// The Catalog module's composition seam.
 /// </summary>
 public static class CatalogModule
 {
-    /// <summary>Registers the module's services.</summary>
     public static IServiceCollection AddCatalogModule(
         this IServiceCollection services,
         IConfiguration configuration)
@@ -24,18 +22,10 @@ public static class CatalogModule
                 configuration.GetConnectionString("Catalog")
                 ?? throw new InvalidOperationException("Missing connection string 'Catalog'.")));
 
-        // The module's in-process front door, for callers that are other
-        // modules rather than HTTP clients. This one line is the whole of the
-        // extraction story: point it at an HTTP-backed implementation and no
-        // consumer is recompiled.
+        // The front door for other modules; extraction swaps this for an HTTP client.
         services.AddScoped<IEventPricing, InProcessEventPricing>();
 
-        // Off unless asked for, exactly as Inventory's is. The run profiles set
-        // it so a developer with a fresh `docker compose up` gets a schema from
-        // `dotnet run`; anything deployed applies migrations as its own
-        // deliberate step. Read as configuration rather than from
-        // IHostEnvironment because which environment this is happens to be the
-        // host's business, not Catalog's.
+        // Off unless the run profile asks for it; deployments migrate explicitly.
         if (configuration.GetValue<bool>("Catalog:MigrateOnStartup"))
         {
             services.AddModuleMigrator<CatalogDbContext>("Catalog");
@@ -44,7 +34,6 @@ public static class CatalogModule
         return services;
     }
 
-    /// <summary>Maps the module's HTTP surface.</summary>
     public static IEndpointRouteBuilder MapCatalogModule(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapCatalogEndpoints();

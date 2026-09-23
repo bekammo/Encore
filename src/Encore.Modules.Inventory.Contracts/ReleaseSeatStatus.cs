@@ -24,10 +24,8 @@ public enum ReleaseSeatStatus
     LostRace = 4,
 
     /// <summary>
-    /// The seat has been sold to the client asking to release it. Distinct from
-    /// <see cref="AlreadySold"/> because a caller unwinding an order has to know
-    /// whether the sale it is racing is its own: if it is, the money must stay
-    /// where it is (<c>DECISIONS.md</c> 077).
+    /// Sold to the client asking to release it. A caller unwinding an order uses this to
+    /// see that the sale it is racing is its own, so the money must stay.
     /// </summary>
     SoldToYou = 5
 }

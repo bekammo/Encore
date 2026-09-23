@@ -4,11 +4,6 @@ namespace Encore.Modules.Inventory.Application;
 /// The result of a <see cref="SellSeatsCommand"/>: every seat sold, or the
 /// reasons none were.
 /// </summary>
-/// <remarks>
-/// There is no per-seat success to report, because there is no partial sale.
-/// A refused batch names only the seats that refused; the rest were not sold
-/// either, and saying so seat by seat would be one fact repeated.
-/// </remarks>
 /// <param name="Refusals">Why the sale did not happen. Empty exactly when it did.</param>
 public sealed record SellSeatsResult(IReadOnlyList<SeatSaleRefusal> Refusals)
 {

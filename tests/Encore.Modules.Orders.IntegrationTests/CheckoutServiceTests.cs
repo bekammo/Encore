@@ -9,24 +9,9 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Orders.IntegrationTests;
 
 /// <summary>
-/// The checkout, confirm and cancel flows against real Postgres, with the two
-/// modules this one depends on faked.
+/// Checkout, confirm and cancel against real Postgres, with Catalog, Inventory and Payments
+/// faked at their contracts. Every test uses fresh ids, since rows accumulate per class.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>Postgres is real and the neighbours are not, which is the point.</b> The
-/// database is here because this module declined a repository port and the
-/// partial unique index is load-bearing; Catalog, Inventory and Payments are
-/// faked because they are reached through published contracts, and a test that
-/// needed all four schemas migrated to check one refusal would be evidence those
-/// contracts were not doing their job.
-/// </para>
-/// <para>
-/// Every test uses fresh client and event ids. The container is per-class and
-/// the rows accumulate, so shared ids would collide on the one-open-checkout
-/// index and fail the next test rather than the one with the bug in it.
-/// </para>
-/// </remarks>
 public sealed class CheckoutServiceTests : IAsyncLifetime
 {
     private static readonly DateTime OnSale = new(2026, 1, 1, 9, 0, 0, DateTimeKind.Utc);
@@ -95,11 +80,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.All(stored.Lines, line => Assert.Equal(UnitPrice, line.UnitPrice));
     }
 
-    /// <summary>
-    /// The rule from 023, and the one most likely to be "fixed" later into a
-    /// compensating release. A partial checkout writes nothing and gives nothing
-    /// back, so the customer can buy the rest or pick a replacement.
-    /// </summary>
+    /// <summary>A partial checkout writes nothing and releases nothing.</summary>
     [Fact]
     public async Task Checkout_WhenASeatIsRefused_ShouldWriteNothingAndReleaseNothing()
     {
@@ -125,10 +106,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.False(await reader.Orders.AnyAsync(order => order.ClientId == clientId));
     }
 
-    /// <summary>
-    /// Every seat is attempted even after the first refusal, so a client learns
-    /// about all of them in one round trip and can choose replacements once.
-    /// </summary>
+    /// <summary>Every seat is attempted, so the client learns about all refusals at once.</summary>
     [Fact]
     public async Task Checkout_WhenSeatsAreRefused_ShouldReportEveryOne()
     {
@@ -168,11 +146,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Empty(seats.Holds);
     }
 
-    /// <summary>
-    /// 025: a repeated id is refused rather than collapsed. Two lines for one
-    /// seat is not a thing, and guessing which was meant is how you stop finding
-    /// out the client has a bug.
-    /// </summary>
+    /// <summary>A repeated seat id is refused, not collapsed.</summary>
     [Fact]
     public async Task Checkout_WithADuplicateSeat_ShouldBeRefusedWithoutHolding()
     {
@@ -188,10 +162,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Empty(seats.Holds);
     }
 
-    /// <summary>
-    /// Duplicates are judged before the cap, so five ids naming one seat is a
-    /// request for one seat rather than one seat over the limit.
-    /// </summary>
+    /// <summary>Duplicates are judged before the cap.</summary>
     [Fact]
     public async Task Checkout_WithDuplicatesBeyondTheCap_ShouldReportTheDuplicateNotTheCap()
     {
@@ -208,11 +179,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Equal(CheckoutOutcome.DuplicateSeat, result.Outcome);
     }
 
-    /// <summary>
-    /// The cap is read from the contract, which is what 020 published it for: the
-    /// alternative is sending five holds and compensating four of them to learn a
-    /// number that was never a secret.
-    /// </summary>
+    /// <summary>The cap is read from the published contract.</summary>
     [Fact]
     public async Task Checkout_BeyondTheCap_ShouldBeRefusedWithoutHolding()
     {
@@ -245,10 +212,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Empty(seats.Holds);
     }
 
-    /// <summary>
-    /// 026. Catalog states the sale window and this module enforces it, because
-    /// Catalog has no idea what a checkout is.
-    /// </summary>
+    /// <summary>Orders enforces the on-sale time Catalog states.</summary>
     [Fact]
     public async Task Checkout_BeforeTheEventGoesOnSale_ShouldBeRefusedWithoutHolding()
     {
@@ -266,10 +230,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Empty(seats.Holds);
     }
 
-    /// <summary>
-    /// Sales stay open once a show has started, because walk-up sales are real.
-    /// The gate is the lower bound only.
-    /// </summary>
+    /// <summary>Sales stay open after the show starts: the gate is a lower bound only.</summary>
     [Fact]
     public async Task Checkout_AfterTheShowHasStarted_ShouldStillBeAllowed()
     {
@@ -289,10 +250,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Equal(CheckoutOutcome.Created, result.Outcome);
     }
 
-    /// <summary>
-    /// An event with no sale window is on sale immediately, which is what null
-    /// means rather than "a gate that opened in the year 1".
-    /// </summary>
+    /// <summary>No on-sale time means on sale now.</summary>
     [Fact]
     public async Task Checkout_WhenTheEventHasNoSaleWindow_ShouldBeAllowed()
     {
@@ -337,11 +295,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Equal(CheckoutOutcome.CheckoutAlreadyOpen, result.Outcome);
     }
 
-    /// <summary>
-    /// A pending order at one event must not block a checkout at another: the
-    /// index is scoped to the pair, and this is what would catch a filter that
-    /// had quietly lost its event column.
-    /// </summary>
+    /// <summary>The one-open-checkout index is scoped to the client and the event together.</summary>
     [Fact]
     public async Task Checkout_WhenTheOpenCheckoutIsForAnotherEvent_ShouldBeAllowed()
     {
@@ -367,15 +321,9 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
     // -- Confirm ----------------------------------------------------------
 
     /// <summary>
-    /// The test 021 names by name, and the reason the rule is written down.
+    /// Orders never judges hold expiry itself: with the clock far past <c>HoldsExpireAt</c> and
+    /// Inventory reporting a sale, the order confirms.
     /// </summary>
-    /// <remarks>
-    /// The clock is far past <c>HoldsExpireAt</c> and Inventory says the seat
-    /// sold. The order must confirm. Two copies of the expiry rule judged against
-    /// two clocks is a system that tells a customer their hold has gone while the
-    /// seat is still theirs — so this module does not get a copy. The day somebody
-    /// adds an expiry check to the confirm path, this test fails.
-    /// </remarks>
     [Fact]
     public async Task Confirm_WhenHoldsLapsed_ShouldAskInventoryRatherThanItsOwnClock()
     {
@@ -416,10 +364,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Null(stored.HoldsExpireAt);
     }
 
-    /// <summary>
-    /// Nothing sold and every refusal an expiry: the customer ran out of time,
-    /// which is a different thing to tell them than "something went wrong".
-    /// </summary>
+    /// <summary>Nothing sold and every refusal an expiry ends the order Expired.</summary>
     [Fact]
     public async Task Confirm_WhenEveryHoldHasLapsed_ShouldExpireTheOrder()
     {
@@ -436,10 +381,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The case 028 had to leave for a person to look at, and 076 closed. One
-    /// hold has lapsed and the other is live. Sold one at a time, the live seat
-    /// sold and stayed sold with nobody paying for it; now the seats are asked
-    /// for together, in one request, and the order ends with nothing sold.
+    /// One hold lapsed, one live: the seats are sold together, so nothing sells.
     /// </summary>
     [Fact]
     public async Task Confirm_WhenOneHoldHasLapsed_ShouldSellTheSeatsTogetherAndExpireTheOrder()
@@ -457,15 +399,11 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         var sale = Assert.Single(seats.Sells);
         Assert.Equal(order.Lines.Select(line => line.SeatId).Order(), sale.SeatIds.Order());
 
-        // Every refusal was an expiry, so this is the ordinary ending rather than
-        // a failure — the seat that was still live never sold.
+        // Every refusal was an expiry, so this is the ordinary ending; the live seat never sold.
         Assert.Equal(OrderStatus.Expired, result.Order!.Status);
     }
 
-    /// <summary>
-    /// A refusal that was not expiry is <c>Failed</c> even when nothing sold:
-    /// "somebody else bought your seat" is not "you ran out of time".
-    /// </summary>
+    /// <summary>A refusal other than expiry ends the order Failed, even with nothing sold.</summary>
     [Fact]
     public async Task Confirm_WhenARefusalIsNotExpiry_ShouldFailRatherThanExpire()
     {
@@ -480,10 +418,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Equal(OrderStatus.Failed, result.Order!.Status);
     }
 
-    /// <summary>
-    /// A retried confirm after a dropped response must not tell a client its
-    /// completed order failed.
-    /// </summary>
+    /// <summary>A retried confirm is not told its completed order failed.</summary>
     [Fact]
     public async Task Confirm_WhenAlreadyConfirmed_ShouldSucceedWithoutAskingAgain()
     {
@@ -519,11 +454,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
 
     // -- Confirm: the money -----------------------------------------------
 
-    /// <summary>
-    /// The ordering that the whole of 028 rests on. A sold seat is terminal and
-    /// cannot be given back, so no seat is sold until the money is secured — and
-    /// when it is not secured, not one sell request goes out.
-    /// </summary>
+    /// <summary>No seat is sold until the money is secured.</summary>
     [Theory]
     [InlineData(AuthorizePaymentStatus.Declined, OrderActionOutcome.PaymentDeclined)]
     [InlineData(AuthorizePaymentStatus.TimedOut, OrderActionOutcome.PaymentTimedOut)]
@@ -546,8 +477,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Empty(seats.Sells);
         Assert.Empty(payments.Captures);
 
-        // The holds are still live and the order is still completable, which is
-        // the entire reason a decline does not end it.
+        // The holds are still live, so a decline does not end the order.
         await using var reader = new OrdersDbContext(_options);
         var stored = await reader.Orders.SingleAsync(candidate => candidate.Id == order.Id);
         Assert.Equal(OrderStatus.Pending, stored.Status);
@@ -574,11 +504,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Equal(Currency, authorized.Currency);
     }
 
-    /// <summary>
-    /// The benign failure the whole two-phase arrangement buys. The sale did not
-    /// complete, so the hold on the customer's money is released and they never
-    /// see a charge — not a charge followed by a refund.
-    /// </summary>
+    /// <summary>A sale that does not complete voids the authorisation, so nothing is charged.</summary>
     [Theory]
     [InlineData(SellSeatStatus.HoldExpired, OrderStatus.Expired)]
     [InlineData(SellSeatStatus.AlreadySold, OrderStatus.Failed)]
@@ -601,11 +527,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Empty(payments.Captures);
     }
 
-    /// <summary>
-    /// One seat of two refuses for a reason that is not expiry. Nothing sold, so
-    /// the order is <c>Failed</c> and the customer is charged nothing — which is
-    /// no longer a refund for seats that were kept, because none were.
-    /// </summary>
+    /// <summary>A non-expiry refusal: nothing sold, order Failed, nothing charged.</summary>
     [Fact]
     public async Task Confirm_WhenOneSeatIsNoLongerTheirs_ShouldFailAndChargeNothing()
     {
@@ -625,11 +547,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Empty(payments.Captures);
     }
 
-    /// <summary>
-    /// Seats sold, funds held, capture unanswered. Not an ending — the customer
-    /// has their tickets and the only thing outstanding is ours to finish — so the
-    /// order is dated as still going somewhere. See 027.
-    /// </summary>
+    /// <summary>Seats sold but the capture unanswered: AwaitingCapture, not closed.</summary>
     [Fact]
     public async Task Confirm_WhenTheCaptureGoesUnanswered_ShouldAwaitCaptureRatherThanFail()
     {
@@ -649,12 +567,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Empty(payments.Voids);
     }
 
-    /// <summary>
-    /// The resolve-on-next-touch rule that lets 027 exist without a background
-    /// job. The retry captures and nothing else: the seats are already sold, and
-    /// asking Inventory again would be round trips against the hottest rows in the
-    /// system for an answer nobody needs.
-    /// </summary>
+    /// <summary>The next confirm retries only the capture.</summary>
     [Fact]
     public async Task Confirm_WhenRetriedAfterAnUnansweredCapture_ShouldCaptureAndConfirm()
     {
@@ -685,11 +598,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Equal(2, payments.Captures.Count);
     }
 
-    /// <summary>
-    /// Seats sold and nothing held against them. Reachable only if the
-    /// authorisation went away underneath the confirm, which is exactly the shape
-    /// of problem <c>Failed</c> exists to name.
-    /// </summary>
+    /// <summary>Seats sold with no authorisation behind them ends Failed.</summary>
     [Fact]
     public async Task Confirm_WhenTheCaptureFindsNothingHeld_ShouldFailTheOrder()
     {
@@ -705,11 +614,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Equal(OrderStatus.Failed, result.Order!.Status);
     }
 
-    /// <summary>
-    /// A previous confirm captured and then failed to record the order. Carrying
-    /// on is what heals it: the sells are idempotent for the client that already
-    /// bought, and the capture answers Captured a second time.
-    /// </summary>
+    /// <summary>An earlier confirm that captured but did not record the order is healed by carrying on.</summary>
     [Fact]
     public async Task Confirm_WhenTheMoneyWasAlreadyTaken_ShouldCarryOnAndConfirm()
     {
@@ -731,16 +636,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
 
     // -- Cancel -----------------------------------------------------------
 
-    /// <summary>
-    /// Cancelling ends the order and hands both the seats and the money back.
-    /// </summary>
-    /// <remarks>
-    /// The release is 034, and it is the reversal of what this test used to pin.
-    /// 021 forbids releasing seats <i>because a hold lapsed</i> — a second
-    /// authority over expiry — and a customer deliberately cancelling is not that.
-    /// Until this changed, <c>SeatReleaseReason.Cancelled</c> had no producer at
-    /// all.
-    /// </remarks>
+    /// <summary>Cancelling ends the order and releases the seats and the money.</summary>
     [Fact]
     public async Task Cancel_ShouldEndTheOrderAndHandBackTheSeatsAndTheMoney()
     {
@@ -766,10 +662,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A confirm has sold the seats and this client owns them. Voiding now would
-    /// take back the money for a sale that stands, so this touches neither the
-    /// money nor the order and lets the retry find the order as it actually
-    /// stands. 077.
+    /// A confirm of this order has sold the seats: the cancel touches neither the money nor the order.
     /// </summary>
     [Fact]
     public async Task Cancel_WhenAConfirmHasSoldTheSeats_ShouldLeaveTheMoneyAndTheOrderAlone()
@@ -792,11 +685,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Equal(OrderStatus.Pending, stored.Status);
     }
 
-    /// <summary>
-    /// A seat sold to somebody else is not a confirm of this order winning — the
-    /// client's hold lapsed and another buyer took it — so it does not stop the
-    /// cancellation, and the money goes back.
-    /// </summary>
+    /// <summary>A seat sold to someone else does not stop the cancellation; the money goes back.</summary>
     [Fact]
     public async Task Cancel_WhenASeatWasSoldToSomebodyElse_ShouldStillCancelAndVoid()
     {
@@ -817,11 +706,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Unreachable by any interleaving of this module's own confirm and cancel —
-    /// money is captured only after every seat sold, and a sold seat answers
-    /// <see cref="ReleaseSeatStatus.SoldToYou"/> before the void is asked. Kept
-    /// as a defence: if Payments ever says the money was taken, a cancellation
-    /// is not written over it.
+    /// Defensive: if Payments says the money was taken, no cancellation is written over it.
     /// </summary>
     [Fact]
     public async Task Cancel_WhenTheMoneyHasAlreadyBeenTaken_ShouldSayLostRace()
@@ -879,10 +764,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Equal(OrderStatus.Confirmed, result.Order!.Status);
     }
 
-    /// <summary>
-    /// Ending an order frees the client to start another one for the same event,
-    /// which is what makes the partial index partial.
-    /// </summary>
+    /// <summary>Ending an order frees the client to open another for the same event.</summary>
     [Fact]
     public async Task Checkout_AfterCancelling_ShouldBeAllowedAgain()
     {
@@ -913,15 +795,11 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Equal(CheckoutOutcome.Created, result.Outcome);
     }
 
-    // -- Confirm and cancel together (DECISIONS 077) ----------------------
+    // -- Confirm and cancel together --------------------------------------
 
     /// <summary>
-    /// The interleaving 077 closes. A confirm has authorised and sold, and before
-    /// it captures, a cancel runs start to finish. When cancel voided first, it
-    /// released the authorisation the capture was about to take: the seats stayed
-    /// sold, the capture found nothing, and a customer held seats nobody paid for.
-    /// Now cancel asks about the seats first, hears that its own confirm sold
-    /// them, and leaves the money where it is.
+    /// A cancel runs between the confirm's sale and its capture. It sees its own confirm sold the
+    /// seats and leaves the money alone.
     /// </summary>
     [Fact]
     public async Task Cancel_BetweenAConfirmsSaleAndItsCapture_ShouldLeaveTheSaleToBePaidFor()
@@ -942,8 +820,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         await using var context = new OrdersDbContext(_options);
         var confirm = await ServiceFor(context, seats, payments: payments).ConfirmAsync(clientId, order.Id);
 
-        // The invariant, stated before the outcomes: sold seats and taken money
-        // go together.
+        // Sold seats and taken money go together.
         Assert.All(seats.Seats.Values, seat => Assert.Equal(SeatState.Sold, seat));
         Assert.Equal(MoneyState.Captured, payments.Money);
 
@@ -956,10 +833,8 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The other side of the same race: the cancel lands after the confirm has
-    /// authorised but before it sells. The seats go back first, so the sale finds
-    /// nothing to sell, and both halves release the money. Nothing sold, nothing
-    /// taken, and the cancel's ending is the one written.
+    /// A cancel between the authorisation and the sale: the seats go back first, the sale finds
+    /// nothing, and both sides release the money.
     /// </summary>
     [Fact]
     public async Task Cancel_BetweenAConfirmsAuthorisationAndItsSale_ShouldLeaveNothingSoldAndNothingTaken()
@@ -1006,9 +881,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
             payments ?? new FakeOrderPayments(),
             new FixedTimeProvider(at ?? Now));
 
-    /// <summary>
-    /// A pending order with the given number of seats, committed and detached.
-    /// </summary>
+    /// <summary>A committed, detached pending order with the given number of seats.</summary>
     private async Task<Order> AnOpenOrderAsync(Guid clientId, int seatCount)
     {
         var seats = new FakeSeatReservations();
@@ -1030,10 +903,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         public override DateTimeOffset GetUtcNow() => new(utcNow, TimeSpan.Zero);
     }
 
-    /// <summary>
-    /// Catalog, faked at its published contract. Priced and on sale unless a test
-    /// says otherwise.
-    /// </summary>
+    /// <summary>Catalog faked at its contract: priced and on sale unless a test says otherwise.</summary>
     private sealed class FakeEventPricing : IEventPricing
     {
         public EventPricingResponse Response { get; set; } =
@@ -1045,11 +915,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
             Task.FromResult(Response);
     }
 
-    /// <summary>
-    /// Inventory, faked at its published contract. Holds succeed and sales
-    /// succeed unless a test names a seat that should not — and, as the contract
-    /// promises, one refusing seat means none sell.
-    /// </summary>
+    /// <summary>Inventory faked at its contract. One refusing seat means none sell.</summary>
     private sealed class FakeSeatReservations : ISeatReservations
     {
         public Dictionary<Guid, DateTime> HoldsExpiringAt { get; } = [];
@@ -1122,11 +988,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         }
     }
 
-    /// <summary>
-    /// Payments, faked at its published contract. Everything works unless a test
-    /// says otherwise, and each answer is settable between calls so a test can
-    /// make the first capture hang and the retry succeed.
-    /// </summary>
+    /// <summary>Payments faked at its contract; each answer can be changed between calls.</summary>
     private sealed class FakeOrderPayments : IOrderPayments
     {
         public AuthorizePaymentStatus AuthorizeWith { get; set; } = AuthorizePaymentStatus.Authorized;
@@ -1182,10 +1044,8 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Inventory as state rather than as canned answers, for one client's order:
-    /// a sale moves every held seat to sold or none, and a release answers
-    /// whatever the seat's state now is. That is what lets a cancel be run
-    /// between two of a confirm's steps and the ending read off the seats.
+    /// Inventory as state for one order, so a cancel can run between two of a confirm's steps
+    /// and the ending can be read off the seats.
     /// </summary>
     private sealed class StatefulSeatReservations(Order order) : ISeatReservations
     {
@@ -1249,10 +1109,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         }
     }
 
-    /// <summary>
-    /// Payments as state: one attempt, whose authorisation a void releases and a
-    /// capture takes — and a capture of something voided finds nothing to take.
-    /// </summary>
+    /// <summary>Payments as state: one attempt that a void releases and a capture takes.</summary>
     private sealed class StatefulOrderPayments : IOrderPayments
     {
         public MoneyState Money { get; private set; } = MoneyState.Nothing;

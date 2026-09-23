@@ -1,23 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The outside of the hexagon: ports, adapters, and thin use-case
-       orchestration. This is the ONLY Inventory project allowed to reference
-       infrastructure packages. -->
+  <!-- The outside of the hexagon: ports, adapters and use cases. The only Inventory
+       project allowed to reference infrastructure packages. -->
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
-  <!-- The outcome-to-status mapping is an implementation detail of the HTTP
-       layer, so it stays internal — but it is also the part most worth testing,
-       since it decides ~18 responses and a wrong one is invisible until a client
-       hits it. Testing it directly beats standing up a host to infer it. -->
-  <!-- The integration tests reach the outbox's internals for the same reason: the
-       dispatcher and the domain-to-contract translation are implementation details
-       that nothing outside this module may name, and they are also where the
-       at-least-once guarantees actually live. Driving one dispatcher tick directly
-       beats starting a hosted service and waiting, which would make a test about a
-       delivery mechanism fail in exactly the way a broken delivery mechanism does. -->
+  <!-- Tests reach internals such as the HTTP result mapping and one dispatcher tick. -->
   <ItemGroup>
     <InternalsVisibleTo Include="Encore.Modules.Inventory.UnitTests" />
     <InternalsVisibleTo Include="Encore.Modules.Inventory.IntegrationTests" />
@@ -39,11 +29,7 @@
     <PackageReference Include="StackExchange.Redis" Version="3.2.1" />
   </ItemGroup>
 
-  <!-- The startup migrator and the Npgsql/history-table wiring, shared since
-       DECISIONS 058. The edge runs this way and only this way: a module names
-       this project, and this project names nothing at all — least of all a
-       module. It carries EF Core and Npgsql on purpose, which is exactly why
-       nothing zero-dependency is allowed to reach it. -->
+  <!-- Shared startup migrator and Npgsql wiring. It names no module. -->
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Shared.Persistence\Encore.Modules.Shared.Persistence.csproj" />
   </ItemGroup>

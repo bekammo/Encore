@@ -1,31 +1,22 @@
 #!/usr/bin/env bash
 #
-# Encore's chaos harness. DECISIONS 064.
-#
-# The k6 script beside this one drives the traffic and asserts the invariants.
-# It cannot break anything: k6 has no access to the Docker daemon and should not
-# have. This script owns the other half — the timeline, the faults, and reading
-# the evidence back out of Postgres afterwards — and writes one report per
-# session to load/results/.
+# Encore's chaos harness (019). k6 drives the traffic and asserts the invariants; this
+# script owns the timeline, injects the faults and reads the evidence back out of
+# Postgres, writing one report per session to load/results/.
 #
 #   bash load/chaos.sh                 every run below, in order
 #   bash load/chaos.sh redis stall     only those
-#   bash load/chaos.sh baseline        the third load configuration on its own
-#   bash load/chaos.sh orders          multi-seat orders, confirm racing cancel (080)
+#   bash load/chaos.sh baseline        the strangled baseline on its own
+#   bash load/chaos.sh orders          multi-seat orders, confirm racing cancel
 #
-# Six runs, one fault each, rather than one long run carrying all of them (the
-# sixth, orders, arrived in 080 and injects nothing: its fault is the customer). A fault's
-# aftermath is half of what it is about — a backlog, a set of unresolved payment
-# rows, a drained seat map — and a single run would feed each aftermath into the
-# next fault's measurement. Separate runs also mean a k6 threshold failing on one
-# fault does not take the other three down with it.
+# One fault per run, so one fault's aftermath (a backlog, unresolved payments, a drained
+# seat map) does not feed the next measurement, and a failed threshold does not take the
+# other runs down. The orders run injects nothing: its fault is the customer.
 #
-# Everything runs against the `strangled` profile, because one of the four faults
-# is "stop the Payments service" and that service only exists there. That makes
-# the baseline run below the third configuration 056 asked for and 061 left open.
+# Everything runs against the `strangled` profile, because stopping the Payments service
+# needs a Payments service.
 #
-# Not set -e. A k6 run that fails a threshold exits non-zero, and that is a
-# result this script has to record rather than an error it should die on.
+# Not set -e: a k6 run that fails a threshold is a result to record, not an error.
 set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
@@ -36,25 +27,16 @@ REPORT="${RESULTS_DIR}/chaos-${STAMP}.md"
 
 COMPOSE="docker compose --profile strangled"
 
-# Every table the runs touch, truncated between them so that each run's evidence
-# is about that run. Ordered parents-first with CASCADE doing the rest.
-#
-# The gateway ledger is here since 073. 066 added the table after this list was
-# written, so the first session to run against it let the ledger accumulate across
-# all five runs: 950 ledger rows beside 655 payments at the end. Every join went
-# payments-to-ledger and keys are per attempt, so no reported number was wrong, but
-# a count of the ledger on its own would have been.
+# Every table the runs touch, truncated between runs so each run's evidence is its own.
+# Parents first; CASCADE does the rest. A table missing here accumulates across runs.
 TABLES='catalog.venues, catalog.events, inventory.seats, inventory.outbox_messages, notifications.notifications, orders.orders, orders.order_lines, payments.payments, payments.gateway_ledger'
 
-# The baseline pair that opens every k6 invocation. Full length for the baseline
-# run, because that one is a measurement meant to sit in 056's table; short for
-# the fault runs, where it is a warm-up and a same-day control rather than the
-# subject.
+# Short control windows for the fault runs, where they are a warm-up and a same-day
+# control. The baseline run keeps k6's full-length defaults.
 CONTROL_CONTENTION_SECONDS=15
 CONTROL_SALE_SECONDS=15
 
-# k6's own gap between scenarios. Hardcoded there; mirrored here because this
-# script has to know where the gaps are — that is where faults get injected.
+# k6's gap between scenarios, mirrored from the script: faults are injected in the gaps.
 GAP=5
 
 mkdir -p "$RESULTS_DIR"
@@ -71,26 +53,18 @@ report() {
   printf '%s\n' "$*" >> "$REPORT"
 }
 
-# One scalar or one small table out of Postgres. -A -t so the output is the
-# answer and nothing else, which is what makes it safe to paste into the report.
+# One scalar or small table from Postgres; -At leaves only the answer.
 psql_q() {
   $COMPOSE exec -T postgres psql -U encore -d encore -At -F' | ' -c "$1" 2>/dev/null
 }
 
-# k6 prints a progress block every second, and the first session's report was
-# 3,500 lines of it around 200 lines of results. Only the digest and the banner
-# are worth keeping.
+# Drops k6's per-second progress lines, which otherwise bury the results.
 k6_digest() {
   grep -vE '^running \(|^ *(contention|flash_sale|redis_[a-z_]+|payments_[a-z_]+|stall_sale|reconciler_checkout|orders_mixed|Run) +(•|✓|↓|\[)| Container |^ *$' "$1"
 }
 
-# A container's whole log, captured once into a file the greps then share.
-#
-# The first session called `docker compose logs` seven times while
-# reconciliation was still running, so its counts were snapshots of seven
-# different instants and disagreed with each other by a handful. They are also
-# not small: EF Core logs every command at Information, so one run of this is
-# 1.3 million lines and a single pass takes minutes.
+# Captures a container's whole log once, so every count reads the same instant. EF Core
+# logs every command, so the log is large and one pass matters.
 capture_log() {
   $COMPOSE logs "$1" --no-log-prefix > "$2" 2>/dev/null
 }
@@ -99,14 +73,9 @@ reset_data() {
   psql_q "TRUNCATE ${TABLES} RESTART IDENTITY CASCADE;" > /dev/null
 }
 
-# Brings the stack up with whatever is currently exported. Compose recreates a
-# container whose environment changed, which is the only way to move a setting
-# that is read once at startup — every knob these runs turn is one of those.
-#
-# Built once per session rather than once per run, for the reason the compose
-# file gives about `--build`: a measurement of stale binaries is worse than a
-# stale test, because it is compared against later. Once is enough, because the
-# source cannot change between the runs of one session.
+# Brings the stack up with the current exports. Compose recreates a container whose
+# environment changed, which is how a startup-only setting moves. Built once per
+# session: the source cannot change between runs, and a stale build is a wrong baseline.
 BUILT=0
 
 bring_up() {
@@ -121,12 +90,8 @@ bring_up() {
   $COMPOSE up -d --wait postgres redis payments-api api-strangled
 }
 
-# Waits for the marker venue k6's setup() writes as its last act, and echoes
-# nothing. The clock starts when this returns.
-#
-# Pinning the timeline to the end of setup rather than to the start of the
-# container is the difference between injecting into the window that was planned
-# and injecting into whichever window seat-map creation happened to leave running.
+# Waits for the marker venue k6's setup() writes last. The clock starts when this
+# returns, so faults land in the planned window rather than wherever setup left off.
 await_marker() {
   local marker="$1"
   local waited=0
@@ -186,9 +151,8 @@ money_evidence() {
 # The runs
 # ---------------------------------------------------------------------------
 
-# The third load configuration, and the only run here with no fault in it. Same
-# script, same parameters and same seat pools as the two configurations in 056,
-# pointed at the pair of processes instead of the monolith.
+# The only run with no fault: the baseline scenarios against the strangled pair, with the
+# same parameters as the monolith's baseline (019).
 run_baseline() {
   say 'run 1/5 — baseline on the extracted configuration'
   reset_data
@@ -201,7 +165,7 @@ run_baseline() {
 
   report '## Baseline — the extracted configuration, no fault'
   report ''
-  report 'The third configuration 056 asked for: the same 50 VUs on 5 seats then 100 VUs'
+  report 'The third load configuration (019): the same 50 VUs on 5 seats then 100 VUs'
   report 'on 500 seats, against `api-strangled` + `payments-api` rather than the monolith.'
   report 'Neither scenario touches Orders or Payments, so what this measures is the cost of'
   report 'the arrangement rather than of the extraction itself.'
@@ -217,17 +181,12 @@ run_baseline() {
   outbox_evidence
 }
 
-# Fault 3 in the brief, run second because it is the cheapest to set up.
+# Fault 3. Redis stopped between two identical windows; stopping it in the gap keeps one
+# window from blending both states into one number.
 #
-# Two windows of the identical shape with the lock present in one and absent in
-# the other. Redis is stopped in the gap between them, which is why the gap
-# exists: an outage injected inside a window measures a mixture of both states
-# and calls it one number.
-#
-# Since 076 a purchase takes no lock and a hold takes one (the client lock), so the
-# buy latencies here are a control and the hold latencies are the whole of what
-# losing Redis costs. That is also the reading that measures 074's FailFast: about
-# 1,000 ms per hold means it did not take, and roughly baseline means it did.
+# A purchase takes no lock and a hold takes the client lock (004, 005), so buy latencies
+# are the control and hold latencies are what losing Redis costs. About 1,000 ms per hold
+# would mean FailFast is not in effect (019).
 run_redis() {
   say 'run 2/5 — Redis stopped mid-run'
   reset_data
@@ -251,8 +210,7 @@ run_redis() {
   await_marker "$marker" || { wait $k6pid; return 1; }
   local t0=$SECONDS
 
-  # Two seconds into the gap, so the stop lands between the windows however the
-  # two clocks drift.
+  # Two seconds into the gap, so the stop lands between windows despite clock drift.
   sleep_until $((down_start - GAP + 2)) "$t0"
   say 'stopping redis'
   $COMPOSE stop redis
@@ -283,10 +241,8 @@ run_redis() {
 
 # Fault 1. Stop the Payments service between two windows of real checkouts.
 #
-# The reconciliation half needs authorisations that reached the gateway and lost
-# their answer, which a stopped service cannot produce — a request that never
-# arrives leaves no row to reconcile. PAYMENTS_TIMEOUT_RATE is what produces
-# those, and it is why this run needs its own compose environment.
+# Reconciliation needs authorisations that reached the gateway and lost their answer,
+# which a stopped service cannot produce; PAYMENTS_TIMEOUT_RATE produces them (014).
 run_payments() {
   say 'run 3/5 — payments-api stopped mid-flash-sale'
   reset_data
@@ -294,8 +250,7 @@ run_payments() {
   export PAYMENTS_TIMEOUT_RATE=0.35
   export RECONCILER_MIN_AGE=00:00:20
   export RECONCILER_POLL=00:00:05
-  # The reconciler reports an unanswered lookup and a lost xmin race at Debug,
-  # and both are things this run is trying to count.
+  # The reconciler logs an unanswered lookup and a lost xmin race at Debug; both are counted.
   export ENCORE_LOG_LEVEL=Debug
   bring_up 'payments fault'
   reset_data
@@ -328,7 +283,7 @@ run_payments() {
   report '## Fault 1 — payments-api stopped mid-flash-sale'
   report ''
   report 'Two windows of one-seat checkouts, with the Payments service stopped for the'
-  report 'second. 061 claims that an unreadable answer becomes `TimedOut`, that the order'
+  report 'second. 018 claims that an unreadable answer becomes `TimedOut`, that the order'
   report 'stays `Pending` and that no seat is sold against funds nobody holds. This asks'
   report 'that of a service that is genuinely not there, under load, rather than of a'
   report 'stubbed handler.'
@@ -366,8 +321,7 @@ run_payments() {
 
   report ''
   report '```'
-  # Named for the run. Fault 2 captures payments-api as well, and when both used
-  # one filename the file on disk after a full session was fault 2's (073).
+  # Named for the run: fault 2 captures payments-api too, and a shared name was overwritten.
   local pay="${RESULTS_DIR}/log-payments-api-payments-${STAMP}.txt"
   capture_log payments-api "$pay"
 
@@ -380,15 +334,10 @@ run_payments() {
   report '```'
 }
 
-# Fault 4. Block the outbox's consumer rather than the dispatcher itself.
-#
-# There is no switch for "stall the dispatcher", and adding one to production code
-# for a chaos run would be the tail wagging the dog. Locking
-# notifications.notifications is the surgical version: SeatSold is the only event
-# with a registered handler, so its delivery blocks on the consumer's INSERT while
-# the seat path — a different schema, a different table — carries on untouched.
-# That isolates delivery from the request path, which is exactly the separation
-# 056 had to infer from two whole runs.
+# Fault 4. Block the outbox's consumer rather than the dispatcher, which has no switch and
+# should not get one for a chaos run. Locking notifications.notifications stalls SeatSold's
+# delivery (the only event with a handler) while the seat path, on another table, carries
+# on: delivery separated from the request path (016).
 run_stall() {
   say 'run 4/5 — the outbox dispatcher stalled behind its consumer'
   reset_data
@@ -414,11 +363,9 @@ run_stall() {
   sleep_until "$stall_at" "$t0"
   say "locking notifications.notifications for ${stall_seconds}s"
 
-  # The lock lives for as long as the transaction does, so the sleep has to
-  # happen inside psql rather than beside it. 20s is deliberately under Npgsql's
-  # 30s command timeout: the question here is what a blocked dispatcher does to a
-  # backlog, and a longer stall would answer a different question about retries
-  # and backoff instead.
+  # The lock lives as long as the transaction, so the sleep runs inside psql. 20s stays
+  # under Npgsql's 30s command timeout: this asks what a stall does to the backlog, not
+  # how retries and backoff behave.
   psql_q "BEGIN; LOCK TABLE notifications.notifications IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(${stall_seconds}); COMMIT;" > /dev/null &
   local lockpid=$!
 
@@ -434,12 +381,8 @@ run_stall() {
   report ''
   report '```'
 
-  # One round trip per sample, not two. The first session issued two `docker
-  # compose exec` calls per line and each costs about a second, so its samples
-  # were three seconds apart on paper and five in fact — which is why its "lock
-  # released" line landed seventeen seconds after the lock actually released.
-  # The timestamps in notifications are the numbers to trust; this loop is for
-  # watching the shape, and it should at least not lie about when it looked.
+  # One round trip per sample: each `compose exec` costs about a second and skews the
+  # timestamps. The notifications timestamps are the numbers to trust; this shows the shape.
   local expires=$((stall_at + stall_seconds))
   local samples=0
 
@@ -451,8 +394,7 @@ run_stall() {
 
   wait $lockpid
 
-  # When the lock was scheduled to expire, not when this loop got back to
-  # noticing. pg_sleep is exact and the sampling loop is not.
+  # When the lock was due to expire: pg_sleep is exact, the sampling loop is not.
   say 'lock released'
   report "the lock was released at t+${expires}s"
   report '```'
@@ -461,14 +403,9 @@ run_stall() {
   report ''
   report '```'
 
-  # 073 found the bug in this criterion: pending reads zero only once arrivals
-  # stop, and a run where 100 sales a second keep landing never reaches that —
-  # the loop would call the backlog undrained forever, which is a fact about the
-  # sale continuing and not about the stall's aftermath. "Drained" is asked as a
-  # question about age instead: is anything undelivered older than 5s, which is
-  # MaxBatchDuration's own budget and comfortably above the ~1s a message takes
-  # in steady state (PollInterval, then DeliveryTimeout if it is unlucky). A
-  # message younger than that is still in ordinary flight, not backlog.
+  # Drained means nothing undelivered is older than 5s (MaxBatchDuration), not that pending
+  # is zero, which never happens while sales keep landing. Steady-state delivery takes
+  # about 1s, so a younger message is in flight, not backlog.
   local drained=-1
   local counts pending stale
 
@@ -513,11 +450,8 @@ run_stall() {
   outbox_evidence
 }
 
-# Fault 2. 061's single-owner rule, deliberately broken.
-#
-# Written in 064 to measure what the missing lease cost. The lease exists since
-# 074 (a transaction-scoped advisory lock per sweep), so this run now asks whether
-# it holds: two reconcilers, and the expectation is zero xmin races lost.
+# Fault 2. Two reconcilers over one table, the single-owner rule broken on purpose. Each
+# sweep takes an advisory lock (014), so the expectation is zero lost xmin races.
 run_reconcilers() {
   say 'run 5/5 — two reconcilers over one table'
   reset_data
@@ -526,8 +460,7 @@ run_reconcilers() {
   export RECONCILER_MIN_AGE=00:00:20
   export RECONCILER_POLL=00:00:05
   export RECONCILER_EVERYWHERE=true
-  # The reconciler says "was resolved by something else while this sweep was
-  # asking" at Debug, and that line is the whole question here.
+  # The reconciler logs a lost race at Debug, and that line is the question here.
   export ENCORE_LOG_LEVEL=Debug
   bring_up 'two reconcilers'
   reset_data
@@ -548,9 +481,9 @@ run_reconcilers() {
 
   report '## Fault 2 — two reconcilers over one table'
   report ''
-  report '061 recorded that the reconciler must run in exactly one process, enforced by "a'
-  report 'compose setting and a comment". This run turns the setting on in both processes on'
-  report 'purpose. Since 074 each sweep takes a Postgres advisory lock first, so the question'
+  report 'The reconciler is meant to run in exactly one process, and only a compose setting'
+  report 'says so. This run turns the setting on in both processes on purpose. Each sweep'
+  report 'takes a Postgres advisory lock first (014), so the question'
   report 'is whether that lease holds: both processes settle work, none of it twice, and no'
   report 'sweep loses an xmin race.'
   report ''
@@ -566,11 +499,8 @@ run_reconcilers() {
 
   money_evidence
 
-  # Both logs captured once, first, and every count below read from the files.
-  # The first session asked the daemon seven separate times while reconciliation
-  # was still running, so its seven numbers described seven different moments and
-  # did not add up. They are large — EF Core logs every command at Information, so
-  # this is over a million lines a side — which is also why one pass matters.
+  # Both logs captured once, first, so every count below reads the same moment. Each is
+  # over a million lines, so one pass matters.
   local pay="${RESULTS_DIR}/log-payments-api-reconcilers-${STAMP}.txt"
   local mono="${RESULTS_DIR}/log-api-strangled-reconcilers-${STAMP}.txt"
 
@@ -598,13 +528,9 @@ run_reconcilers() {
   report '```'
 }
 
-# Multi-seat orders, confirmed, cancelled, and both at once. DECISIONS 080.
-#
-# No fault is injected: the customer is the fault. 076 made an order's sale all or
-# none and 077 made a cancel give the seats back before the money, and until this
-# run every checkout the rig made was one seat and nothing ever cancelled, so
-# neither had been under load. The gateway answers everything here (no timeout
-# rate), so every order has an ending that can be read back and checked.
+# Multi-seat orders: confirmed, cancelled, and both at once. No fault is injected; the
+# customer is the fault. Puts the all-or-none sale (011) and the seats-before-money cancel
+# (012) under load. The gateway answers everything, so every order has a readable ending.
 run_orders() {
   say 'orders — multi-seat checkouts, confirm racing cancel'
   reset_data
@@ -628,8 +554,8 @@ run_orders() {
   report ''
   report 'One to four seats per order, then a confirm, a cancel, or both sent at once.'
   report 'k6 can only see answers. What has to hold is about rows: no order partly sold'
-  report '(076), no order whose seats sold without the money being taken or held, and no'
-  report 'money taken for seats that did not sell (077). Those are read below.'
+  report '(011), no order whose seats sold without the money being taken or held, and no'
+  report 'money taken for seats that did not sell (012). Those are read below.'
   report ''
   report "k6 exit status: ${k6status} (0 means every invariant it asserts held)"
   report ''
@@ -729,7 +655,7 @@ report "# Encore chaos session — ${STAMP}"
 report ''
 report 'Produced by `load/chaos.sh`. Every number below was read out of the running system:'
 report "the k6 digests are each run's own output, and everything in a \`psql\` block was"
-report 'queried from Postgres after the fault. DECISIONS 064 is the write-up.'
+report 'queried from Postgres after the fault. DECISIONS 019 is the write-up.'
 report ''
 report "Runs in this session: ${RUNS[*]}"
 

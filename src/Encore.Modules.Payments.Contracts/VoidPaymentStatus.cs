@@ -9,24 +9,17 @@ public enum VoidPaymentStatus
     Voided = 0,
 
     /// <summary>
-    /// There is nothing held against this order to release — no attempt, one that
-    /// was declined, or one already voided. Not an error for a caller unwinding a
-    /// failed confirm: it means there is nothing to unwind, which is why a repeated
-    /// void lands here rather than on a failure.
+    /// Nothing is held against this order, including a repeated void. Not an error.
     /// </summary>
     NoAuthorization = 1,
 
     /// <summary>
-    /// The money has already been taken. Releasing it would be a refund, which
-    /// this system does not have, so the caller is told plainly rather than being
-    /// given a success that moved nothing.
+    /// The money has already been taken; releasing it would be a refund.
     /// </summary>
     AlreadyCaptured = 2,
 
     /// <summary>
-    /// The gateway did not answer. The hold stays recorded and will lapse at the
-    /// gateway on its own, which is the benign half of this design: an
-    /// authorisation nobody captures costs the customer nothing.
+    /// The gateway did not answer. The hold lapses at the gateway on its own.
     /// </summary>
     TimedOut = 3
 }

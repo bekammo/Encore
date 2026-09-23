@@ -6,15 +6,9 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Orders.IntegrationTests;
 
 /// <summary>
-/// Proves Orders' schema enforces what the module is relying on it to enforce.
+/// Orders' schema enforces what the module relies on, above all the partial unique index
+/// whose SQL filter no compiler checks.
 /// </summary>
-/// <remarks>
-/// The partial unique index is the one that matters. It is the real guard
-/// against a retried <c>POST /orders</c> becoming two orders, and it is
-/// expressed as a raw SQL filter string that no compiler checks against
-/// <see cref="OrderStatus"/> — so a wrong literal produces a silently different
-/// index rather than a build error. These tests are what would catch that.
-/// </remarks>
 public sealed class OrdersSchemaTests : IAsyncLifetime
 {
     private static readonly DateTime PlacedAt = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
@@ -38,9 +32,7 @@ public sealed class OrdersSchemaTests : IAsyncLifetime
 
         await using var context = new OrdersDbContext(_options);
 
-        // Migrate rather than EnsureCreated: this also proves the generated
-        // migration applies against real Postgres, including that it does not
-        // try to create the xmin system column.
+        // Migrate rather than EnsureCreated, so the real migration is exercised.
         await context.Database.MigrateAsync();
     }
 
@@ -55,11 +47,7 @@ public sealed class OrdersSchemaTests : IAsyncLifetime
         Assert.Empty(await context.Database.GetPendingMigrationsAsync());
     }
 
-    /// <summary>
-    /// The guard that makes a retried checkout safe. Two pending orders for one
-    /// client at one event must be impossible at the database, not merely
-    /// checked for in code — two requests can both pass a check.
-    /// </summary>
+    /// <summary>Two pending orders for one client at one event are impossible at the database.</summary>
     [Fact]
     public async Task SecondPendingOrder_ForSameClientAndEvent_ShouldBeRefused()
     {
@@ -78,10 +66,7 @@ public sealed class OrdersSchemaTests : IAsyncLifetime
         await Assert.ThrowsAsync<DbUpdateException>(() => second.SaveChangesAsync());
     }
 
-    /// <summary>
-    /// The index is partial, and the partiality is the point: once an order has
-    /// ended, the customer may start another for the same event.
-    /// </summary>
+    /// <summary>Once an order has ended, the client may open another for the same event.</summary>
     [Theory]
     [InlineData(OrderStatus.Confirmed)]
     [InlineData(OrderStatus.Cancelled)]
@@ -122,11 +107,7 @@ public sealed class OrdersSchemaTests : IAsyncLifetime
         Assert.Equal(2, await context.Orders.CountAsync(order => order.ClientId == clientId));
     }
 
-    /// <summary>
-    /// Confirm and cancel arriving together really do race this row, which is
-    /// why it carries a concurrency token at all. The second writer must lose
-    /// rather than overwrite.
-    /// </summary>
+    /// <summary>Confirm and cancel racing one row: the second writer loses rather than overwrites.</summary>
     [Fact]
     public async Task ConcurrentWrites_ToOneOrder_ShouldBeRefusedForTheLoser()
     {

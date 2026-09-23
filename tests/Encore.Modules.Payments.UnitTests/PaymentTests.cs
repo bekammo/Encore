@@ -3,18 +3,9 @@ using Encore.Modules.Payments.Models;
 namespace Encore.Modules.Payments.UnitTests;
 
 /// <summary>
-/// The payment state machine: what each transition permits, what it refuses, and
-/// the two transitions that are deliberately idempotent. Time is passed in rather
-/// than read, as it is for <c>Seat</c>, so nothing here touches a clock or a
-/// database.
+/// The payment state machine: what each transition permits and refuses, and the two
+/// idempotent ones. Time is passed in; no clock, no database.
 /// </summary>
-/// <remarks>
-/// The shape of this class is <c>DECISIONS.md</c> 029: <see cref="Payment"/> gets
-/// factory construction and guarded transitions because it has genuine single-row
-/// invariants, while staying in a flat module with no ports and no separate domain
-/// assembly. These tests are what make "only an authorised payment may be
-/// captured" a fact rather than a comment.
-/// </remarks>
 public class PaymentTests
 {
     private static readonly Guid PaymentId = Guid.Parse("11111111-1111-1111-1111-111111111111");
@@ -31,10 +22,7 @@ public class PaymentTests
 
     private static readonly DateTime Later = T0.AddSeconds(3);
 
-    /// <summary>
-    /// Long enough after <see cref="Later"/> to stand for "and then somebody went
-    /// and asked the gateway what had actually happened".
-    /// </summary>
+    /// <summary>Later still: when reconciliation asked the gateway what happened.</summary>
     private static readonly DateTime MuchLater = T0.AddMinutes(10);
 
     private static Payment Pending() =>
@@ -152,11 +140,7 @@ public class PaymentTests
         Assert.Equal(GatewayReference, payment.GatewayReference);
     }
 
-    /// <summary>
-    /// An authorisation is not an ending. <c>ResolvedAt</c> marks the point after
-    /// which nothing more can happen to this attempt, and funds being held is
-    /// precisely the state where something still can — a capture or a void.
-    /// </summary>
+    /// <summary>An authorisation is not an ending: a capture or void is still to come.</summary>
     [Fact]
     public void Authorize_ShouldNotResolveTheAttempt()
     {
@@ -202,12 +186,7 @@ public class PaymentTests
         Assert.Equal(Later, payment.ResolvedAt);
     }
 
-    /// <summary>
-    /// A decline is the one ending that definitively moved no money, which is why
-    /// it does not hold the order's one live-attempt slot: the customer may try
-    /// again with a different card, and that is a new attempt with a new key.
-    /// See <c>DECISIONS.md</c> 030.
-    /// </summary>
+    /// <summary>A decline moved no money, so it does not hold the order's live slot.</summary>
     [Fact]
     public void Decline_ShouldNotLeaveTheAttemptLive()
     {
@@ -239,12 +218,7 @@ public class PaymentTests
         Assert.Equal(Later, payment.ResolvedAt);
     }
 
-    /// <summary>
-    /// The load-bearing half of <c>DECISIONS.md</c> 031. A timed-out authorisation
-    /// may or may not be holding funds, so the attempt stays live and keeps its
-    /// key — the key is the only thing that makes the retry safe against a gateway
-    /// that did receive the first call.
-    /// </summary>
+    /// <summary>A timed-out authorisation stays live and keeps its key.</summary>
     [Fact]
     public void TimeOut_ShouldStayLiveAndKeepTheIdempotencyKey()
     {
@@ -254,12 +228,7 @@ public class PaymentTests
         Assert.Equal(Key, payment.IdempotencyKey);
     }
 
-    /// <summary>
-    /// A capture that times out leaves the payment
-    /// <see cref="PaymentStatus.Authorized"/>, because that is still exactly what
-    /// is true: the funds are held and nothing has captured them. Only an
-    /// authorisation can time out into <see cref="PaymentStatus.TimedOut"/>.
-    /// </summary>
+    /// <summary>Only an authorisation can time out into TimedOut; a capture timeout stays Authorized.</summary>
     [Fact]
     public void TimeOut_WhenAuthorized_ShouldRefuse()
     {
@@ -284,11 +253,7 @@ public class PaymentTests
         Assert.Equal(Later.AddSeconds(30), payment.AttemptedAt);
     }
 
-    /// <summary>
-    /// The retry reuses the row, and therefore the key. A second row would need a
-    /// second key, and a second key against a gateway that did receive the first
-    /// call is a double authorisation.
-    /// </summary>
+    /// <summary>The retry reuses the row, and therefore the key.</summary>
     [Fact]
     public void Retry_ShouldKeepTheIdempotencyKey()
     {
@@ -318,14 +283,8 @@ public class PaymentTests
     // -- Reconciliation ---------------------------------------------------
 
     /// <summary>
-    /// The three transitions below are what <c>DECISIONS.md</c> 031 left unbuilt:
-    /// a timed-out attempt is live forever until somebody establishes what the
-    /// gateway actually did, and nothing could establish it. Each one records an
-    /// answer that was <i>looked up</i> rather than one this module was told, which
-    /// is why they are separate methods rather than loosened guards on
-    /// <see cref="Payment.Authorize"/>, <see cref="Payment.Decline"/> and
-    /// <see cref="Payment.Void"/>. Loosening those would let the ordinary path
-    /// write a settled answer it never actually received.
+    /// Reconciliation transitions record an answer looked up at the gateway. Separate methods,
+    /// so the ordinary path cannot write an answer it never received.
     /// </summary>
     [Fact]
     public void ResolveAsVoided_WhenTimedOut_ShouldReleaseTheFundsItFound()
@@ -339,11 +298,7 @@ public class PaymentTests
         Assert.False(payment.IsLive);
     }
 
-    /// <summary>
-    /// The reference is the whole point of having looked: it is what a human needs
-    /// to chase this payment at the gateway, and the row never had one because the
-    /// call that would have supplied it never came back.
-    /// </summary>
+    /// <summary>The looked-up reference is recorded, for anyone chasing the payment.</summary>
     [Fact]
     public void ResolveAsVoided_ShouldRecordTheReferenceItFound()
     {
@@ -356,12 +311,7 @@ public class PaymentTests
         Assert.Equal(GatewayReference, payment.GatewayReference);
     }
 
-    /// <summary>
-    /// No attempt was made here — an answer was read back — so the time the attempt
-    /// began is still the time the funds were actually held. Moving it would
-    /// misreport the payment as having happened when we found out about it, which
-    /// is exactly the confusion this path exists to clear up.
-    /// </summary>
+    /// <summary>AttemptedAt does not move: the funds were held when the original call arrived.</summary>
     [Fact]
     public void ResolveAsVoided_ShouldNotMoveTheAttemptTime()
     {
@@ -396,11 +346,7 @@ public class PaymentTests
         Assert.Equal(PaymentTransitionReason.NotTimedOut, ex.Reason);
     }
 
-    /// <summary>
-    /// The gateway received the call and refused it. This is the one route to
-    /// <see cref="PaymentStatus.Declined"/> that 031 did not reject: the decline is
-    /// a fact read back from the gateway, not a timeout being reinterpreted as one.
-    /// </summary>
+    /// <summary>A refusal read back from the gateway settles the attempt as Declined.</summary>
     [Fact]
     public void ResolveAsDeclined_WhenTimedOut_ShouldResolveTheAttempt()
     {
@@ -428,11 +374,7 @@ public class PaymentTests
         Assert.Equal(PaymentTransitionReason.NotTimedOut, ex.Reason);
     }
 
-    /// <summary>
-    /// The gateway has no record of the call, so it never arrived and nothing was
-    /// ever held. Terminal and not live, which is what releases the order's one
-    /// live slot so the customer can try again.
-    /// </summary>
+    /// <summary>No record at the gateway: Abandoned, not live, freeing the order's slot.</summary>
     [Fact]
     public void ResolveAsAbandoned_WhenTimedOut_ShouldResolveTheAttempt()
     {
@@ -445,10 +387,7 @@ public class PaymentTests
         Assert.False(payment.IsLive);
     }
 
-    /// <summary>
-    /// Nothing reached the gateway, so there is no handle to record. A reference
-    /// here would be an invention.
-    /// </summary>
+    /// <summary>Nothing reached the gateway, so no reference is recorded.</summary>
     [Fact]
     public void ResolveAsAbandoned_ShouldLeaveNoGatewayReference()
     {
@@ -487,12 +426,7 @@ public class PaymentTests
         Assert.Equal(Later.AddSeconds(1), payment.ResolvedAt);
     }
 
-    /// <summary>
-    /// Idempotent for the same reason re-holding a seat is (<c>DECISIONS.md</c>
-    /// 007): a retried confirm after a dropped response must not tell a customer
-    /// their completed payment failed. The resolution time deliberately does not
-    /// move.
-    /// </summary>
+    /// <summary>Capture is idempotent, and the resolution time does not move.</summary>
     [Fact]
     public void Capture_WhenAlreadyCaptured_ShouldBeANoOp()
     {
@@ -545,11 +479,7 @@ public class PaymentTests
         Assert.Equal(Later, payment.ResolvedAt);
     }
 
-    /// <summary>
-    /// Captured is terminal. Undoing it is a refund, which is a real operation
-    /// this system does not have, and pretending otherwise here would let a caller
-    /// believe money had come back when nothing had moved.
-    /// </summary>
+    /// <summary>A captured payment cannot be voided; that would be a refund.</summary>
     [Fact]
     public void Void_WhenCaptured_ShouldRefuse()
     {
@@ -575,12 +505,7 @@ public class PaymentTests
 
     // -- Liveness ---------------------------------------------------------
 
-    /// <summary>
-    /// The set this property describes is the set the partial unique index filters
-    /// on, and the two are pinned to each other by <c>PaymentConfiguration</c>'s
-    /// SQL literal, which no compiler checks. If this table changes, that filter
-    /// has to change with it.
-    /// </summary>
+    /// <summary>The live statuses match the SQL filter of the partial unique index.</summary>
     [Theory]
     [InlineData(PaymentStatus.Pending, true)]
     [InlineData(PaymentStatus.Authorized, true)]
@@ -594,15 +519,7 @@ public class PaymentTests
 
     // -- Identity ---------------------------------------------------------
 
-    /// <summary>
-    /// DECISIONS 045, which is 038 applied to this type. 029's case for the
-    /// factory is that a payment cannot be conjured into a state no rule approved,
-    /// and an empty Guid is exactly such a state reached through that door: an
-    /// attempt with no id cannot be addressed and collides on the primary key with
-    /// the next one, an attempt against no order has nothing to be a payment for,
-    /// and one owed by nobody cannot be scoped to a caller — which is the check
-    /// every read path in this module makes.
-    /// </summary>
+    /// <summary>Empty ids are refused at construction.</summary>
     [Fact]
     public void Create_WhenIdIsEmpty_ShouldThrow()
     {
@@ -632,20 +549,7 @@ public class PaymentTests
 
     // -- utcNow must be UTC -------------------------------------------------
 
-    /// <summary>
-    /// DECISIONS 045, which is 039 applied to this type. Every method here takes
-    /// the current instant as a parameter, which makes "this is a UTC instant" a
-    /// precondition of each of them rather than a convention upstream.
-    /// <see cref="DateTimeKind.Unspecified"/> is refused alongside
-    /// <see cref="DateTimeKind.Local"/>: a wall clock with no zone is a different
-    /// instant in London and in Los Angeles, so treating it as UTC would be a guess.
-    /// </summary>
-    /// <remarks>
-    /// Before these guards the mistake surfaced at the Npgsql boundary, several
-    /// layers from the caller that made it, as a provider error about a
-    /// timestamptz — and only for the two fields that reach a column. Now it
-    /// surfaces here, naming the parameter.
-    /// </remarks>
+    /// <summary>Every transition requires a UTC instant; <c>Local</c> and <c>Unspecified</c> are refused.</summary>
     [Theory]
     [InlineData(DateTimeKind.Local)]
     [InlineData(DateTimeKind.Unspecified)]
@@ -731,11 +635,8 @@ public class PaymentTests
     }
 
     /// <summary>
-    /// The two idempotent transitions guard the instant <i>before</i> their early
-    /// return, which is the ordering <c>Seat.Hold</c> uses and the only one worth
-    /// having: a caller passing a local clock has the same bug whether or not the
-    /// attempt happens to be settled already. Guarding after the return would
-    /// report that bug only sometimes, depending on state the caller cannot see.
+    /// The idempotent transitions check the instant before their early return, so a bad clock is
+    /// reported regardless of state.
     /// </summary>
     [Theory]
     [InlineData(DateTimeKind.Local)]
@@ -761,12 +662,7 @@ public class PaymentTests
         Assert.Equal("utcNow", exception.ParamName);
     }
 
-    /// <summary>
-    /// The reconciliation transitions take the instant on the same terms as every
-    /// other method here. They are reached from a background loop rather than from
-    /// a request, which is precisely the caller <c>Payment</c>'s own remarks name as
-    /// the reason this check lives on the aggregate and not in the adapter.
-    /// </summary>
+    /// <summary>The reconciliation transitions have the same UTC precondition.</summary>
     [Theory]
     [InlineData(DateTimeKind.Local)]
     [InlineData(DateTimeKind.Unspecified)]
@@ -804,10 +700,6 @@ public class PaymentTests
         Assert.Equal("utcNow", exception.ParamName);
     }
 
-    /// <summary>
-    /// The same wall-clock reading as <see cref="Later"/>, wearing the wrong Kind.
-    /// Same numbers, so a test that fails does so because of the Kind and nothing
-    /// else.
-    /// </summary>
+    /// <summary>The same wall-clock reading as <see cref="Later"/> with the wrong Kind.</summary>
     private static DateTime NotUtc(DateTimeKind kind) => DateTime.SpecifyKind(Later, kind);
 }

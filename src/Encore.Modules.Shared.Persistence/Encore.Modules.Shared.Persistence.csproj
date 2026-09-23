@@ -1,20 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The bootstrapping a module needs to own a schema, factored out of the five
-       copies DECISIONS 017 accepted and 058 stopped accepting.
-
-       This is not a module and must never become one. It knows what a DbContext
-       is and what a schema is; it does not know that Catalog, Orders, Payments,
-       Inventory or Notifications exist, and it holds no rule belonging to any of
-       them. That is asserted, not hoped for — see
-       tests/Encore.ArchitectureTests: this assembly is forbidden to name a
-       module or a contracts assembly, which is what keeps 017's strongest
-       objection answered rather than ignored.
-
-       No <FrameworkReference Include="Microsoft.AspNetCore.App" />, deliberately.
-       Notifications has no routes and pays no web framework to get
-       IHostedLifecycleService; a project every module references is the last
-       place to hand one back. The hosting abstractions are all this needs. -->
+  <!-- The startup migrator and Npgsql wiring every module shares. Not a module: the
+       architecture tests forbid it to name any module or contracts assembly. -->
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.4" />
@@ -25,11 +12,7 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
-  <!-- No ProjectReference of any kind, and that is the load-bearing line.
-
-       Encore.Shared must not reach this project: it is Inventory.Domain's only
-       ProjectReference, so EF Core arriving here and travelling there is exactly
-       the back door ENCORE003 exists to shut. The edge runs the other way and
-       only the other way — modules reference this, this references nothing. -->
+  <!-- No ProjectReference: modules reference this, never the reverse, and nothing
+       zero-dependency may reach its EF Core. -->
 
 </Project>

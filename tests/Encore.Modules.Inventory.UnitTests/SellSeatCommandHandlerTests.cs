@@ -6,11 +6,8 @@ using Encore.Modules.Inventory.Ports;
 namespace Encore.Modules.Inventory.UnitTests;
 
 /// <summary>
-/// The checkout use case, driven through fake ports. The case worth reading first
-/// is <see cref="Handle_WhenSeatAlreadySoldToThisClient_ShouldReturnSold"/>: a
-/// retried checkout is a success, and the only reason the handler can tell that
-/// from somebody else's purchase is that <see cref="Seat"/> keeps the buyer's id
-/// on the row after it sells.
+/// The sell use case through fake ports. A retried purchase is a success, which the handler
+/// can tell apart from someone else's purchase because the seat keeps the buyer's id.
 /// </summary>
 public class SellSeatCommandHandlerTests
 {
@@ -99,10 +96,7 @@ public class SellSeatCommandHandlerTests
 
     // -- Idempotency for the buyer ----------------------------------------
 
-    /// <summary>
-    /// A retried or double-submitted checkout. The purchase already went through,
-    /// so reporting failure would be untrue.
-    /// </summary>
+    /// <summary>A retried or double-submitted purchase that already went through is a success.</summary>
     [Fact]
     public async Task Handle_WhenSeatAlreadySoldToThisClient_ShouldReturnSold()
     {
@@ -197,12 +191,7 @@ public class SellSeatCommandHandlerTests
         Assert.Equal(SellSeatOutcome.SeatNotFound, result.Outcome);
     }
 
-    /// <summary>
-    /// The event id on the command is checked against the seat, so a seat cannot
-    /// be bought through another event's route — and the refusal is
-    /// indistinguishable from "no such seat", so nobody can use this to discover
-    /// which seat ids exist.
-    /// </summary>
+    /// <summary>A seat under another event is reported as not found.</summary>
     [Fact]
     public async Task Handle_WhenSeatBelongsToADifferentEvent_ShouldReportNotFound()
     {
@@ -229,11 +218,7 @@ public class SellSeatCommandHandlerTests
         Assert.Equal(2, seats.GetByIdCalls);
     }
 
-    /// <summary>
-    /// The two rules meeting: this client lost the write race against their own
-    /// concurrent checkout, and the reload shows the seat already theirs. The
-    /// answer is success, not a race-loss the customer cannot act on.
-    /// </summary>
+    /// <summary>Losing a race to the client's own concurrent purchase is still a success.</summary>
     [Fact]
     public async Task Handle_WhenReloadShowsTheClientAlreadyBoughtIt_ShouldReturnSold()
     {
@@ -283,7 +268,7 @@ public class SellSeatCommandHandlerTests
         Assert.Equal(2, seats.SaveCalls);
     }
 
-    // -- All or none (DECISIONS 076) ---------------------------------------
+    // -- All or none ------------------------------------------------------
 
     [Fact]
     public async Task HandleBatch_WhenEveryHoldIsLive_ShouldSellThemAllInOneSave()
@@ -300,11 +285,8 @@ public class SellSeatCommandHandlerTests
     }
 
     /// <summary>
-    /// The case 028 left for a person to look at. Four seats sold one at a time
-    /// and the last hold had lapsed: three stayed sold and the customer was
-    /// refunded for them. Asked together, a lapsed hold means nothing sells, and
-    /// the seats that did sell in memory are read again so no later save on this
-    /// unit of work can write them.
+    /// One lapsed hold means nothing sells, and the seats sold in memory are reloaded so no later
+    /// save can write them.
     /// </summary>
     [Fact]
     public async Task HandleBatch_WhenOneHoldHasLapsed_ShouldSellNone()
@@ -340,10 +322,7 @@ public class SellSeatCommandHandlerTests
             result.Refusals);
     }
 
-    /// <summary>
-    /// A retried confirm after the sale went through. Already theirs is not a
-    /// refusal, and there is nothing to write.
-    /// </summary>
+    /// <summary>A retried confirm after the sale: already theirs, nothing to write.</summary>
     [Fact]
     public async Task HandleBatch_WhenEverySeatIsAlreadyTheirs_ShouldSucceedWithoutWriting()
     {
@@ -377,9 +356,8 @@ public class SellSeatCommandHandlerTests
     }
 
     /// <summary>
-    /// A lost race rejects the whole write, and the retry is where the batch
-    /// learns what happened: here somebody else bought one of the seats, so the
-    /// second attempt refuses and writes nothing either.
+    /// A lost race rejects the whole write; the retry finds a seat sold to someone else and
+    /// writes nothing.
     /// </summary>
     [Fact]
     public async Task HandleBatch_WhenTheRetryFindsASeatGone_ShouldSellNone()
@@ -430,12 +408,7 @@ public class SellSeatCommandHandlerTests
 
     // -- Fakes ------------------------------------------------------------
 
-    /// <summary>
-    /// Answers each load from a script: one entry per call, the last repeated.
-    /// The params constructor scripts one seat per call, which is every
-    /// single-seat test; <see cref="Holding"/> and <see cref="Loading"/> script
-    /// whole batches.
-    /// </summary>
+    /// <summary>Answers each load from a script: one entry per call, the last repeated.</summary>
     private sealed class FakeSeatRepository : ISeatRepository
     {
         private readonly IReadOnlyList<IReadOnlyList<Seat>> _loads;
@@ -492,11 +465,7 @@ public class SellSeatCommandHandlerTests
             return outcome is null ? Task.CompletedTask : Task.FromException(outcome);
         }
 
-        /// <summary>
-        /// Never called on this path: the hold cap counts holds, and selling one
-        /// releases capacity rather than consuming it. Throwing rather than
-        /// returning nothing keeps that a fact the tests would catch changing.
-        /// </summary>
+        /// <summary>Selling never consults the hold cap, so this throws.</summary>
         public Task<IReadOnlyCollection<Guid>> FindLiveHoldsAsync(
             Guid clientId,
             Guid eventId,
@@ -504,11 +473,7 @@ public class SellSeatCommandHandlerTests
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Selling does not consult the hold cap.");
 
-        /// <summary>
-        /// The sweep's query, and no handler makes it. Throwing rather than
-        /// returning an empty list, so a handler that quietly grew a dependency on
-        /// the sweep's candidate list fails a test instead of passing one.
-        /// </summary>
+        /// <summary>The sweep's query; no handler calls it, so it throws.</summary>
         public Task<IReadOnlyList<Guid>> FindExpiredHoldsAsync(
             DateTime utcNow,
             int limit,

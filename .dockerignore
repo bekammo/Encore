@@ -1,7 +1,5 @@
-# The build context is source only. Host build output is the important
-# exclusion: bin/ and obj/ here are Windows artefacts, and letting them into a
-# Linux image gives the container a half-built tree that restores against the
-# wrong RID and fails in ways that look like code problems.
+# Source only. Host bin/ and obj/ are Windows artefacts; in a Linux image they
+# restore against the wrong RID and fail in ways that look like code problems.
 **/bin/
 **/obj/
 **/TestResults/
@@ -13,17 +11,12 @@
 # Not source, and no reason to rebuild the image when they change.
 *.md
 
-# Except this one, which stopped being documentation and became an input.
-# DECISIONS 060 gave the log an index and a test that compares the two, so the
-# suite reads DECISIONS.md at run time and the test image has to contain it.
-# Without this line the four DecisionLogTests fail in the container with
-# FileNotFoundException while passing on the host, which reads the real tree.
+# Except this one: DecisionLogTests read it at run time (020), and without it they
+# fail in the container while passing on the host.
 !DECISIONS.md
 docker-compose.yml
 .gitignore
 .gitattributes
 
-# The load harness is mounted into the k6 container at run time and is never built
-# into an image. Its summaries are measurements that grow with every run, and
-# uploading them to the daemon as build context is pure cost.
+# Mounted into k6 at run time, never built; its results grow with every run.
 load/

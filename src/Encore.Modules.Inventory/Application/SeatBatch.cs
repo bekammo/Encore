@@ -8,11 +8,7 @@ internal static class SeatBatch
     /// <summary>
     /// Refuses an empty batch or one naming a seat twice.
     /// </summary>
-    /// <remarks>
-    /// A caller bug rather than a refusal, so it throws. A repeated seat would be
-    /// counted twice against the hold cap, and Orders already refuses one before
-    /// it gets here (025).
-    /// </remarks>
+    /// <remarks>A caller bug, so it throws; a repeated seat would count twice against the cap.</remarks>
     public static void EnsureValid(IReadOnlyList<Guid> seatIds)
     {
         ArgumentNullException.ThrowIfNull(seatIds);

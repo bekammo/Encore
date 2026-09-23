@@ -7,14 +7,12 @@ namespace Encore.Modules.Inventory.Application;
 public enum ReleaseSeatOutcome
 {
     /// <summary>
-    /// The client is not holding the seat. Returned both for a hold given up now
-    /// and for one that was already gone — see <see cref="ReleaseSeatResult.Released"/>.
+    /// The client no longer holds the seat, including when it was already gone.
     /// </summary>
     Released = 0,
 
     /// <summary>
-    /// The seat is sold to somebody else, and a sale cannot be undone by
-    /// releasing. Terminal.
+    /// Sold to somebody else. Terminal.
     /// </summary>
     AlreadySold = 1,
 
@@ -25,15 +23,12 @@ public enum ReleaseSeatOutcome
     SeatNotFound = 3,
 
     /// <summary>
-    /// The seat changed underneath this attempt twice. Rare, and the honest
-    /// answer is "try again".
+    /// Lost the race twice. Retryable.
     /// </summary>
     LostRace = 4,
 
     /// <summary>
-    /// The seat is sold to this client. Terminal as well, and told apart from
-    /// <see cref="AlreadySold"/> because it means a purchase of theirs has
-    /// already gone through — see <see cref="ReleaseSeatResult.SoldToYou"/>.
+    /// Sold to this client: their own purchase has gone through.
     /// </summary>
     SoldToYou = 5
 }

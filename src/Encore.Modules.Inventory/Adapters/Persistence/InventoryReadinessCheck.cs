@@ -6,25 +6,9 @@ using Microsoft.Extensions.Options;
 namespace Encore.Modules.Inventory.Adapters.Persistence;
 
 /// <summary>
-/// Inventory's answer to <c>/health/ready</c>: can it reach its database, and is
-/// anything stuck in the outbox. <c>DECISIONS.md</c> 070.
+/// Inventory's readiness: can it reach its database, and how big is the outbox backlog.
+/// Dead letters are reported but do not make the module unready.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>The count is the ping.</b> A separate "can you connect" probe would be a second
-/// round trip proving something this query proves on its way past, and a connection
-/// that opens but cannot read is not a database anybody can serve from.
-/// </para>
-/// <para>
-/// <b>A dead letter does not make this module unready, and that is the whole
-/// judgement in this file.</b> 051 asked for a dead-letter count somewhere visible
-/// and nothing surfaced one, so a message that stopped being retried was invisible
-/// until somebody ran a query — which in 064 is exactly what happened. But taking a
-/// host out of rotation because one <c>SeatSold</c> never reached Notifications would
-/// convert a message nobody read into a request path nobody can reach. It is
-/// reported, loudly, in the detail line; it is not a failure.
-/// </para>
-/// </remarks>
 internal sealed class InventoryReadinessCheck(
     InventoryDbContext context,
     IOptions<OutboxOptions> outboxOptions) : IReadinessCheck
@@ -42,10 +26,7 @@ internal sealed class InventoryReadinessCheck(
 
         try
         {
-            // One round trip for both numbers, over the partial index that already
-            // covers undelivered rows (051). GroupBy(_ => 1) is the shape that makes
-            // EF emit a single aggregate rather than two queries; an empty backlog
-            // produces no row at all, which is the zero case below.
+            // One aggregate query for both counts; an empty backlog returns no row.
             var backlog = await _context.OutboxMessages
                 .Where(message => message.ProcessedAt == null)
                 .GroupBy(_ => 1)
@@ -65,9 +46,7 @@ internal sealed class InventoryReadinessCheck(
         }
         catch (Exception ex)
         {
-            // Deliberately broad. This method's contract is that it answers rather
-            // than throws, because an exception escaping here would turn the
-            // readiness endpoint itself into the thing that is down.
+            // Broad on purpose: a readiness check answers, it does not throw.
             return ReadinessResult.Failed($"inventory database unreachable: {ex.Message}");
         }
     }

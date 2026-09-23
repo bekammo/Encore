@@ -4,12 +4,6 @@ namespace Encore.Modules.Inventory.Ports;
 /// The result of trying to take a distributed lock: an outcome, plus the
 /// ownership token when — and only when — the lock was actually taken.
 /// </summary>
-/// <remarks>
-/// Constructed through the static members rather than the constructor, so that
-/// "only an acquired lock carries a token" is a fact of the type rather than a
-/// convention every call site has to remember. Mirrors the shape of the
-/// Application layer's result types for the same reason.
-/// </remarks>
 /// <param name="Outcome">What happened.</param>
 /// <param name="Token">
 /// The ownership token to release with. Non-null exactly when

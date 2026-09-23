@@ -7,40 +7,19 @@ using Microsoft.EntityFrameworkCore;
 namespace Encore.Modules.Orders.Endpoints;
 
 /// <summary>
-/// Minimal API endpoints for placing, reading and ending orders.
+/// Endpoints for placing, reading and ending orders. Confirm and cancel are actions, not a
+/// status a client may write.
 /// </summary>
-/// <remarks>
-/// <para>
-/// An order here is a record of what was bought. The hard part — does the seat
-/// exist, is it still free, whose is it — belongs to Inventory, and this module
-/// asks rather than deciding.
-/// </para>
-/// <para>
-/// <b>Confirm and cancel are actions, not a status field a client may PATCH.</b>
-/// 014 made the same call for seats and the reason carries: the set of endings
-/// is closed and the rules for reaching each one are not the client's to apply.
-/// A writable status would invite a client to declare an order <c>confirmed</c>
-/// without a single seat having been sold.
-/// </para>
-/// <para>
-/// Every handler is a call plus a mapping, with no branching:
-/// <see cref="OrderResults"/> owns the status decisions so they can be tested
-/// without a host.
-/// </para>
-/// </remarks>
 public static class OrderEndpoints
 {
     /// <summary>Maps the /orders route group.</summary>
     public static IEndpointRouteBuilder MapOrderEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        // Every route here acts on behalf of a client, so the filter goes on the
-        // group: an endpoint added later cannot forget it.
+        // On the group, so a route added later cannot forget the client filter.
         var orders = endpoints.MapGroup("/orders")
             .AddEndpointFilter<ClientIdEndpointFilter>();
 
-        // An empty pattern rather than "/", so the route is exactly the group
-        // prefix. "/" would append a trailing empty segment and leave whether
-        // POST /orders matches up to route normalisation rather than to this file.
+        // Empty pattern, so the route is exactly /orders.
         orders.MapPost("", CheckoutAsync)
             .WithName("Checkout")
             .WithSummary("Holds the seats and opens an order for them.");
@@ -77,11 +56,7 @@ public static class OrderEndpoints
         return OrderResults.ForCheckout(result, context.Request.Path);
     }
 
-    /// <remarks>
-    /// Reads the stored status and derives nothing. An order whose
-    /// <c>HoldsExpireAt</c> has passed still reads <c>pending</c> here, because
-    /// only Inventory can say whether those holds are really gone — see 021.
-    /// </remarks>
+    /// <remarks>Returns the stored status; only Inventory can say whether holds have lapsed.</remarks>
     private static async Task<IResult> GetAsync(
         Guid orderId,
         OrdersDbContext orders,

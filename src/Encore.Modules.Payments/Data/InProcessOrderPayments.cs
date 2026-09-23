@@ -7,26 +7,13 @@ using Npgsql;
 namespace Encore.Modules.Payments.Data;
 
 /// <summary>
-/// Serves <see cref="IOrderPayments"/> from this process, against this module's
-/// own tables and its simulated gateway.
+/// Serves <see cref="IOrderPayments"/> in process, against this module's tables and its
+/// simulated gateway.
 /// </summary>
 /// <remarks>
-/// <para>
-/// <b>It lives in <c>Data/</c> rather than an <c>Adapters/</c> folder.</b> Catalog
-/// set that precedent with <c>InProcessEventPricing</c> and the argument is the
-/// same: Inventory's <c>Adapters/</c> exists because it has ports to adapt, and
-/// borrowing the folder name here would advertise a hexagon that is not there.
-/// </para>
-/// <para>
-/// <b>The row is written before the gateway is called, every time.</b> That
-/// ordering is the whole recovery story. A crash between the two leaves a
-/// <see cref="PaymentStatus.Pending"/> row holding this order's one live slot, and
-/// the next attempt finds it and asks the gateway the same question under the same
-/// idempotency key. Calling first and writing afterwards would leave nothing
-/// behind, so the retry would invent a new key — and a new key against a gateway
-/// that did receive the first call is a second authorisation. See
-/// <c>DECISIONS.md</c> 031.
-/// </para>
+/// The row is always written before the gateway is called. After a crash in between, the
+/// next attempt finds the row and asks again under the same idempotency key instead of
+/// minting a new one, which could authorise twice.
 /// </remarks>
 internal sealed class InProcessOrderPayments(
     PaymentsDbContext payments,
@@ -54,26 +41,20 @@ internal sealed class InProcessOrderPayments(
 
         switch (payment?.Status)
         {
-            // Already paid. A confirm retried after a complete success must not
-            // charge anybody twice, so this is an answer rather than a refusal.
+            // Already paid: an answer, not a refusal.
             case PaymentStatus.Captured:
                 return AuthorizePaymentResponse.AlreadyCaptured(payment.Id);
 
-            // Funds are already held for this order. Idempotent, for the reason
-            // re-holding a seat you already hold is (007): a retry after a dropped
-            // response must get back what it already has.
+            // Already held: idempotent.
             case PaymentStatus.Authorized:
                 return AuthorizePaymentResponse.Authorized(payment.Id);
 
-            // The gateway never answered last time. Reuse the row, and therefore
-            // the key, so this asks the same question rather than a second one.
+            // No answer last time: reuse the row and its key.
             case PaymentStatus.TimedOut:
                 payment.Retry(utcNow);
                 break;
 
-            // A previous attempt was recorded and then interrupted — a crash, or a
-            // request still in flight. Either way the key is already there to be
-            // asked under, and the gateway is the one that knows.
+            // Recorded then interrupted: ask again under the existing key.
             case PaymentStatus.Pending:
                 break;
 
@@ -93,19 +74,13 @@ internal sealed class InProcessOrderPayments(
         }
         catch (DbUpdateConcurrencyException)
         {
-            // The reconciler settled this timed-out attempt while the retry above
-            // was being assembled, so the row this was about to reopen is already
-            // resolved. Must be caught before the clause below, which is for a
-            // different failure on a base type of this one — and caught at all
-            // because PaymentReconciler is the first writer of these rows that is
-            // not a request. Retriable, and honestly so: the next confirm finds no
-            // live attempt and starts a clean one.
+            // The reconciler settled this attempt meanwhile. Caught before the next clause,
+            // which filters a base type. Retryable.
             return AuthorizePaymentResponse.ConcurrentAttemptInFlight;
         }
         catch (DbUpdateException ex) when (IsDuplicateLiveAttempt(ex))
         {
-            // Two confirms for one order, racing. The index said no, which is the
-            // arrangement working; the loser must not now call the gateway.
+            // Two confirms raced; the index refused this one, which must not call the gateway.
             return AuthorizePaymentResponse.ConcurrentAttemptInFlight;
         }
 
@@ -113,8 +88,7 @@ internal sealed class InProcessOrderPayments(
             .AuthorizeAsync(payment.IdempotencyKey, payment.Amount, payment.Currency, cancellationToken)
             .ConfigureAwait(false);
 
-        // Read the clock again: the gateway is deliberately slow, and stamping an
-        // answer with the time the question was asked would misreport it.
+        // Read the clock again: the gateway is slow.
         var answeredAt = _clock.GetUtcNow().UtcDateTime;
 
         switch (outcome)
@@ -156,15 +130,13 @@ internal sealed class InProcessOrderPayments(
         var payment = await LiveAsync(request.OrderId, request.ClientId, cancellationToken)
             .ConfigureAwait(false);
 
-        // Idempotent: a retried confirm after a dropped response must not tell a
-        // customer their completed payment failed.
+        // Idempotent.
         if (payment?.Status is PaymentStatus.Captured)
         {
             return CapturePaymentResponse.Captured(payment.Id);
         }
 
-        // Pending and TimedOut land here too, and correctly: neither has a gateway
-        // reference, so there is nothing this module can ask to be captured.
+        // Includes Pending and TimedOut: neither has a gateway reference to capture.
         if (payment?.Status is not PaymentStatus.Authorized)
         {
             return CapturePaymentResponse.NoAuthorization;
@@ -176,10 +148,7 @@ internal sealed class InProcessOrderPayments(
 
         if (outcome is GatewayOutcome.TimedOut)
         {
-            // Deliberately no state change. The funds are still held and the
-            // attempt is still capturable, which is exactly what the row already
-            // says — writing TimedOut here would throw away the reference and make
-            // the retry impossible.
+            // No state change: the funds are still held and the capture can be retried.
             return CapturePaymentResponse.TimedOut(payment.Id);
         }
 
@@ -191,10 +160,7 @@ internal sealed class InProcessOrderPayments(
         }
         catch (DbUpdateConcurrencyException)
         {
-            // A cancel got to this row first. Do not call the gateway again — it
-            // has already been asked, and asking twice under the same key would
-            // only get the same answer more slowly. Read what actually happened
-            // and say that.
+            // A cancel got here first. Report what actually happened.
             await ReloadAsync(payment, cancellationToken).ConfigureAwait(false);
 
             return payment.Status is PaymentStatus.Captured
@@ -220,9 +186,7 @@ internal sealed class InProcessOrderPayments(
             return VoidPaymentResponse.AlreadyCaptured(payment.Id);
         }
 
-        // Nothing live, nothing authorised, or an attempt already voided — all of
-        // which mean the same thing to a caller unwinding a failed confirm: there
-        // is nothing to unwind.
+        // Nothing to release.
         if (payment?.Status is not PaymentStatus.Authorized)
         {
             return VoidPaymentResponse.NoAuthorization;
@@ -234,10 +198,7 @@ internal sealed class InProcessOrderPayments(
 
         if (outcome is GatewayOutcome.TimedOut)
         {
-            // Left Authorized on purpose. An authorisation nobody captures lapses
-            // at the gateway on its own, so the benign outcome needs no bookkeeping
-            // here — this is the half of 028 that makes authorise-then-sell worth
-            // its extra round trip.
+            // Left Authorized: an uncaptured authorisation lapses at the gateway on its own.
             return VoidPaymentResponse.TimedOut(payment.Id);
         }
 
@@ -249,9 +210,7 @@ internal sealed class InProcessOrderPayments(
         }
         catch (DbUpdateConcurrencyException)
         {
-            // A confirm got to this row first, and this is the race the token
-            // exists for: without it, this save would have written Voided over
-            // money that was taken.
+            // A confirm got here first; xmin stopped this writing Voided over captured money.
             await ReloadAsync(payment, cancellationToken).ConfigureAwait(false);
 
             return payment.Status is PaymentStatus.Captured
@@ -263,14 +222,8 @@ internal sealed class InProcessOrderPayments(
     }
 
     /// <summary>
-    /// Refreshes a tracked entity from the database after losing a race, so what is
-    /// read back is the winner's state rather than this request's rejected one.
+    /// Reloads a tracked entity after a lost race, so the winner's state is read back.
     /// </summary>
-    /// <remarks>
-    /// The same move <c>EfSeatRepository</c> makes for the same reason (009):
-    /// without it EF's identity map hands back the stale instance, and the answer
-    /// would be this request's wishful thinking rather than the fact.
-    /// </remarks>
     private async Task ReloadAsync(Payment payment, CancellationToken cancellationToken)
     {
         var entry = _payments.Entry(payment);
@@ -280,14 +233,8 @@ internal sealed class InProcessOrderPayments(
     }
 
     /// <summary>
-    /// The one attempt against this order that could still be holding or have taken
-    /// money, if there is one.
+    /// The live attempt for this order and client, if any. A client mismatch looks like no payment.
     /// </summary>
-    /// <remarks>
-    /// The client id is part of the predicate rather than checked afterwards, so a
-    /// mismatch is indistinguishable from no such payment — the reasoning 011 gives
-    /// for seat commands carrying an event id.
-    /// </remarks>
     private Task<Payment?> LiveAsync(Guid orderId, Guid clientId, CancellationToken cancellationToken) =>
         _payments.Payments
             .SingleOrDefaultAsync(
@@ -297,14 +244,8 @@ internal sealed class InProcessOrderPayments(
                 cancellationToken);
 
     /// <summary>
-    /// Opens a fresh attempt, with a key that names the order it belongs to.
+    /// Opens a fresh attempt. The key embeds the ids, so it is readable in gateway logs.
     /// </summary>
-    /// <remarks>
-    /// Derived from the two ids rather than random, so the key is reproducible from
-    /// the row and legible in a gateway's logs when somebody has to chase a payment
-    /// by hand. The property that actually matters — a retry asking under the same
-    /// key — comes from reusing the row, not from how the key was built.
-    /// </remarks>
     private static Payment Begin(AuthorizePaymentRequest request, DateTime utcNow)
     {
         var paymentId = Guid.NewGuid();
@@ -320,8 +261,7 @@ internal sealed class InProcessOrderPayments(
     }
 
     /// <summary>
-    /// Whether this save failed on the one-live-attempt index specifically, rather
-    /// than on some other unique constraint that would be a real bug.
+    /// Whether the save failed on the one-live-attempt index, not some other constraint.
     /// </summary>
     private static bool IsDuplicateLiveAttempt(DbUpdateException exception) =>
         exception.InnerException is PostgresException { SqlState: "23505" } postgres

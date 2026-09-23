@@ -5,14 +5,7 @@ namespace Encore.Modules.Inventory.Contracts;
 /// Each seat is answered on its own: a refused seat does not cost the client the
 /// seats that could be held.
 /// </remarks>
-/// <param name="EventId">
-/// The event every seat is expected to belong to. Checked against each seat and
-/// never trusted: a mismatch is reported as <see cref="HoldSeatStatus.SeatNotFound"/>,
-/// deliberately indistinguishable from a seat that does not exist.
-/// </param>
-/// <param name="SeatIds">
-/// The seats to hold, distinct. The hold cap is applied in this order, so when it
-/// runs out, the seats named last are the ones refused.
-/// </param>
-/// <param name="ClientId">Who is asking. Holds are per client, and so is the hold cap.</param>
+/// <param name="EventId">Checked against each seat; a mismatch is reported as not found.</param>
+/// <param name="SeatIds">Distinct. The hold cap is applied in this order.</param>
+/// <param name="ClientId">Who is asking. Holds and the cap are per client.</param>
 public sealed record HoldSeatsRequest(Guid EventId, IReadOnlyList<Guid> SeatIds, Guid ClientId);

@@ -1,18 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Cross-cutting contracts only: marker interfaces and shared abstractions
-       that more than one module needs to agree on. No logic, no infrastructure.
-
-       Zero PackageReference items is deliberate and load-bearing: every module
-       references this project, including Inventory's Domain, which is required
-       to stay free of infrastructure. If Shared picked up a dependency, that
-       dependency would reach the whole solution through the back door. -->
-
-  <!-- And this is the line that stops that being a hope. Until it was added,
-       the paragraph above described the most dangerous hole in the solution:
-       Encore.Shared is the Domain's only ProjectReference, so a package here
-       would have reached the domain without tripping anything at all.
-       See Directory.Build.targets: ENCORE001, ENCORE002, ENCORE003. -->
+  <!-- Contracts every module agrees on. No logic, no infrastructure. It is the
+       Domain's only project reference, so it opts into the same zero-dependency
+       rules (ENCORE001-003 in Directory.Build.targets). -->
   <PropertyGroup>
     <EncoreZeroDependency>true</EncoreZeroDependency>
   </PropertyGroup>

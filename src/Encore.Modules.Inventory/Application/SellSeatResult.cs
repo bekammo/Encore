@@ -3,19 +3,11 @@ namespace Encore.Modules.Inventory.Application;
 /// <summary>
 /// The result of a <see cref="SellSeatCommand"/>.
 /// </summary>
-/// <remarks>
-/// Deliberately carries no payload beyond the outcome. A sale's interesting
-/// detail — who bought it, when — is on the seat row and in
-/// <see cref="Domain.Events.SeatSold"/>; repeating it here would be a second copy
-/// of the truth that could drift from the first.
-/// </remarks>
 /// <param name="Outcome">What happened.</param>
 public sealed record SellSeatResult(SellSeatOutcome Outcome)
 {
     /// <summary>
-    /// The seat is the client's. Returned for a sale completed by this call and,
-    /// idempotently, for one this client had already completed — a retried or
-    /// double-submitted checkout is not a failure to report to the buyer.
+    /// The seat is the client's, including when it had already been bought by them.
     /// </summary>
     public static SellSeatResult Sold { get; } = new(SellSeatOutcome.Sold);
 

@@ -1,23 +1,7 @@
 <!DOCTYPE html>
 <!--
-  Swagger UI over Encore's OpenAPI document.
-
-  Served by the host itself, from wwwroot, which is what makes "Try it out"
-  work: the page and the API share an origin, so no CORS policy is needed and
-  none exists. Opening this file straight off disk instead would put the page on
-  a null origin and every request from it would be refused.
-
-  The UI assets come from a CDN rather than from this repo. They are a
-  development convenience, not part of the product, and vendoring ~3MB of
-  minified JavaScript into a repo that argues about dependency discipline would
-  be the wrong trade. The consequence, stated plainly: /docs/ needs a network
-  connection, and the API does not.
-
-  DECISIONS 014 refused Swashbuckle and Microsoft.AspNetCore.OpenApi because
-  Encore.Api holds zero PackageReference items on purpose. Nothing here changes
-  that — a script tag is not a NuGet package, and the build rule ENCORE001 still
-  passes. What it does mean is that docs/openapi.json is written by hand and
-  nothing regenerates it, which 049 records as the cost.
+  Swagger UI over the hand-written OpenAPI document, served by the host so it shares the
+  API's origin. UI assets come from a CDN, so /docs/ needs a network connection.
 -->
 <html lang="en">
 <head>
@@ -36,12 +20,7 @@
   <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"></script>
   <script>
     window.ui = SwaggerUIBundle({
-      // Cache-busted deliberately. The static files middleware serves this with an
-      // ETag, but a browser is free to reuse a fresh-enough copy without asking,
-      // and it does — which means editing openapi.json and reloading shows the
-      // previous document with no indication that is what you are looking at. A
-      // 24KB refetch costs nothing next to debugging a document that is already
-      // correct on disk.
+      // Cache-busted, so an edited openapi.json always shows on reload.
       url: './openapi.json?v=' + Date.now(),
       dom_id: '#swagger',
       deepLinking: true,

@@ -4,15 +4,12 @@ using Microsoft.Extensions.Logging;
 namespace Encore.Modules.Inventory.UnitTests;
 
 /// <summary>
-/// What the Redis lock says about an outage: one warning when it starts, one line
-/// when it ends, and nothing at the default level in between (DECISIONS 080).
+/// The Redis lock logs an outage at its edges: one warning when it starts, one line when it
+/// ends, nothing at the default level in between.
 /// </summary>
 public class LockOutageLogTests
 {
-    /// <summary>
-    /// Any exception will do: the log reports the type it is given, and which types
-    /// count as an outage is the adapter's call, tested against real Redis.
-    /// </summary>
+    /// <summary>Any exception will do; which types count as an outage is the adapter's call.</summary>
     private static readonly Exception Down = new TimeoutException("No connection is active/available.");
 
     [Fact]
@@ -29,10 +26,7 @@ public class LockOutageLogTests
         Assert.Contains(nameof(TimeoutException), entry.Message, StringComparison.Ordinal);
     }
 
-    /// <summary>
-    /// The case 079 measured: thousands of refusals a second, each of which used to
-    /// be a warning with a stack trace. Only the first is now.
-    /// </summary>
+    /// <summary>Thousands of refusals produce one warning.</summary>
     [Fact]
     public void Refused_Repeatedly_ShouldWarnOnceAndLogTheRestAtDebugWithoutTheException()
     {
@@ -98,10 +92,7 @@ public class LockOutageLogTests
         Assert.Empty(logger.Entries);
     }
 
-    /// <summary>
-    /// A second outage is a new outage: it gets its own warning, and its own count
-    /// when it ends.
-    /// </summary>
+    /// <summary>A second outage gets its own warning and its own count.</summary>
     [Fact]
     public void Refused_AfterRecovering_ShouldWarnAgain()
     {

@@ -6,15 +6,9 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Catalog.IntegrationTests;
 
 /// <summary>
-/// Proves Catalog's mapping means what it says against real Postgres.
+/// Catalog's mapping against real Postgres: money keeps its precision and timestamps come back
+/// as the same UTC instant.
 /// </summary>
-/// <remarks>
-/// There is no behaviour in this module to test — it is CRUD over tables nobody
-/// contends for (DECISIONS 001) — so these tests aim at the two places a
-/// read-mostly catalogue can still be quietly wrong: money that loses precision
-/// on the way to the database, and a timestamp that comes back as a different
-/// instant or a different <see cref="DateTimeKind"/> than it went in as.
-/// </remarks>
 public sealed class CatalogSchemaTests : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
@@ -36,8 +30,7 @@ public sealed class CatalogSchemaTests : IAsyncLifetime
 
         await using var context = new CatalogDbContext(_options);
 
-        // Migrate rather than EnsureCreated: this is also what proves the
-        // generated migration applies against real Postgres at all.
+        // Migrate rather than EnsureCreated, so the real migration is exercised.
         await context.Database.MigrateAsync();
     }
 
@@ -52,11 +45,7 @@ public sealed class CatalogSchemaTests : IAsyncLifetime
         Assert.Empty(await context.Database.GetPendingMigrationsAsync());
     }
 
-    /// <summary>
-    /// A price with four decimal places must survive the round trip exactly.
-    /// If the column were a floating-point type this is where it would show up,
-    /// and it would show up as an order total nobody agreed to.
-    /// </summary>
+    /// <summary>A four-decimal price survives the round trip exactly.</summary>
     [Fact]
     public async Task Price_ShouldRoundTripWithoutLosingPrecision()
     {
@@ -75,12 +64,7 @@ public sealed class CatalogSchemaTests : IAsyncLifetime
         Assert.Equal("GBP", stored.Currency);
     }
 
-    /// <summary>
-    /// Timestamps are <c>timestamptz</c>, which stores UTC and discards offsets.
-    /// What comes back must be the same instant and must still say it is UTC —
-    /// a <see cref="DateTimeKind.Unspecified"/> here would silently poison every
-    /// comparison downstream, including the on-sale gate in Orders.
-    /// </summary>
+    /// <summary>Timestamps come back as the same instant, still UTC.</summary>
     [Fact]
     public async Task Timestamps_ShouldRoundTripAsUtc()
     {
@@ -107,10 +91,7 @@ public sealed class CatalogSchemaTests : IAsyncLifetime
         Assert.Equal(DateTimeKind.Utc, stored.OnSaleAt!.Value.Kind);
     }
 
-    /// <summary>
-    /// Null means "on sale now", not "on sale in the year 1". The column has to
-    /// be able to hold that distinction or the gate in Orders cannot read it.
-    /// </summary>
+    /// <summary>A null on-sale time stays null.</summary>
     [Fact]
     public async Task OnSaleAt_ShouldBeNullable()
     {

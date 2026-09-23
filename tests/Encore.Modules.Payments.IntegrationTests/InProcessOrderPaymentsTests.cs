@@ -10,20 +10,9 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Payments.IntegrationTests;
 
 /// <summary>
-/// The module's public face, driven end to end against real Postgres and a
-/// gateway configured to behave badly on demand.
+/// The in-process adapter end to end against real Postgres and a misbehaving gateway. Needs a
+/// database because the one-live-attempt rule is a partial unique index. Fresh order ids per test.
 /// </summary>
-/// <remarks>
-/// <para>
-/// These need a database because the rule that makes the whole design safe — one
-/// live attempt per order — is a partial unique index, and the adapter catches its
-/// violation by name. A fake would fake exactly that away.
-/// </para>
-/// <para>
-/// Every test uses a fresh order id, because the container is per-class and rows
-/// accumulate against that index.
-/// </para>
-/// </remarks>
 public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
 {
     private const decimal Amount = 120.50m;
@@ -39,11 +28,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
 
     private DbContextOptions<PaymentsDbContext> _options = null!;
 
-    /// <summary>
-    /// How the gateway reaches its ledger. Since <c>DECISIONS.md</c> 066 what it has
-    /// already answered is a row rather than a field, so a gateway needs a way to
-    /// open a context of its own.
-    /// </summary>
+    /// <summary>How the gateway reaches its ledger table.</summary>
     private ServiceProvider _provider = null!;
     private IServiceScopeFactory _scopes = null!;
 
@@ -105,11 +90,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
         Assert.False(payment.IsLive);
     }
 
-    /// <summary>
-    /// The row exists even though the gateway never answered, and that is the
-    /// point: it is written before the call, so a crash mid-flight leaves
-    /// something for the retry to find. See <c>DECISIONS.md</c> 031.
-    /// </summary>
+    /// <summary>The row exists even though the gateway never answered: it is written first.</summary>
     [Fact]
     public async Task Authorize_WhenTheGatewayNeverAnswers_ShouldLeaveALiveAttemptBehind()
     {
@@ -124,12 +105,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
         Assert.True(payment.IsLive);
     }
 
-    /// <summary>
-    /// The load-bearing test for the retry path. A second authorisation after a
-    /// timeout must reuse the row, and therefore the key — a new key against a
-    /// gateway that did receive the first call is a second hold on the customer's
-    /// money.
-    /// </summary>
+    /// <summary>A retry after a timeout reuses the row and its key.</summary>
     [Fact]
     public async Task Authorize_AfterATimeout_ShouldReuseTheRowAndTheKey()
     {
@@ -148,11 +124,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
         Assert.Equal(1, await CountAsync(orderId));
     }
 
-    /// <summary>
-    /// Idempotent, for the reason re-holding a seat you already hold is: a retry
-    /// after a dropped response must get back what it already has rather than a
-    /// second hold.
-    /// </summary>
+    /// <summary>Authorising again while authorised returns the existing hold.</summary>
     [Fact]
     public async Task Authorize_WhenAlreadyAuthorized_ShouldReturnTheSameAttempt()
     {
@@ -180,10 +152,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
         Assert.Equal(1, await CountAsync(orderId));
     }
 
-    /// <summary>
-    /// A declined attempt moved nothing, so the customer may try again — and that
-    /// is a genuinely new attempt with a new key, not a reuse of the old row.
-    /// </summary>
+    /// <summary>After a decline, a new attempt gets a new row and key.</summary>
     [Fact]
     public async Task Authorize_AfterADecline_ShouldStartAFreshAttempt()
     {
@@ -198,9 +167,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A payment belongs to the client who is paying. Another client asking about
-    /// the same order gets nothing back and starts its own attempt — which the
-    /// live-attempt index then refuses, because the order already has one.
+    /// Another client asking about the same order sees nothing and is refused by the index.
     /// </summary>
     [Fact]
     public async Task Authorize_ForSomebodyElsesOrder_ShouldNotFindTheExistingAttempt()
@@ -251,12 +218,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
         Assert.Equal(CapturePaymentStatus.NoAuthorization, response.Status);
     }
 
-    /// <summary>
-    /// A capture that gets no answer changes nothing on purpose. The funds are
-    /// still held and the reference is still there, so the next attempt can ask
-    /// again — writing a timeout onto the row would throw away the only thing that
-    /// makes the retry possible.
-    /// </summary>
+    /// <summary>A capture with no answer changes nothing, so it can be retried.</summary>
     [Fact]
     public async Task Capture_WhenTheGatewayNeverAnswers_ShouldLeaveTheHoldCapturable()
     {
@@ -306,10 +268,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
         Assert.Equal(PaymentStatus.Captured, (await ReadAsync(orderId)).Status);
     }
 
-    /// <summary>
-    /// Nothing to unwind is not a failure. A caller cleaning up after a confirm
-    /// that never got as far as authorising must be able to call this blindly.
-    /// </summary>
+    /// <summary>Voiding with nothing held is not a failure.</summary>
     [Fact]
     public async Task Void_WithNothingHeld_ShouldSayThereIsNoAuthorization()
     {
@@ -332,11 +291,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
         Assert.Equal(VoidPaymentStatus.NoAuthorization, response.Status);
     }
 
-    /// <summary>
-    /// A void that gets no answer leaves the hold recorded, and that is the benign
-    /// half of the whole design: an authorisation nobody captures lapses at the
-    /// gateway on its own, so the customer is never out of pocket.
-    /// </summary>
+    /// <summary>A void with no answer leaves the hold recorded; it lapses at the gateway.</summary>
     [Fact]
     public async Task Void_WhenTheGatewayNeverAnswers_ShouldLeaveTheHoldRecorded()
     {
@@ -357,10 +312,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
     private static AuthorizePaymentRequest Authorize(Guid orderId, Guid clientId) =>
         new(orderId, clientId, Amount, Currency);
 
-    /// <summary>
-    /// A fresh adapter over a fresh context, because each call in these tests
-    /// stands for a separate request.
-    /// </summary>
+    /// <summary>A fresh adapter over a fresh context: each call stands for a separate request.</summary>
     private IOrderPayments Payments(double declineRate = 0, double timeoutRate = 0) =>
         new InProcessOrderPayments(
             new PaymentsDbContext(_options),
@@ -376,11 +328,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
                 TimeProvider.System),
             new FixedTimeProvider(T0));
 
-    /// <summary>
-    /// The one attempt against this order. <c>Single</c> rather than <c>First</c>
-    /// on purpose: every caller here expects exactly one row, and a second would
-    /// mean the reuse-the-row rule had quietly stopped holding.
-    /// </summary>
+    /// <summary>The one attempt against this order; a second would break the reuse-the-row rule.</summary>
     private async Task<Payment> ReadAsync(Guid orderId)
     {
         await using var context = new PaymentsDbContext(_options);

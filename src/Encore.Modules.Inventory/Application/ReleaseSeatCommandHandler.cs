@@ -5,28 +5,12 @@ using Encore.Modules.Inventory.Ports;
 namespace Encore.Modules.Inventory.Application;
 
 /// <summary>
-/// The "I don't want these seats after all" use case: hand held seats back to the
-/// pool. Sequences the ports the same way the other seat writes do — load, let
-/// each aggregate decide, persist them together.
+/// Gives held seats back to the pool. Each seat is answered on its own, and the
+/// releases are written in one transaction.
 /// </summary>
 /// <remarks>
-/// <para>
-/// <b>Each seat is answered on its own.</b> A seat that cannot be released does
-/// not keep the others held, which is how cancelling behaved when the seats went
-/// back one at a time (034). The batch only makes it one round trip (076).
-/// </para>
-/// <para>
-/// <b>No lock.</b> Releasing touches rows whose tokens settle any race, and there
-/// is no cap to protect: releasing gives capacity back rather than consuming it.
-/// </para>
-/// <para>
-/// <b>Releasing a seat you are not holding is a success.</b> The caller wanted
-/// not to be holding this seat, and they are not — whether their hold lapsed
-/// while the request was in flight, or the request is a duplicate of one that
-/// already worked. Refusing would turn a retry into an error for a state that
-/// already holds, which is the same reasoning that makes a re-hold and a
-/// re-purchase idempotent.
-/// </para>
+/// No lock: there is no cap to protect. Releasing a seat you are not holding succeeds,
+/// so a retry is not an error.
 /// </remarks>
 public sealed class ReleaseSeatCommandHandler(
     ISeatRepository seats,
@@ -35,11 +19,7 @@ public sealed class ReleaseSeatCommandHandler(
     private readonly ISeatRepository _seats = seats;
     private readonly TimeProvider _timeProvider = timeProvider;
 
-    /// <summary>
-    /// Attempts to release <see cref="ReleaseSeatCommand.SeatId"/> on behalf of
-    /// <see cref="ReleaseSeatCommand.ClientId"/>.
-    /// </summary>
-    /// <returns>The outcome. Refusals are returned, not thrown.</returns>
+    /// <summary>Releases one seat. A batch of one.</summary>
     public async Task<ReleaseSeatResult> HandleAsync(
         ReleaseSeatCommand command,
         CancellationToken cancellationToken = default)
@@ -52,11 +32,8 @@ public sealed class ReleaseSeatCommandHandler(
         return results[0];
     }
 
-    /// <summary>
-    /// Attempts to release every seat in <see cref="ReleaseSeatsCommand.SeatIds"/>
-    /// on behalf of <see cref="ReleaseSeatsCommand.ClientId"/>.
-    /// </summary>
-    /// <returns>One outcome per seat, in the order the seats were asked for.</returns>
+    /// <summary>Releases every requested seat it can.</summary>
+    /// <returns>One outcome per seat, in request order.</returns>
     public async Task<IReadOnlyList<ReleaseSeatResult>> HandleAsync(
         ReleaseSeatsCommand command,
         CancellationToken cancellationToken = default)
@@ -92,15 +69,12 @@ public sealed class ReleaseSeatCommandHandler(
                 continue;
             }
 
-            // A rejected attempt may have left events on this instance describing a
-            // release that never happened.
+            // Drop events left by a previous rejected attempt.
             seat.ClearDomainEvents();
 
             results[i] = TryRelease(seat, command.ClientId, utcNow);
         }
 
-        // Every state change a seat makes raises an event, so these are the seats
-        // this attempt actually moved.
         var changed = seats.Values.Where(seat => seat.DomainEvents.Count > 0).ToList();
 
         if (changed.Count is 0)
@@ -136,10 +110,7 @@ public sealed class ReleaseSeatCommandHandler(
         }
         catch (SeatTransitionException ex) when (ex.Reason is SeatTransitionReason.SeatAlreadySold)
         {
-            // Seat keeps HeldByClientId when it sells, so the row can still say
-            // whose sale it was — the same fact the sell handler reads to make a
-            // retried purchase idempotent. Here it tells a cancel that is racing a
-            // confirm that the confirm won (077).
+            // Sold to this client means a confirm of the same order won; a cancel uses this to back off.
             return seat.HeldByClientId == clientId
                 ? ReleaseSeatResult.SoldToYou
                 : ReleaseSeatResult.AlreadySold;
@@ -149,9 +120,7 @@ public sealed class ReleaseSeatCommandHandler(
             return ReleaseSeatResult.NotTheHolder;
         }
 
-        // Release() refuses for exactly the two reasons handled above. A third
-        // would mean the aggregate's contract moved without this handler being
-        // told, and it is left to propagate rather than be swallowed.
+        // Any other reason propagates: it would mean the aggregate's contract changed.
     }
 
     private sealed record Attempt(IReadOnlyList<ReleaseSeatResult> Results, bool LostRace);

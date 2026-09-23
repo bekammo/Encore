@@ -1,15 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
-  <!-- The host. Owns no business logic: it composes the modules and runs
-       the web server. Each module is reached through exactly one seam,
-       its Add*Module() / Map*Module() extension pair. -->
+  <!-- The host: composes the modules through their Add*/Map* seams and nothing else. -->
 
-  <!-- ENCORE001 only, not the other two rules. DECISIONS 014 refused OpenAPI
-       and 017 refused a host-level migrator, both partly to keep this project
-       free of packages of its own, and until now nothing checked it. It cannot
-       take the full EncoreZeroDependency treatment: the Web SDK adds ASP.NET
-       Core, and composing the modules brings EF Core in transitively, both of
-       which are exactly what a host is for. See Directory.Build.targets. -->
+  <!-- No packages of its own (ENCORE001). ASP.NET Core and EF Core arriving through the
+       Web SDK and the modules is what a host is for. -->
   <PropertyGroup>
     <EncoreNoDirectPackages>true</EncoreNoDirectPackages>
   </PropertyGroup>

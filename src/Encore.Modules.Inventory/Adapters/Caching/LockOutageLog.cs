@@ -3,39 +3,10 @@ using Microsoft.Extensions.Logging;
 namespace Encore.Modules.Inventory.Adapters.Caching;
 
 /// <summary>
-/// What <see cref="RedisDistributedLock"/> says about Redis being unavailable:
-/// once when it stops answering, once when it starts again, and quietly in between.
+/// Logs a Redis outage at its edges: one warning when the lock stops answering, one line
+/// when it answers again, and Debug in between. Logging every refused attempt used to
+/// flood the log with thousands of stack traces a second.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>Transitions, not attempts.</b> 074 made every refused attempt log a warning
-/// with its exception, because the exception's type was the one piece of evidence
-/// that could name the mechanism 073 was chasing. 079 named it, and in doing so
-/// counted 95,244 of those warnings in a 30-second outage, about 3,000 a second,
-/// each with a stack trace. That is the prime suspect for why a purchase, which
-/// takes no lock at all, doubled its median while Redis was gone. The evidence had
-/// become the cost.
-/// </para>
-/// <para>
-/// The first refusal after a success still logs a warning with the whole
-/// exception, so the type 074 wanted stays in the log. Later refusals log at
-/// Debug, carrying the type name but no exception object, so there is no stack
-/// trace to format and nothing is written at the default level. The first
-/// success after a run of refusals logs how many there were, which is how long
-/// the outage was, in the unit that matters here.
-/// </para>
-/// <para>
-/// <b>Counted from what the adapter saw, not from the multiplexer's events.</b>
-/// <c>ConnectionFailed</c> and <c>ConnectionRestored</c> describe the socket.
-/// This describes whether the lock could answer, which is what a hold actually
-/// experienced. It also needs no subscription with a lifetime to manage.
-/// </para>
-/// <para>
-/// The counter is shared by every request, so a success reads it before writing
-/// to it: the ordinary case, Redis answering, costs one volatile read and no
-/// write to a contended cache line.
-/// </para>
-/// </remarks>
 internal sealed class LockOutageLog(ILogger logger)
 {
     private readonly ILogger _logger = logger;
@@ -78,8 +49,7 @@ internal sealed class LockOutageLog(ILogger logger)
 
         var refused = Interlocked.Exchange(ref _refusedSinceLastAnswer, 0);
 
-        // Two answers racing past the read above both reach the exchange, and only
-        // one of them gets the count.
+        // Only one of two racing answers gets the count.
         if (refused > 0)
         {
             _logger.LogInformation(

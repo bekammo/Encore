@@ -5,17 +5,7 @@ using Microsoft.AspNetCore.Http.HttpResults;
 
 namespace Encore.Modules.Inventory.UnitTests;
 
-/// <summary>
-/// The outcome-to-HTTP mapping, tested without a host.
-/// </summary>
-/// <remarks>
-/// Three enums, eighteen responses, and a wrong one is invisible until a client
-/// hits it in production. Because the mapping lives in its own class rather
-/// than inside endpoint lambdas, all of it is reachable in microseconds — which
-/// is a far better trade than a <c>WebApplicationFactory</c> suite that would
-/// need a web host and containers to assert the same things an order of
-/// magnitude more slowly.
-/// </remarks>
+/// <summary>The outcome-to-HTTP mapping, tested without a host.</summary>
 public class SeatResultsTests
 {
     private static readonly Guid SeatId = Guid.Parse("11111111-1111-1111-1111-111111111111");
@@ -66,10 +56,7 @@ public class SeatResultsTests
         Assert.Equal(expectedReason, ReasonOf(result));
     }
 
-    /// <summary>
-    /// The cap refusal states the number, so a client can tell the customer
-    /// what the limit is without hard-coding it.
-    /// </summary>
+    /// <summary>The cap refusal states the limit.</summary>
     [Fact]
     public void ForHold_WhenCapReached_ShouldReportTheLimit()
     {
@@ -81,11 +68,7 @@ public class SeatResultsTests
             Assert.IsType<int>(problem.ProblemDetails.Extensions["limit"]));
     }
 
-    /// <summary>
-    /// Whether retrying the identical request could work. Under load most
-    /// refusals are ordinary rather than faults, and a client should not have to
-    /// keep its own list of which reason strings are worth another attempt.
-    /// </summary>
+    /// <summary>Whether repeating the identical request could succeed.</summary>
     [Theory]
     [InlineData(HoldSeatOutcome.AlreadyHeld, true)]
     [InlineData(HoldSeatOutcome.LostRace, true)]
@@ -160,11 +143,7 @@ public class SeatResultsTests
 
     // -- Nothing is unmapped ----------------------------------------------
 
-    /// <summary>
-    /// The guard that makes the closed enums worth having. Adding an outcome
-    /// without deciding its response fails here rather than reaching a client as
-    /// an unhandled exception.
-    /// </summary>
+    /// <summary>Every outcome has a response, so a new one cannot reach a client unmapped.</summary>
     [Fact]
     public void EveryOutcome_ShouldMapToAResponse()
     {

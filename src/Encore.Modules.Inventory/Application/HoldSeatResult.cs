@@ -4,11 +4,6 @@ namespace Encore.Modules.Inventory.Application;
 /// The result of a <see cref="HoldSeatCommand"/>: an <see cref="HoldSeatOutcome"/>,
 /// plus the expiry when — and only when — a hold was actually taken.
 /// </summary>
-/// <remarks>
-/// Constructed through the static members rather than the constructor, so that
-/// "only a successful hold carries an expiry" is a fact of the type rather than
-/// a convention every call site has to remember.
-/// </remarks>
 /// <param name="Outcome">What happened.</param>
 /// <param name="HoldExpiresAt">
 /// When the new hold lapses. Non-null exactly when <paramref name="Outcome"/> is

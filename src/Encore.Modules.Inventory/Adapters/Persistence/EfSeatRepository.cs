@@ -6,18 +6,10 @@ using Microsoft.EntityFrameworkCore;
 namespace Encore.Modules.Inventory.Adapters.Persistence;
 
 /// <summary>
-/// EF Core / Postgres implementation of <see cref="ISeatRepository"/>. This is
-/// where the concurrency guarantee the port promises actually gets paid for —
-/// the <c>xmin</c> token on the seat row turns every save into a conditional
-/// UPDATE, and the loser of a race finds out here.
+/// EF Core / Postgres implementation of <see cref="ISeatRepository"/>. The <c>xmin</c>
+/// token makes every save a conditional UPDATE; EF's concurrency exception is translated
+/// into <see cref="ConcurrentSeatModificationException"/> so it never leaks through the port.
 /// </summary>
-/// <remarks>
-/// The one thing this adapter must not do is let EF Core's vocabulary escape
-/// through the port, so <see cref="DbUpdateConcurrencyException"/> is caught and
-/// translated into <see cref="ConcurrentSeatModificationException"/>. The
-/// original is kept as the inner exception: callers get a contract they can
-/// depend on, diagnostics keep the detail.
-/// </remarks>
 public sealed class EfSeatRepository(InventoryDbContext context) : ISeatRepository
 {
     private readonly InventoryDbContext _context = context;
@@ -25,11 +17,8 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
     /// <inheritdoc />
     public async Task<Seat?> GetByIdAsync(Guid seatId, CancellationToken cancellationToken = default)
     {
-        // EF's identity map would hand back the instance this context is already
-        // tracking — stale concurrency token, previous attempt's mutations and all
-        // — rather than what the database currently says. A caller reloading after
-        // losing a race would then re-attempt against exactly the state that just
-        // lost, and the retry would be theatre. Force a real read instead.
+        // Reload a tracked seat instead of returning EF's cached instance, or a retry
+        // after a lost race would re-attempt with the stale token.
         var tracked = _context.ChangeTracker
             .Entries<Seat>()
             .FirstOrDefault(entry => entry.Entity.Id == seatId);
@@ -43,8 +32,7 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
 
         await tracked.ReloadAsync(cancellationToken).ConfigureAwait(false);
 
-        // Reload detaches the entry when the row has gone, in which case the
-        // instance it still points at describes a seat that no longer exists.
+        // Reload detaches the entry if the row is gone.
         return tracked.State is EntityState.Detached ? null : tracked.Entity;
     }
 
@@ -53,11 +41,7 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
         IReadOnlyCollection<Guid> seatIds,
         CancellationToken cancellationToken = default)
     {
-        // Detached and read again in one query, rather than reloaded one entry at
-        // a time as GetByIdAsync does: a retried four-seat batch would otherwise
-        // pay four round trips to learn what one can tell it. Detaching also
-        // discards whatever a refused or rejected attempt did to these instances,
-        // so nothing it changed can reach a later save.
+        // Detach and re-read in one query, discarding whatever a failed attempt changed.
         var tracked = _context.ChangeTracker
             .Entries<Seat>()
             .Where(entry => seatIds.Contains(entry.Entity.Id))
@@ -77,11 +61,7 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
     /// <inheritdoc />
     public async Task SaveAsync(Seat seat, CancellationToken cancellationToken = default)
     {
-        // The outbox drain is not this method's: InventoryDbContext's SaveChanges
-        // override owns it, for the reasons in DECISIONS 044. It runs underneath
-        // this call, so the seat's events and the seat's new state reach Postgres
-        // in one transaction — including on the AddRangeAsync path below, which a
-        // drain written here would have missed.
+        // The outbox drain runs inside SaveChanges (InventoryDbContext).
         try
         {
             await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -95,9 +75,7 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
     /// <inheritdoc />
     public async Task SaveAsync(IReadOnlyCollection<Seat> seats, CancellationToken cancellationToken = default)
     {
-        // One SaveChanges is one transaction, and Npgsql sends its statements as
-        // one batch: every seat's conditional UPDATE and every outbox INSERT land
-        // together or not at all, in a single round trip.
+        // One SaveChanges: one transaction, sent as one batch.
         try
         {
             await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -117,11 +95,7 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
         Guid eventId,
         DateTime utcNow,
         CancellationToken cancellationToken = default)
-        // Expiry is part of the predicate rather than something filtered
-        // afterwards, so a lapsed hold never counts even though its row still
-        // says Held. Served by ix_seats_event_client_status; without that index
-        // this is a sequential scan on every hold attempt during a flash sale,
-        // which is the worst possible moment for one.
+        // Expiry is in the predicate, so a lapsed hold never counts. Uses ix_seats_event_client_status.
         => await _context.Seats
             .AsNoTracking()
             .Where(seat =>
@@ -138,18 +112,7 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
         DateTime utcNow,
         int limit,
         CancellationToken cancellationToken = default)
-        // AsNoTracking and ids only: these rows are candidates for another
-        // context to load, and tracking them here would populate an identity map
-        // that GetByIdAsync then has to reload past.
-        //
-        // Ordered by the oldest lapse, so a backlog is worked through in the
-        // order it accumulated and a row cannot be starved by newer arrivals
-        // between one batch and the next.
-        //
-        // Served by ix_seats_expiring_holds, the partial index on HoldExpiresAt
-        // over held rows that 068 added for exactly this predicate and ordering.
-        // The limit stays regardless: a backlog is worked through in batches, not
-        // materialised whole.
+        // Oldest lapse first, so no row is starved. Uses the partial ix_seats_expiring_holds.
         => await _context.Seats
             .AsNoTracking()
             .Where(seat => seat.Status == SeatStatus.Held && seat.HoldExpiresAt <= utcNow)
@@ -164,8 +127,6 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
         IReadOnlyCollection<Seat> seats,
         CancellationToken cancellationToken = default)
     {
-        // One SaveChangesAsync, so EF wraps the whole batch in a single
-        // transaction and a half-written seat map is not reachable.
         await _context.Seats.AddRangeAsync(seats, cancellationToken).ConfigureAwait(false);
         await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }

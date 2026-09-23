@@ -6,30 +6,10 @@ using Encore.Modules.Payments.Contracts;
 namespace Encore.Modules.Orders.Data;
 
 /// <summary>
-/// <see cref="IOrderPayments"/> over HTTP, for when Payments is its own service.
-/// DECISIONS 061.
+/// <see cref="IOrderPayments"/> over HTTP, used when Payments runs as its own service.
+/// Refusals are read from <c>reason</c>, never from the status code, and an unreadable
+/// answer is treated as a timeout.
 /// </summary>
-/// <remarks>
-/// <para>
-/// The twin of <c>InProcessOrderPayments</c>, and the point of the pair: Orders
-/// depends on <see cref="IOrderPayments"/> and cannot tell which one it has. Which
-/// is registered is a line in <c>OrdersModule</c>, and that line is the strangler's
-/// switch.
-/// </para>
-/// <para>
-/// <b>It lives in Orders, not in Payments.</b> A consumer owns how it reaches a
-/// service; Payments owns what the service does. Putting the client here keeps
-/// Payments' assembly free of code that only its callers run, and means Orders still
-/// names nothing of Payments but its <c>.Contracts</c> assembly.
-/// </para>
-/// <para>
-/// <b>Every refusal is read from <c>reason</c>, never from the status code.</b>
-/// Several statuses share a code — 409 covers both a lost race and a missing
-/// authorisation — so the code is for proxies and humans and the string is the half
-/// that maps one-to-one onto the contract's vocabulary. A body this cannot read is
-/// treated as no answer at all, which is the safe reading: see below.
-/// </para>
-/// </remarks>
 internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
 {
     private readonly HttpClient _client = client;
@@ -60,17 +40,8 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
             "timed_out" => AuthorizePaymentResponse.TimedOut(outcome.RequirePaymentId()),
             "concurrent_attempt_in_flight" => AuthorizePaymentResponse.ConcurrentAttemptInFlight,
 
-            // No answer, or one this cannot read. Reported as a timeout because that
-            // is what it is from Orders' side, and because TimedOut is the one status
-            // whose handling is already correct for "the money may or may not be
-            // held": the order stays Pending, nothing is sold, and the next confirm
-            // asks again under the same key. Calling it Declined would be a guess
-            // that loses money; calling it Authorized would be a guess that sells
-            // seats against funds nobody has.
-            //
-            // The attempt id is genuinely unknown here, and the contract requires
-            // one, so this reuses the empty Guid to mean "no attempt this caller can
-            // name". Orders never dereferences it on this path.
+            // Unreadable or missing: a timeout is the one status already handled safely
+            // for "the money may or may not be held". The id is unknown, hence Guid.Empty.
             _ => AuthorizePaymentResponse.TimedOut(outcome.PaymentId ?? Guid.Empty)
         };
     }
@@ -92,9 +63,7 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
             "captured" => CapturePaymentResponse.Captured(outcome.RequirePaymentId()),
             "no_authorization" => CapturePaymentResponse.NoAuthorization,
 
-            // Same reading as authorize: unknown is a timeout. A capture that may or
-            // may not have happened leaves the order AwaitingCapture, which 027 built
-            // for exactly this and which the next confirm resolves.
+            // Unknown is a timeout: the order becomes AwaitingCapture and the next confirm resolves it.
             _ => CapturePaymentResponse.TimedOut(outcome.PaymentId ?? Guid.Empty)
         };
     }
@@ -121,25 +90,9 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
     }
 
     /// <summary>
-    /// One round trip, reduced to the two things every caller above branches on.
+    /// One round trip, reduced to the outcome and the attempt id. Network faults become
+    /// "no answer" instead of a 500; cancellation by the caller is not swallowed.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Network faults are caught rather than thrown. A confirm is a request with a
-    /// customer waiting on it, and an unhandled <see cref="HttpRequestException"/>
-    /// there is a 500 that tells them nothing and leaves the order in a state nobody
-    /// chose. The callers above turn an unreadable answer into a timeout, which is a
-    /// state the design already knows how to finish.
-    /// </para>
-    /// <para>
-    /// <see cref="OperationCanceledException"/> is deliberately not caught when the
-    /// caller's own token fired: that is the request being abandoned, not the
-    /// service failing, and swallowing it would record an attempt nobody is waiting
-    /// for. A timeout from <see cref="HttpClient"/> itself surfaces as a
-    /// <see cref="TaskCanceledException"/> with an untriggered token, and that one is
-    /// caught — it is the service not answering.
-    /// </para>
-    /// </remarks>
     private async Task<Outcome> SendAsync(
         string operation,
         object body,
@@ -153,8 +106,7 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
 
             if (response.StatusCode is HttpStatusCode.Unauthorized)
             {
-                // Misconfiguration, not a payment outcome, and it will not fix itself
-                // by being retried into a timeout. Fail loudly on the first call.
+                // Misconfiguration, not a payment outcome: fail loudly.
                 throw new InvalidOperationException(
                     "The Payments service rejected this service token. Check Orders:Payments:ServiceToken.");
             }
@@ -180,9 +132,7 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
     }
 
     /// <summary>
-    /// What came back, as the two fields that matter: the outcome or refusal reason,
-    /// and the attempt it is about.
-    /// </summary>
+    /// <summary>The outcome or refusal reason, and the attempt it is about.</summary>
     private readonly record struct Outcome(string? Reason, Guid? PaymentId)
     {
         /// <summary>Nothing readable came back.</summary>
@@ -217,15 +167,9 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
         }
 
         /// <summary>
-        /// The attempt id for an outcome that must name one.
+        /// The attempt id for an outcome that must name one. Missing means the two sides
+        /// disagree about the wire format, which is a bug.
         /// </summary>
-        /// <remarks>
-        /// A success body without a <c>paymentId</c> means the two sides disagree
-        /// about the wire format, which is a bug rather than a payment state, and the
-        /// contract has no member for it. Throwing names the problem where it
-        /// happened instead of handing Orders an empty Guid that will be stored
-        /// against a real order.
-        /// </remarks>
         internal Guid RequirePaymentId() =>
             PaymentId ?? throw new InvalidOperationException(
                 $"The Payments service answered '{Reason}' without naming the attempt.");

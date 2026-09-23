@@ -2,54 +2,25 @@ services:
   postgres:
     image: postgres:16
     container_name: encore-postgres
-    # 300 rather than the image's default of 100, and the number is arithmetic
-    # rather than taste. DECISIONS 067.
-    #
-    # Every host here pools per connection string, and the five module strings in
-    # one host are identical text, so one host means one pool. Npgsql's default
-    # maximum is 100 — so the strangled pair alone wanted 200 connections from a
-    # server willing to hand out 97, and at 250 VUs the k6 control window filled
-    # with `53300: sorry, too many clients already`. That is where 114 of the 117
-    # "unexpected responses" in 064's Redis A/B came from: the healthy window, not
-    # the outage.
-    #
-    # The budget is now stated in both places. Each host declares its own maximum
-    # (100 for the monolith, 50 for payments-api) and they sum to 150, leaving room
-    # for the chaos rig's psql sessions, a `dotnet run` on the host and the
-    # Testcontainers suites — none of which used to be counted because nothing was
-    # counting.
+    # 300, not the default 100. Npgsql pools per connection string and a host's five
+    # module strings are identical, so each host is one pool: 100 for the monolith, 50 for
+    # payments-api. The rest is headroom for the chaos rig's psql, a `dotnet run` and the
+    # Testcontainers suites. At the default, the strangled pair alone overran the server
+    # with `53300: too many clients` (019).
     command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: encore
       POSTGRES_PASSWORD: encore
       POSTGRES_DB: encore
-    # 55432 on the host, 5432 inside. The unusual number is deliberate and was
-    # bought with about an hour: this machine runs a native PostgreSQL 18 Windows
-    # service, auto-start, which already owns 0.0.0.0:5432. Docker still reports
-    # the mapping as `0.0.0.0:5432->5432/tcp`, but the native service holds the
-    # listener, so everything reaching localhost:5432 reached PostgreSQL 18 —
-    # which has no `encore` role — and `dotnet run` died with
-    # `28P01: password authentication failed for user "encore"` while every
-    # container-to-container path stayed green, because those resolve `postgres`
-    # on the compose network and never touch the host's ports at all.
-    #
-    # Moving the host side rather than the service side is the same call 015 made
-    # about Smart App Control: route around a machine-wide condition this repo
-    # does not control instead of requiring every reader to fix their machine
-    # first. 5432 is the likeliest port on earth to collide, and a portfolio repo
-    # that fails on first run for anybody who has ever installed Postgres is a
-    # bad first impression. DECISIONS 050.
-    #
-    # The container-internal port is untouched, so the `api` service, the load
-    # harness and the Testcontainers suites are all unaffected by this.
+    # 55432 on the host: a native PostgreSQL 18 service owns 5432 on the development
+    # machine, and `docker ps` still shows the mapping as Docker's. Container-to-container
+    # paths use 5432 and are unaffected (020).
     ports:
       - "55432:5432"
     volumes:
       - encore-postgres-data:/var/lib/postgresql/data
-    # So `docker compose up -d --wait` means "ready", not "started". Without it
-    # the app can win the race to connect and fail its first migration against a
-    # Postgres that is still initialising — a confusing first run for something
-    # that is not a real fault.
+    # So `up --wait` means ready rather than started, and a first migration does not race
+    # an initialising Postgres.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U encore -d encore"]
       interval: 2s
@@ -61,27 +32,17 @@ services:
     container_name: encore-redis
     ports:
       - "6379:6379"
-    # No volume on purpose: Redis holds short-lived locks here and nothing that
-    # would be a loss to restart empty.
+    # No volume: Redis holds only short-lived locks.
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
       timeout: 3s
       retries: 15
 
-  # The host, containerised so a load harness has something to point at. Behind
-  # the `load` profile for the same reason `tests` is behind its own: a bare
-  # `docker compose up -d` still means "just the dependencies", which is what a
-  # `dotnet run` on the host wants.
-  #
-  # Unlike `tests`, this one does depend on postgres and redis and waits for them
-  # to be healthy. The migrators are IHostedLifecycleService, so they run before
-  # Kestrel opens the socket: a Postgres still initialising is a failed startup
-  # here, not a retried connection.
-  #
-  # ASPNETCORE_ENVIRONMENT is deliberately left at its default of Production.
-  # Measuring a host with the developer exception page in the pipeline would
-  # answer a question nobody asked.
+  # The monolith, containerised for the load harness. Behind a profile so a bare
+  # `docker compose up -d` stays "just the dependencies". The migrators run before Kestrel
+  # opens, so this waits for healthy dependencies. Production environment on purpose: a
+  # measurement should not include the developer exception page.
   api:
     profiles: ["load"]
     build:
@@ -95,63 +56,34 @@ services:
     ports:
       - "8080:8080"
     environment:
-      # Service names, not localhost: inside the compose network these resolve
-      # to the other containers. The four stay separate even though they name
-      # one database, because the names are the extraction seam — collapsing
-      # them to a single setting here would quietly undo that.
+      # One string per module even though they name one database: the names are the
+      # extraction seam.
       ConnectionStrings__Catalog: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
       ConnectionStrings__Orders: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
       ConnectionStrings__Inventory: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
       ConnectionStrings__Payments: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
       ConnectionStrings__Notifications: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
       ConnectionStrings__Redis: "redis:6379"
-      # 013 permits this in development, and a load rig is development. One that
-      # needed a manual `dotnet ef database update` first is a rig nobody can
-      # bring up in one command.
+      # Run profiles are the only place migrate-on-startup is set (017).
       Catalog__MigrateOnStartup: "true"
       Orders__MigrateOnStartup: "true"
       Inventory__MigrateOnStartup: "true"
       Payments__MigrateOnStartup: "true"
       Notifications__MigrateOnStartup: "true"
-      # The outbox dispatcher, overridable so a run can separate the two halves of
-      # what the outbox costs: the drain, which writes a row inside every seat
-      # transaction and is not optional, from delivery, which competes with the API
-      # for the same database and is. `OUTBOX_ENABLED=false docker compose run --rm
-      # --build load` measures the first alone. DECISIONS 056.
-      #
-      # The drain has no flag and never will. Turning off the half that has to be
-      # atomic would not be a measurement, it would be a different system.
+      # The background workloads can each be switched off so a run can price them (019).
+      # The outbox drain has no flag: it is atomic with the seat write, and turning it off
+      # would be a different system. SWEEP_ENABLED=false also asks 006's question under
+      # load: the sale must still sell every seat and oversell none.
       Inventory__Outbox__Enabled: "${OUTBOX_ENABLED:-true}"
-      # The expired-hold sweep, on the same terms and for the same reason: it is a
-      # background workload beside the request path, and 056 found that a second one
-      # is where the outbox's cost actually went. Switching it off is also how 007's
-      # falsifiability claim gets asked under load rather than only in a test — the
-      # run must still sell every seat and oversell none with the sweep absent.
-      # DECISIONS 062.
       Inventory__ExpiredHoldSweep__Enabled: "${SWEEP_ENABLED:-true}"
-      # The payment reconciler, on the same terms and for the same reason: it is a
-      # third background workload beside the request path, and 056's finding was
-      # that a second one is where the outbox's cost actually went. This one sweeps
-      # once a minute and, with the simulated gateway timing out at 0.0 here, finds
-      # nothing to sweep — so it should cost nothing measurable. A baseline that
-      # cannot switch it off cannot demonstrate that. DECISIONS 057.
       Payments__Reconciliation__Enabled: "${RECONCILER_ENABLED:-true}"
-      # The Redis lock's ConnectTimeout, overridable only by 073's discriminating
-      # experiment: move this alone against a Redis fault and see whether the
-      # ~1,000ms per-lock cost moves with it. Do not set it outside the chaos rig.
+      # Overridden only by the chaos rig, to see whether the per-lock cost of a Redis
+      # outage moves with it (019).
       Inventory__RedisLock__ConnectTimeoutMs: "${REDIS_CONNECT_TIMEOUT_MS:-1000}"
 
-  # Payments as its own process. DECISIONS 061.
-  #
-  # Behind the `strangled` profile, so `docker compose --profile load up` still
-  # brings up the monolith exactly as it was and the extraction costs an existing
-  # workflow nothing. `docker compose --profile strangled up -d --wait` brings up
-  # this service and an `api` pointed at it.
-  #
-  # It owns the same `payments` schema in the same database, and that is honest
-  # about where this phase has got to: the process boundary moved first, the data
-  # boundary has not. Splitting the database is a separate change with its own
-  # decision to record, and doing both at once would leave neither reviewable.
+  # Payments as its own process (018). Behind the `strangled` profile so the monolith's
+  # workflow is unchanged. Same `payments` schema in the same database: the process
+  # boundary moved, the data boundary has not.
   payments-api:
     profiles: ["strangled"]
     build:
@@ -165,45 +97,25 @@ services:
     environment:
       ConnectionStrings__Payments: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=50"
       Payments__MigrateOnStartup: "true"
-      # The only thing guarding a call that can move money. A compose file is not a
-      # secret store and this value is not a secret — it is a local development
-      # token, checked in on purpose so that `up` works, and the mechanism it
-      # exercises is the one that matters. A deployment supplies its own.
+      # A local development token, checked in so `up` works. Not a secret; a deployment
+      # supplies its own.
       Payments__ServiceToken: "${PAYMENTS_SERVICE_TOKEN:-local-development-token}"
-      # This process owns the reconciler, and it is the only one that may. Two
-      # sweeps over one table would both ask the gateway about the same timed-out
-      # attempt, and DECISIONS 057's whole argument is that the answer is acted on
-      # exactly once. The `api-strangled` service below turns its own off.
+      # This process owns the reconciler; `api-strangled` turns its own off (014).
       Payments__Reconciliation__Enabled: "true"
-      # Three knobs the chaos rig turns and nothing else does. DECISIONS 063.
-      #
-      # MinimumAge exists so a sweep does not race a confirm that could still
-      # succeed, and it is one seat-hold duration for that reason (057). A chaos
-      # run is minutes long, so at five minutes the reconciler would demonstrably
-      # do nothing and the experiment would demonstrate nothing. Lowering it is
-      # the only way to watch reconciliation happen inside a run, and it is
-      # exactly the kind of change that must live in the harness rather than in
-      # the default.
+      # Chaos-rig knobs. MinimumAge is one hold duration so a sweep does not race a confirm
+      # that could still succeed; a run is minutes long, so the rig lowers it to watch
+      # reconciliation happen.
       Payments__Reconciliation__MinimumAge: "${RECONCILER_MIN_AGE:-00:05:00}"
       Payments__Reconciliation__PollInterval: "${RECONCILER_POLL:-00:01:00}"
-      # Raised to Debug by the chaos rig only. `PaymentReconciler` reports losing a
-      # race on xmin at Debug — "was resolved by something else while this sweep was
-      # asking" — and that one line is the entire question when two sweeps run over
-      # one table. DECISIONS 063.
+      # Debug only under the chaos rig: the reconciler logs a lost xmin race at Debug.
       Logging__LogLevel__Encore: "${ENCORE_LOG_LEVEL:-Information}"
-      # Timeouts are off by default here, which is what makes the baseline a
-      # measurement of the happy path. The chaos rig raises this so that some
-      # authorisations genuinely reach the gateway and lose their answer — the
-      # only way to produce a TimedOut row that reconciliation can settle. A
-      # payments-api that is simply stopped produces no row at all, which is a
-      # different fault and is measured as one.
+      # Timeouts are off by default, so the baseline measures the happy path. The chaos rig
+      # raises the rate to produce TimedOut rows for reconciliation to settle.
       Payments__Simulation__TimeoutRate: "${PAYMENTS_TIMEOUT_RATE:-0}"
       Payments__Simulation__LostRequestRate: "${PAYMENTS_LOST_REQUEST_RATE:-0.5}"
 
-  # The monolith with Payments cut out of it. Same image as `api`, different
-  # configuration — which is the claim the Strangler Fig makes and the reason this
-  # is a second service rather than an edit to the first: both arrangements have to
-  # be runnable side by side to be compared.
+  # The monolith with Payments cut out: same image as `api`, different configuration, so
+  # the two arrangements can run side by side.
   api-strangled:
     profiles: ["strangled"]
     build:
@@ -231,52 +143,23 @@ services:
       Payments__MigrateOnStartup: "false"
       Notifications__MigrateOnStartup: "true"
       Inventory__Outbox__Enabled: "${OUTBOX_ENABLED:-true}"
-      # The expired-hold sweep, on the same terms and for the same reason: it is a
-      # background workload beside the request path, and 056 found that a second one
-      # is where the outbox's cost actually went. Switching it off is also how 007's
-      # falsifiability claim gets asked under load rather than only in a test — the
-      # run must still sell every seat and oversell none with the sweep absent.
-      # DECISIONS 062.
       Inventory__ExpiredHoldSweep__Enabled: "${SWEEP_ENABLED:-true}"
-      # The two settings that do the strangling. The first makes Orders resolve
-      # HttpOrderPayments instead of the in-process adapter; the second hands it the
-      # token the service will demand.
+      # The strangling: Orders resolves HttpOrderPayments when a base address is set.
       Orders__Payments__BaseAddress: "http://payments-api:8080/internal/payments"
       Orders__Payments__ServiceToken: "${PAYMENTS_SERVICE_TOKEN:-local-development-token}"
-      # Off here, on in payments-api. See the note there.
-      #
-      # A variable rather than a literal since 063, defaulting to the same false,
-      # because 061 recorded the single-owner rule as "a compose setting and a
-      # comment" and an unenforced rule that cannot be broken on purpose cannot be
-      # measured either. `RECONCILER_EVERYWHERE=true` turns this on and runs two
-      # sweeps over one table. Since 074 an advisory-lock lease arbitrates them, so
-      # this is now how the lease gets tested rather than how its absence gets
-      # priced. Still off by default: one reconciler is the intended shape, and the
-      # lease is the guard, not the plan. Do not set it outside the chaos rig.
+      # Off: payments-api owns the reconciler. RECONCILER_EVERYWHERE=true runs two sweeps
+      # over one table so the chaos rig can test the advisory lock that arbitrates them
+      # (014). The lock is the guard, not the plan; do not set it outside the rig.
       Payments__Reconciliation__Enabled: "${RECONCILER_EVERYWHERE:-false}"
       Payments__Reconciliation__MinimumAge: "${RECONCILER_MIN_AGE:-00:05:00}"
       Payments__Reconciliation__PollInterval: "${RECONCILER_POLL:-00:01:00}"
-      # Raised to Debug by the chaos rig only. `PaymentReconciler` reports losing a
-      # race on xmin at Debug — "was resolved by something else while this sweep was
-      # asking" — and that one line is the entire question when two sweeps run over
-      # one table. DECISIONS 063.
       Logging__LogLevel__Encore: "${ENCORE_LOG_LEVEL:-Information}"
       Inventory__RedisLock__ConnectTimeoutMs: "${REDIS_CONNECT_TIMEOUT_MS:-1000}"
 
-  # The load harness. k6 in a container rather than NBomber in a project: this
-  # way the rig adds no PackageReference, no fifth test project and nothing the
-  # ENCORE001-003 rules have to reason about. `docker compose run --rm --build
-  # load` is the whole interface, and it brings postgres, redis and a freshly
-  # built api up on the way — the same shape `tests` already established.
-  #
-  # `--build` is not optional here, for a sharper version of the reason it is not
-  # optional for `tests`. The api image is compiled from source, so a run without
-  # it measures whatever was compiled last time. A stale test run is a false pass;
-  # a stale baseline is worse, because a baseline exists to be compared against
-  # later and a wrong one silently misattributes every change made after it.
-  #
-  # The tag is pinned rather than `latest`. A measurement rig that changes
-  # underneath you between runs cannot answer the question it exists to answer.
+  # The load harness: k6 in a container, so the rig adds no project and no package the
+  # build rules would have to reason about (019). `--build` is required, as for `tests`:
+  # without it the run measures the previous api image, and a stale baseline misattributes
+  # every later change. The tag is pinned so the rig does not change between runs.
   load:
     profiles: ["load"]
     image: grafana/k6:2.2.0
@@ -285,27 +168,17 @@ services:
         condition: service_healthy
     volumes:
       - ./load:/scripts:ro
-      # Summaries land here, one JSON file per run, so two runs can be compared
-      # without anyone having kept the terminal output. Gitignored: these are
-      # measurements of one machine on one day, not part of the repo.
+      # One summary per run. Gitignored: one machine on one day is not a claim.
       - ./load/results:/results
     environment:
       ENCORE_BASE_URL: "http://api:8080"
-    # The knobs are environment variables rather than flags, because k6 ignores
-    # --vus and --duration when a script defines scenarios, and this one does:
+    # Knobs are environment variables because k6 ignores --vus and --duration when a
+    # script defines scenarios:
     #   docker compose run --rm --build -e CONTENTION_VUS=200 load
     entrypoint: ["k6", "run", "/scripts/flash-sale.js"]
 
-  # The same rig pointed at the extracted arrangement. DECISIONS 063.
-  #
-  # A second service rather than a variable in the first, for the reason `api` and
-  # `api-strangled` are two services: `depends_on` names a service and cannot be
-  # templated, so a run that waits for the wrong host waits for a container that
-  # this profile never starts. Both arrangements staying separately runnable is
-  # also what 061 said made the next measurement possible.
-  #
-  # Same script, same defaults, so the contention and sale numbers this produces
-  # are comparable with 056's table rather than merely adjacent to it.
+  # The same rig against the strangled pair. A second service because `depends_on`
+  # cannot be templated. Same script and defaults, so its numbers compare with `load`'s.
   load-strangled:
     profiles: ["strangled"]
     image: grafana/k6:2.2.0
@@ -321,38 +194,22 @@ services:
       ENCORE_BASE_URL: "http://api-strangled:8080"
     entrypoint: ["k6", "run", "/scripts/flash-sale.js"]
 
-  # The test suite, run on Linux rather than on the host. Behind a profile, so
-  # `docker compose up -d` still means "just the dependencies" and this never
-  # starts by accident; `docker compose run --rm tests` is the whole interface.
-  #
-  # Why it exists at all is a host problem, explained at the top of
-  # tests/Dockerfile: Smart App Control blocks freshly built unsigned assemblies
-  # on the development machine, has no exclusion mechanism, and cannot be worked
-  # around by rebuilding.
-  #
-  # It deliberately does not depend on the postgres and redis services above.
-  # Those are for `dotnet run`; the integration tests bring up their own
-  # throwaway instances, which is what keeps a test run from depending on — or
-  # quietly corrupting — the database a developer is using by hand.
+  # The test suite, on Linux because Smart App Control blocks freshly built assemblies on
+  # the host (020). It does not depend on the services above: the integration tests start
+  # their own throwaway instances, so a run never touches the database in use by hand.
   tests:
     profiles: ["tests"]
     build:
       context: .
       dockerfile: tests/Dockerfile
     volumes:
-      # The integration tests use Testcontainers, so they need a daemon. Handing
-      # them the host's socket makes the containers they start siblings of this
-      # one rather than children — no Docker-in-Docker, no nested storage driver,
-      # and the same daemon a developer already has running.
+      # Testcontainers start as siblings on the host's daemon, not Docker-in-Docker.
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      # Sibling containers publish their ports on the *host*, not on this
-      # container, so "localhost" here is wrong and the connection would be
-      # refused. This tells Testcontainers where the host actually is.
+      # Sibling containers publish on the host, so "localhost" here would be wrong.
       TESTCONTAINERS_HOST_OVERRIDE: host.docker.internal
     extra_hosts:
-      # Docker Desktop provides this name already; declaring it keeps the same
-      # compose file working on plain Linux, where it does not.
+      # Docker Desktop defines this name; declaring it keeps plain Linux working.
       - "host.docker.internal:host-gateway"
 
 volumes:

@@ -4,38 +4,21 @@ using Microsoft.EntityFrameworkCore;
 namespace Encore.Modules.Inventory.Adapters.Persistence;
 
 /// <summary>
-/// EF Core context owning the <c>inventory</c> schema: seats, their concurrency
-/// tokens, and the outbox table. Lives in Adapters because persistence is a
-/// detail — the domain has never heard of it.
+/// EF Core context for the <c>inventory</c> schema: seats and the outbox.
 /// </summary>
 /// <remarks>
-/// <para>
-/// <b>This class owns the outbox drain.</b> Every <c>SaveChanges</c> collects the
-/// domain events raised by every tracked <see cref="Seat"/> and writes them as
-/// outbox rows before handing over to the base call, so the state change and the
-/// announcement of it commit together or not at all. That single guarantee is the
-/// whole reason an outbox exists, and <c>DECISIONS.md</c> 044 settles why the duty
-/// is here rather than in <c>EfSeatRepository</c>: the repository is handed one
-/// aggregate and this context commits all of them.
-/// </para>
+/// Owns the outbox drain. Every save writes the domain events of every tracked seat as
+/// outbox rows in the same transaction, so a state change and its announcement commit
+/// together or not at all.
 /// </remarks>
 public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> options)
     : DbContext(options)
 {
-    /// <summary>
-    /// The outbox rows this context's drain has added and not yet seen committed.
-    /// </summary>
-    /// <remarks>
-    /// Exists so the drain can tell its own rows from anybody else's when it discards
-    /// the leavings of a rejected save. A <see cref="DbContext"/> is scoped and is not
-    /// thread-safe to begin with, so a plain list is the right shape.
-    /// </remarks>
+    /// <summary>Outbox rows this context's drain added and has not yet seen committed.</summary>
     private readonly List<OutboxMessage> _drained = [];
 
-    /// <summary>The seats, and the authoritative record of their state.</summary>
     public DbSet<Seat> Seats => Set<Seat>();
 
-    /// <summary>Events awaiting publication, and the record of those already sent.</summary>
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     /// <inheritdoc />
@@ -64,12 +47,7 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
     }
 
     /// <inheritdoc />
-    /// <remarks>
-    /// Nothing in this module saves synchronously, and this override exists so that
-    /// nothing can start to without the drain coming along. An outbox whose
-    /// completeness depends on callers preferring one method over another is an
-    /// outbox that loses an event the first time somebody picks the other one.
-    /// </remarks>
+    /// <remarks>Overridden too, so no save path can skip the drain.</remarks>
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         var drained = DrainDomainEvents();
@@ -82,35 +60,14 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
     }
 
     /// <summary>
-    /// Copies every tracked seat's raised events into the outbox, and reports which
-    /// seats were drained so they can be cleared once the write has actually landed.
+    /// Adds every tracked seat's events to the outbox and returns the seats drained.
+    /// Walks the change tracker because one scoped context can hold several seats.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <b>Discovery walks the change tracker rather than being handed an aggregate.</b>
-    /// A four-seat checkout drives four holds through one scoped context, so by the
-    /// last of them the tracker holds four seats while each repository call knew
-    /// about one. 044 has the full argument; the short version is that a drain whose
-    /// completeness rests on the current call pattern stops being complete the first
-    /// time the call pattern changes.
-    /// </para>
-    /// <para>
-    /// <b><see cref="Seat"/> is named concretely</b> because it has no base class and
-    /// no marker interface — <c>Encore.BuildingBlocks.Domain</c> was removed
-    /// deliberately and the aggregate manages its own list. That is honest with one
-    /// aggregate and wants a marker interface beside <c>IDomainEvent</c> when there
-    /// is a second, rather than the base class that was removed.
-    /// </para>
-    /// </remarks>
     private List<Seat> DrainDomainEvents()
     {
         DiscardRejectedOutboxRows();
 
-        // Materialised before a single row is added, and that is not a style
-        // preference. ChangeTracker.Entries<T>() is a live view over the state
-        // manager, so adding an OutboxMessage inside the loop invalidates the
-        // enumerator and the next step throws "Collection was modified" — from
-        // inside SaveChanges, on every write path in the module.
+        // Materialised first: adding rows while enumerating the tracker would throw.
         var raising = ChangeTracker.Entries<Seat>()
             .Select(entry => entry.Entity)
             .Where(seat => seat.DomainEvents.Count > 0)
@@ -118,9 +75,7 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
 
         foreach (var seat in raising)
         {
-            // In order. A lazy reclaim raises SeatReleased(Expired) for the old
-            // holder before SeatHeld for the new one, and the sequence this
-            // assigns is what keeps that pair reconstructable downstream (007).
+            // In raised order, so a reclaim's SeatReleased precedes its SeatHeld.
             foreach (var domainEvent in seat.DomainEvents)
             {
                 var message = SeatEventPublication.ToOutboxMessage(domainEvent);
@@ -134,31 +89,9 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
     }
 
     /// <summary>
-    /// Removes outbox rows left tracked as <see cref="EntityState.Added"/> by a save
-    /// that was rejected.
+    /// Detaches outbox rows this drain added for a save that was rejected, so a retry
+    /// does not publish the same events twice. Rows added by anyone else are left alone.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// All three seat handlers retry once after losing a race, and the retry raises
-    /// the same events again. Without this, the attempt that eventually succeeds
-    /// would commit the rejected attempt's rows alongside its own and publish the
-    /// hold twice. 044 named this hazard before there was any code to have it.
-    /// </para>
-    /// <para>
-    /// <b>Only rows this drain added, which is narrower than it first looked.</b> The
-    /// first version detached every <see cref="EntityState.Added"/> outbox row, on the
-    /// reasoning that after a successful save they are <see cref="EntityState.Unchanged"/>
-    /// so nothing else could be caught. That reasoning is wrong about anybody who adds
-    /// an outbox row and saves it themselves: their row is <c>Added</c> too, and this
-    /// silently threw it away rather than persisting it. Nothing in production does
-    /// that today, which is exactly what makes it worth guarding — it is a trap laid
-    /// for the next person rather than a bug with a symptom.
-    /// </para>
-    /// <para>
-    /// Membership is by reference, so it identifies the instances this context drained
-    /// rather than anything about their contents.
-    /// </para>
-    /// </remarks>
     private void DiscardRejectedOutboxRows()
     {
         if (_drained.Count is 0)
@@ -176,28 +109,14 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
             entry.State = EntityState.Detached;
         }
 
-        // Whatever is left in the list either committed or was just detached, so the
-        // list has no further claim on any of it.
         _drained.Clear();
     }
 
     /// <summary>
-    /// Clears the events of every seat whose rows have now been committed.
+    /// Clears the events of seats whose rows have committed. Without this, later saves on
+    /// the same context would write them again. Runs after the base save, so a rejected
+    /// save keeps its events for the retry.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <b>This is not optional bookkeeping, and 044 left it open as though it were.</b>
-    /// The context is scoped and the handlers clear only the seat they are about to
-    /// transition, so without this a four-seat checkout would drain seat one's
-    /// <c>SeatHeld</c> again on each of the three saves that follow — four rows for
-    /// one hold. The handlers' defensive clear cannot reach it, because by then they
-    /// are looking at a different seat.
-    /// </para>
-    /// <para>
-    /// After the base call rather than before it, so a rejected save leaves the
-    /// events on the instance for the retry to re-raise over.
-    /// </para>
-    /// </remarks>
     private static void MarkPublished(List<Seat> drained)
     {
         foreach (var seat in drained)

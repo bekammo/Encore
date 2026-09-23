@@ -8,17 +8,9 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Payments.IntegrationTests;
 
 /// <summary>
-/// One Postgres for every test in <see cref="SimulatedPaymentGatewayTests"/>, plus
-/// the scope factory the gateway now needs and a way to empty its ledger between
-/// tests.
+/// One Postgres shared by every gateway test, with the ledger emptied between tests. A class
+/// fixture, since a container per test would start forty.
 /// </summary>
-/// <remarks>
-/// A class fixture rather than a container per test: xUnit builds a new test class
-/// instance per test, so the <c>IAsyncLifetime</c> pattern the other suites here use
-/// would start forty containers for this file. The fixture starts one and
-/// <see cref="ResetAsync"/> gives each test a clean ledger, which is what those tests
-/// actually need.
-/// </remarks>
 public sealed class GatewayLedgerDatabase : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
@@ -71,25 +63,10 @@ public sealed class GatewayLedgerDatabase : IAsyncLifetime
 }
 
 /// <summary>
-/// The simulated gateway's three promises: it honours an idempotency key, a seeded
-/// run is reproducible, and — since <c>DECISIONS.md</c> 066 — what it decided
-/// outlives the process that decided it. The first two exist so the failure paths
-/// above it can be tested at all; the third exists because 064 proved the system
-/// depended on it while nothing provided it.
+/// The simulated gateway: it honours idempotency keys, a seeded run is reproducible, and its
+/// decisions outlive the process. Integration tests because its memory is a table; zero
+/// latency throughout.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>These were unit tests until 066 and are integration tests now</b>, because the
-/// gateway's memory is a table. That is a real cost — forty fast tests became forty
-/// tests behind a container — and it was paid rather than avoided: the alternative
-/// was an <c>IGatewayLedger</c> with a real implementation and an in-memory one,
-/// which is the repository interface 001 forbids in a flat module, introduced so
-/// that tests could keep using the very mechanism the entry exists to remove.
-/// </para>
-/// <para>
-/// Every gateway here is built with zero latency, so nothing in this file sleeps.
-/// </para>
-/// </remarks>
 public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
     : IClassFixture<GatewayLedgerDatabase>, IAsyncLifetime
 {
@@ -112,16 +89,9 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
         Configured(declineRate, timeoutRate, lostRequestRate, seed).Gateway;
 
     /// <summary>
-    /// The gateway and the options object it is still reading, so a test can change
-    /// the weather between two calls.
+    /// The gateway and the options it reads, so a test can change conditions between calls (for
+    /// example, time out the authorisation, then answer the lookup).
     /// </summary>
-    /// <remarks>
-    /// Every lookup test needs this. Reconciliation only ever asks about an
-    /// authorisation that got no answer, so the two calls have to happen under
-    /// opposite conditions — <c>TimeoutRate</c> at 1 for the authorisation and 0 for
-    /// the lookup. They no longer have to hit the same <i>instance</i>, which is the
-    /// whole of 066; they do anyway, because the weather is what is being changed.
-    /// </remarks>
     private (SimulatedPaymentGateway Gateway, PaymentSimulationOptions Options) Configured(
         double declineRate = 0,
         double timeoutRate = 0,
@@ -163,10 +133,7 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
         Assert.Null(reference);
     }
 
-    /// <summary>
-    /// A timeout outranks a decline: the gateway cannot both refuse and fail to
-    /// answer, and "no answer" is the one that leaves the caller unsure.
-    /// </summary>
+    /// <summary>A timeout outranks a decline.</summary>
     [Fact]
     public async Task Authorize_WhenAlwaysTimingOut_ShouldTimeOutEvenIfAlsoAlwaysDeclining()
     {
@@ -177,11 +144,7 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
         Assert.Null(reference);
     }
 
-    /// <summary>
-    /// Capture and void are never declined here. That is a deliberate
-    /// simplification rather than a claim about payments — see
-    /// <c>DECISIONS.md</c> 032.
-    /// </summary>
+    /// <summary>Capture and void are never declined: a known simplification.</summary>
     [Fact]
     public async Task CaptureAndVoid_WhenAlwaysDeclining_ShouldStillSucceed()
     {
@@ -203,10 +166,7 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
     // -- Idempotency ------------------------------------------------------
 
     /// <summary>
-    /// The load-bearing test in this file. Fifty authorisations under one key
-    /// against a gateway that refuses half the time: without the memory these
-    /// would disagree, so agreement is the memory working. Unseeded on purpose —
-    /// a seed would make the sequence fixed and prove nothing about the key.
+    /// Fifty authorisations under one key at a 50% decline rate all agree. Unseeded on purpose.
     /// </summary>
     [Fact]
     public async Task Authorize_WithTheSameKey_ShouldAlwaysGiveTheSameAnswer()
@@ -253,22 +213,12 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
         await Assert.ThrowsAsync<ArgumentException>(
             () => Gateway().AuthorizeAsync(key, Amount, Currency));
 
-    // -- Surviving the process (DECISIONS 066) ----------------------------
+    // -- Surviving the process --------------------------------------------
 
     /// <summary>
-    /// The regression test for the failure 064 found, stated as plainly as it can be:
-    /// a gateway that never authorised anything still knows what the one that did
-    /// decided.
+    /// A second gateway instance over the same database knows what the first decided, so a
+    /// restart cannot turn held funds into NotFound.
     /// </summary>
-    /// <remarks>
-    /// Two instances over one database is both halves of 064's problem at once — the
-    /// restart in fault 1, where <c>payments-api</c> came back with an empty
-    /// dictionary and settled 120 of 121 attempts as abandoned, and fault 2's second
-    /// process asking about keys it had never seen. Before 066 this returned
-    /// <c>NotFound</c>, which the reconciler reads as "the gateway looked and there is
-    /// nothing there" and acts on by releasing an order's live-attempt slot while the
-    /// funds are still held.
-    /// </remarks>
     [Fact]
     public async Task LookUp_FromAnInstanceThatNeverAuthorised_ShouldStillReportTheHold()
     {
@@ -276,7 +226,7 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
         var (outcome, reference) = await authorising.AuthorizeAsync("key-1", Amount, Currency);
         Assert.Equal(GatewayOutcome.Succeeded, outcome);
 
-        // A restart, or a second process. Same database, no shared state in memory.
+        // A restart, or a second process: same database, no shared memory.
         var restarted = Gateway();
 
         var (record, found) = await restarted.LookUpAsync("key-1");
@@ -285,28 +235,20 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
         Assert.Equal(reference, found);
     }
 
-    /// <summary>
-    /// And the same for a decline: a restarted gateway must not re-roll a decision
-    /// somebody has already been given.
-    /// </summary>
+    /// <summary>A restarted gateway does not re-roll a decline.</summary>
     [Fact]
     public async Task Authorize_FromAnotherInstance_ShouldRepeatTheRecordedAnswer()
     {
         var (outcome, _) = await Gateway(declineRate: 1).AuthorizeAsync("key-1", Amount, Currency);
         Assert.Equal(GatewayOutcome.Declined, outcome);
 
-        // Different instance, opposite weather: without the ledger this would roll
-        // again and succeed, which is a customer told "declined" and then charged.
+        // Opposite conditions: without the ledger this would roll again and succeed.
         var (again, _) = await Gateway(declineRate: 0).AuthorizeAsync("key-1", Amount, Currency);
 
         Assert.Equal(GatewayOutcome.Declined, again);
     }
 
-    /// <summary>
-    /// A request that never arrived leaves nothing behind, and that has to stay true
-    /// now the record is durable — it is what makes <c>NotFound</c> mean something to
-    /// the reconciler (057).
-    /// </summary>
+    /// <summary>A request that never arrived leaves no record, so NotFound stays meaningful.</summary>
     [Fact]
     public async Task Authorize_WhenTheRequestWasLost_ShouldLeaveNothingForAnotherInstanceToFind()
     {
@@ -317,10 +259,7 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
         Assert.Equal(GatewayRecord.NotFound, record);
     }
 
-    /// <summary>
-    /// Concurrent authorisations under one key are arbitrated by the ledger's primary
-    /// key, and the loser reads back the winner's answer rather than its own roll.
-    /// </summary>
+    /// <summary>Concurrent authorisations under one key: the loser reads back the winner's answer.</summary>
     [Fact]
     public async Task Authorize_ConcurrentlyUnderOneKey_ShouldAgreeOnOneAnswer()
     {
@@ -334,15 +273,7 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
 
     // -- Reproducibility --------------------------------------------------
 
-    /// <summary>
-    /// A seeded gateway replays. This is what lets a load test be re-run against
-    /// the same sequence of nastiness rather than a fresh one.
-    /// </summary>
-    /// <remarks>
-    /// The ledger is emptied between the two runs, and since 066 that is not
-    /// housekeeping but the point: a second run over the first's rows would return
-    /// the recorded answers and agree with itself no matter what the seed did.
-    /// </remarks>
+    /// <summary>A seeded gateway replays; the ledger is emptied between runs so this proves the seed.</summary>
     [Fact]
     public async Task Authorize_WithTheSameSeed_ShouldProduceTheSameSequence()
     {
@@ -355,11 +286,7 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
         Assert.Equal(first, again);
     }
 
-    /// <summary>
-    /// And an unseeded one does not. Rates of a third each over forty calls make
-    /// two identical runs vanishingly unlikely, which is what makes this an
-    /// assertion rather than a hope.
-    /// </summary>
+    /// <summary>An unseeded gateway does not replay.</summary>
     [Fact]
     public async Task Authorize_WithoutASeed_ShouldNotProduceTheSameSequence()
     {
@@ -374,11 +301,7 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
 
     // -- Latency ----------------------------------------------------------
 
-    /// <summary>
-    /// A maximum below the minimum is a typo in configuration, not a reason to
-    /// refuse to start. It clamps up, so the gateway gets slower rather than
-    /// throwing at a point where nothing can act on the error.
-    /// </summary>
+    /// <summary>A maximum latency below the minimum clamps up instead of throwing.</summary>
     [Fact]
     public async Task Authorize_WhenMaxLatencyIsBelowMin_ShouldNotThrow()
     {
@@ -399,11 +322,8 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
     // -- Lookup -----------------------------------------------------------
 
     /// <summary>
-    /// The two branches reconciliation turns on, and the reason
-    /// <c>LostRequestRate</c> exists: a timeout means either that the request never
-    /// arrived or that the answer never came back, and only the gateway can say
-    /// which. These are the tests that would catch a simulator that had quietly
-    /// stopped being able to produce one of the two.
+    /// A timeout is either a lost request (NotFound on lookup) or a lost answer (the decision on
+    /// lookup). Both must be producible.
     /// </summary>
     [Fact]
     public async Task LookUp_AfterAnAuthorisationThatArrived_ShouldReportTheHold()
@@ -434,11 +354,7 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
         Assert.Null(reference);
     }
 
-    /// <summary>
-    /// A refusal whose answer was lost is still a refusal, and this is the one route
-    /// by which a timed-out attempt may honestly end up declined — the gateway said
-    /// so, rather than a silence being read as if it had.
-    /// </summary>
+    /// <summary>A refusal whose answer was lost is found as Declined.</summary>
     [Fact]
     public async Task LookUp_AfterADeclineThatWasNotHeard_ShouldReportTheDecline()
     {
@@ -474,11 +390,7 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
         Assert.Null(reference);
     }
 
-    /// <summary>
-    /// The distinction the reconciler's correctness rests on. "I looked and there is
-    /// nothing" releases the order's live-attempt slot; "I could not look" must not,
-    /// because the funds may be held and nobody has established otherwise.
-    /// </summary>
+    /// <summary>A lookup that gets no answer is Unknown, never NotFound.</summary>
     [Fact]
     public async Task LookUp_WhenTheGatewayDoesNotAnswer_ShouldReportUnknownRatherThanNotFound()
     {
@@ -488,11 +400,7 @@ public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
         Assert.Null(reference);
     }
 
-    /// <summary>
-    /// A lookup is a read. If it recorded an answer of its own, the first thing
-    /// reconciliation did to an attempt would be to decide it — and the decision
-    /// would be this gateway's coin flip rather than anything that happened.
-    /// </summary>
+    /// <summary>A lookup records nothing.</summary>
     [Fact]
     public async Task LookUp_ShouldDecideNothing()
     {

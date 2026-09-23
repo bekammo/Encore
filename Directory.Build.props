@@ -1,8 +1,6 @@
 <Project>
 
-  <!-- Shared build settings for every project in the solution. Individual
-       .csproj files stay short so that what they *do* say — package
-       references and project references — is the interesting part. -->
+  <!-- Settings shared by every project. -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

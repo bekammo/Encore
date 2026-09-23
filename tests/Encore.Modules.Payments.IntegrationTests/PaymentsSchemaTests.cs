@@ -6,16 +6,9 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Payments.IntegrationTests;
 
 /// <summary>
-/// Proves Payments' schema enforces what the module is relying on it to enforce.
+/// Payments' schema enforces what the module relies on, above all the partial unique index
+/// whose SQL filter no compiler checks.
 /// </summary>
-/// <remarks>
-/// The partial unique index is the one that matters. It is the real guard against
-/// a retried confirm charging a customer twice, and it is expressed as a raw SQL
-/// filter string that no compiler checks against <see cref="PaymentStatus"/> — so
-/// a wrong literal produces a silently different index rather than a build error.
-/// These tests are what would catch that, and they are the reason
-/// <c>PaymentTests.IsLive_ShouldMatchTheIndexFilter</c> is worth anything.
-/// </remarks>
 public sealed class PaymentsSchemaTests : IAsyncLifetime
 {
     private static readonly DateTime AttemptedAt = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
@@ -39,9 +32,7 @@ public sealed class PaymentsSchemaTests : IAsyncLifetime
 
         await using var context = new PaymentsDbContext(_options);
 
-        // Migrate rather than EnsureCreated: this also proves the generated
-        // migration applies against real Postgres, including that it does not try
-        // to create the xmin system column.
+        // Migrate rather than EnsureCreated, so the real migration is exercised.
         await context.Database.MigrateAsync();
     }
 
@@ -56,11 +47,7 @@ public sealed class PaymentsSchemaTests : IAsyncLifetime
         Assert.Empty(await context.Database.GetPendingMigrationsAsync());
     }
 
-    /// <summary>
-    /// The guard that makes a retried confirm safe. Two live attempts against one
-    /// order must be impossible at the database, not merely checked for in code —
-    /// two requests can both pass a check.
-    /// </summary>
+    /// <summary>Two live attempts against one order are impossible at the database.</summary>
     [Theory]
     [InlineData(PaymentStatus.Pending)]
     [InlineData(PaymentStatus.Authorized)]
@@ -81,12 +68,7 @@ public sealed class PaymentsSchemaTests : IAsyncLifetime
         Assert.Contains("ux_payments_order_live", ex.InnerException!.Message);
     }
 
-    /// <summary>
-    /// The other half of the same rule, and the half a too-broad filter would
-    /// break. A declined attempt moved no money, so it must not stop the customer
-    /// trying again with a different card — and a voided one released what it
-    /// held, so it must not either.
-    /// </summary>
+    /// <summary>Declined and voided attempts do not block a new one.</summary>
     [Theory]
     [InlineData(PaymentStatus.Declined)]
     [InlineData(PaymentStatus.Voided)]
@@ -122,10 +104,7 @@ public sealed class PaymentsSchemaTests : IAsyncLifetime
         Assert.Contains("ux_payments_idempotency_key", ex.InnerException!.Message);
     }
 
-    /// <summary>
-    /// Four decimal places, per <c>DECISIONS.md</c> 016. A price that rounds on
-    /// the way into the database is a price somebody disputes later.
-    /// </summary>
+    /// <summary>Amounts keep four decimal places.</summary>
     [Fact]
     public async Task Amount_ShouldRoundTripAtFourDecimalPlaces()
     {
@@ -139,12 +118,7 @@ public sealed class PaymentsSchemaTests : IAsyncLifetime
         Assert.Equal(123.4567m, read.Amount);
     }
 
-    /// <summary>
-    /// Postgres <c>timestamptz</c> stores UTC and discards the offset, and Npgsql
-    /// rejects a non-UTC <see cref="DateTime"/> outright. Both timestamps have to
-    /// come back with <see cref="DateTimeKind.Utc"/> or every comparison above
-    /// this line is against a value of unknown meaning.
-    /// </summary>
+    /// <summary>Timestamps come back as UTC.</summary>
     [Fact]
     public async Task Timestamps_ShouldRoundTripAsUtc()
     {
@@ -161,12 +135,7 @@ public sealed class PaymentsSchemaTests : IAsyncLifetime
         Assert.Equal(AttemptedAt.AddSeconds(2), read.ResolvedAt);
     }
 
-    /// <summary>
-    /// The token that stops a confirm and a cancel racing this row from writing
-    /// <see cref="PaymentStatus.Voided"/> over money that was taken. Both writers
-    /// load the row while it still reads <see cref="PaymentStatus.Authorized"/>,
-    /// so nothing in C# can catch this — only the database can.
-    /// </summary>
+    /// <summary>A confirm and a cancel racing one row: xmin makes the second writer lose.</summary>
     [Fact]
     public async Task TwoWritersOnOneAttempt_ShouldLeaveTheLoserRejected()
     {
