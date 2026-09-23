@@ -4,8 +4,9 @@ services:
     container_name: encore-postgres
     # 300, not the default 100. Npgsql pools per connection string and a host's five
     # module strings are identical, so each host is one pool: 100 for the monolith, 50 for
-    # payments-api. The rest is headroom for the chaos rig's psql, a `dotnet run` and the
-    # Testcontainers suites. At the default, the strangled pair alone overran the server
+    # payments-api, plus 100 more for a host when HOLD_CAP_LOCK=Postgres gives the advisory
+    # lock its own data source (005). The rest is headroom for the chaos rig's psql, a
+    # `dotnet run` and the Testcontainers suites. At the default, the strangled pair alone overran the server
     # with `53300: too many clients` (019).
     command: ["postgres", "-c", "max_connections=300"]
     environment:
@@ -83,6 +84,8 @@ services:
       # How long the lock stops asking Redis after a refusal. 00:00:00 asks every time: the
       # control for measuring what the cooldown saves (019).
       Inventory__RedisLock__Cooldown: "${REDIS_LOCK_COOLDOWN:-00:00:01}"
+      # Who serialises the hold cap's count: Redis, or a Postgres advisory lock (005).
+      Inventory__HoldCapLock: "${HOLD_CAP_LOCK:-Redis}"
       # Telemetry is off unless this names a collector, so a load run measures the system
       # without it. OTEL_ENDPOINT=http://lgtm:4317 with `--profile telemetry` turns it on (021).
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_ENDPOINT:-}"
@@ -163,6 +166,7 @@ services:
       Logging__LogLevel__Encore: "${ENCORE_LOG_LEVEL:-Information}"
       Inventory__RedisLock__ConnectTimeoutMs: "${REDIS_CONNECT_TIMEOUT_MS:-1000}"
       Inventory__RedisLock__Cooldown: "${REDIS_LOCK_COOLDOWN:-00:00:01}"
+      Inventory__HoldCapLock: "${HOLD_CAP_LOCK:-Redis}"
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_ENDPOINT:-}"
 
   # Grafana, Tempo, Prometheus and Loki in one container, behind its own profile so nothing
@@ -176,6 +180,10 @@ services:
       - "3000:3000"
       - "4317:4317"
       - "4318:4318"
+    # The "Encore — flash sale" dashboard, provisioned beside the image's own.
+    volumes:
+      - ./ops/grafana/provisioning/encore.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/encore.yaml:ro
+      - ./ops/grafana/dashboards:/otel-lgtm/encore-dashboards:ro
 
   # The load harness: k6 in a container, so the rig adds no project and no package the
   # build rules would have to reason about (019). `--build` is required, as for `tests`:

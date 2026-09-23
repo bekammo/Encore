@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using OpenTelemetry;
 using OpenTelemetry.Metrics;
@@ -15,6 +16,8 @@ public static class EncoreTelemetry
 {
     /// <summary>The standard OTLP variable; its presence is the switch.</summary>
     public const string EndpointKey = "OTEL_EXPORTER_OTLP_ENDPOINT";
+
+    private const string MetricExportIntervalKey = "OTEL_METRIC_EXPORT_INTERVAL";
 
     /// <summary>
     /// Every module's source and meter. A wildcard, so this project never names a module.
@@ -36,6 +39,14 @@ public static class EncoreTelemetry
         if (string.IsNullOrWhiteSpace(builder.Configuration[EndpointKey]))
         {
             return builder;
+        }
+
+        // A flash sale lasts a minute; the SDK's 60 s default would give a dashboard one point.
+        // The standard variable still wins when set.
+        if (builder.Configuration[MetricExportIntervalKey] is null)
+        {
+            builder.Services.Configure<MetricReaderOptions>(options =>
+                options.PeriodicExportingMetricReaderOptions.ExportIntervalMilliseconds = 5_000);
         }
 
         builder.AddOpenTelemetry()

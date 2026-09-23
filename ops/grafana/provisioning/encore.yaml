@@ -1,0 +1,9 @@
+# Mounted into grafana/otel-lgtm beside its own providers (docker-compose.yml, `lgtm`).
+apiVersion: 1
+
+providers:
+  - name: "Encore"
+    type: file
+    options:
+      path: /otel-lgtm/encore-dashboards
+      foldersFromFilesStructure: false

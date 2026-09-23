@@ -42,7 +42,14 @@ internal static class InventoryTelemetry
     public static readonly Histogram<double> OutboxDeliveryLag = Meter.CreateHistogram<double>(
         "encore.inventory.outbox.delivery.lag",
         unit: "s",
-        description: "Time from a seat change to the delivery of its event.");
+        description: "Time from a seat change to the delivery of its event.",
+        tags: null,
+        // In seconds. The SDK's default boundaries (0, 5, 10, 25…) are sized for milliseconds
+        // and put every healthy delivery in the first bucket.
+        advice: new InstrumentAdvice<double>
+        {
+            HistogramBucketBoundaries = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60]
+        });
 
     public static void RecordSeat(string action, Enum outcome) =>
         SeatOutcomes.Add(

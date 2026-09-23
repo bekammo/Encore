@@ -21,7 +21,8 @@ since the Payments extraction, two ASP.NET Core hosts rather than one:
 That asymmetry is the argument, not an accident. Architecture is a cost you pay
 for optionality, and it is only worth paying where the optionality will actually
 be spent. The reasoning behind every choice here, including the ones I would
-expect to be challenged, is in [DECISIONS.md](DECISIONS.md).
+expect to be challenged, is in [DECISIONS.md](DECISIONS.md); the story in one read is
+[WRITEUP.md](WRITEUP.md).
 
 The second host is `Encore.Payments.Api`: the same Payments module, composed
 through the same seam, plus the three `/internal/payments/*` routes the monolith
@@ -231,7 +232,7 @@ direction, and it also checks which host serves each route (`DECISIONS.md` 008).
 docker compose run --rm --build tests
 ```
 
-608 tests: 384 unit and architecture, 224 integration against real Postgres and
+616 tests: 385 unit and architecture, 231 integration against real Postgres and
 Testcontainers. `--build` is not optional: the image compiles the source into itself
 with no bind mount, so a run without it reports on the last build's binaries as though
 they were today's.
@@ -441,8 +442,9 @@ otherwise be a one-span trace every second.
 
 ## Status
 
-Load-In is closed, and Soundcheck's two outcomes — the outbox and the Payments extraction —
-are built. The work since has been load and chaos testing.
+Load-In and Showtime are closed, and Soundcheck's two outcomes, the outbox and the Payments
+extraction, are built. On Tour has begun: observability and the write-up are done, and
+deployment remains.
 
 - **Inventory is complete**: aggregate, ports, adapters, use cases, HTTP surface, outbox,
   expired-hold sweep, and the concurrency tests that prove it.
@@ -456,17 +458,19 @@ are built. The work since has been load and chaos testing.
 - **Payments runs as its own service** (018). The extraction was inert for four days — a
   `services.Replace` that ran before the registration it meant to replace — and the chaos rig
   found it by stopping the service and watching confirms keep succeeding.
-- **OpenTelemetry**, brought forward from On Tour (021). Off by default. What exporting costs
-  a flash sale has not been measured yet.
+- **OpenTelemetry**, brought forward from On Tour (021), with a provisioned Grafana dashboard. Off
+  by default; on this laptop, exporting everything costs about 25% throughput.
 
 Open, and named rather than hidden:
 
-- `Payment` raises no domain events, so nothing tells an order that the reconciler released
-  its authorisation. That needs Payments to have an outbox of its own (013).
-- Losing Redis still costs a purchase 1.78× at the median. The lock now stops asking Redis
-  for a second after a refusal; what that saves has not been measured yet (019).
-- The client lock has not been measured against a Postgres-side serialisation of the cap
-  check (005).
+- `Payment` raises no domain events. No order needs one, since the next confirm reads what the
+  reconciler settled, and the only consumer would need a message bus. They are built when a
+  consumer needs them (013).
+- Losing Redis still costs a purchase about 1.45× at the median. A one-second cooldown after
+  a refusal took a little off (from 1.53×–1.73×), and the rest is unattributed (019). A
+  Postgres advisory lock removes the cost entirely and keeps the cap enforced without Redis,
+  but costs about 16% throughput when Redis is healthy. It is one config key away, and Redis
+  stays the default (005).
 - The `payments` schema still lives in the shared Postgres: the process boundary moved and
   the data boundary did not (018).
 - Identity does not exist, so `X-Client-Id` remains a claimed identity.
@@ -478,5 +482,5 @@ and any deployment story.
 |---|---|---|
 | Load-In | 1–3 | Modular monolith, DDD tactical patterns, TDD foundation |
 | Soundcheck | 4–6 | Extract Payments and Notifications via Strangler Fig + Outbox |
-| **Showtime** | 7–10 | Inventory concurrency, load testing, chaos experiments |
-| On Tour | 11–12+ | Cloud deploy, observability, write-up |
+| Showtime | 7–10 | Inventory concurrency, load testing, chaos experiments |
+| **On Tour** | 11–12+ | Cloud deploy, observability, write-up |

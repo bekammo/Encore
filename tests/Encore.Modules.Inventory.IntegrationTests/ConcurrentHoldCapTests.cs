@@ -5,6 +5,7 @@ using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Ports;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 using StackExchange.Redis;
 using Testcontainers.PostgreSql;
 using Testcontainers.Redis;
@@ -13,7 +14,8 @@ namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
 /// The per-client hold cap under one client racing themselves across many seats. Needs Redis:
-/// the cap spans rows, so the client lock is its only guard.
+/// the cap spans rows, so the client lock is its only guard. Every test runs against both locks
+/// that can serialise the count (005).
 /// </summary>
 public sealed class ConcurrentHoldCapTests : IAsyncLifetime
 {
@@ -33,6 +35,7 @@ public sealed class ConcurrentHoldCapTests : IAsyncLifetime
 
     private DbContextOptions<InventoryDbContext> _options = null!;
     private IConnectionMultiplexer _connection = null!;
+    private NpgsqlDataSource _dataSource = null!;
 
     /// <inheritdoc />
     public async Task InitializeAsync()
@@ -44,6 +47,7 @@ public sealed class ConcurrentHoldCapTests : IAsyncLifetime
             .Options;
 
         _connection = await ConnectionMultiplexer.ConnectAsync(_redis.GetConnectionString());
+        _dataSource = NpgsqlDataSource.Create(_postgres.GetConnectionString());
 
         await using var context = new InventoryDbContext(_options);
         await context.Database.MigrateAsync();
@@ -53,6 +57,7 @@ public sealed class ConcurrentHoldCapTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         await _connection.DisposeAsync();
+        await _dataSource.DisposeAsync();
         await Task.WhenAll(_postgres.DisposeAsync().AsTask(), _redis.DisposeAsync().AsTask());
     }
 
@@ -129,12 +134,14 @@ public sealed class ConcurrentHoldCapTests : IAsyncLifetime
     /// A burst of twelve ends with at most the cap. Lock losers are refused, so this proves a
     /// ceiling; the next test proves a retrying client reaches it.
     /// </summary>
-    [Fact]
-    public async Task Hold_WhenOneClientRacesThemselves_ShouldNotExceedTheCap()
+    [Theory]
+    [InlineData(Redis)]
+    [InlineData(Postgres)]
+    public async Task Hold_WhenOneClientRacesThemselves_ShouldNotExceedTheCap(string serialisedBy)
     {
         var seatIds = await SeedAvailableSeatsAsync(ConcurrentAttempts);
 
-        var results = await RaceForSeatsAsync(seatIds, new RedisDistributedLock(_connection, NullLogger<RedisDistributedLock>.Instance));
+        var results = await RaceForSeatsAsync(seatIds, LockFor(serialisedBy));
         var held = results.Count(result => result.Outcome is HoldSeatOutcome.Held);
 
         Assert.True(
@@ -154,11 +161,13 @@ public sealed class ConcurrentHoldCapTests : IAsyncLifetime
     }
 
     /// <summary>A client that retries on contention converges on exactly the cap, and stops.</summary>
-    [Fact]
-    public async Task Hold_WhenOneClientRetriesOnContention_ShouldReachExactlyTheCap()
+    [Theory]
+    [InlineData(Redis)]
+    [InlineData(Postgres)]
+    public async Task Hold_WhenOneClientRetriesOnContention_ShouldReachExactlyTheCap(string serialisedBy)
     {
         var seatIds = await SeedAvailableSeatsAsync(ConcurrentAttempts);
-        var distributedLock = new RedisDistributedLock(_connection, NullLogger<RedisDistributedLock>.Instance);
+        var distributedLock = LockFor(serialisedBy);
 
         await using var context = new InventoryDbContext(_options);
         var handler = new HoldSeatCommandHandler(
@@ -189,6 +198,17 @@ public sealed class ConcurrentHoldCapTests : IAsyncLifetime
         Assert.Equal(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent, held);
         Assert.Equal(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent, await CountPersistedHoldsAsync());
     }
+
+    private const string Redis = nameof(Redis);
+    private const string Postgres = nameof(Postgres);
+
+    /// <summary>The two ways to serialise the count (005): the Redis lock, or a Postgres advisory lock.</summary>
+    private IDistributedLock LockFor(string serialisedBy) => serialisedBy switch
+    {
+        Redis => new RedisDistributedLock(_connection, NullLogger<RedisDistributedLock>.Instance),
+        Postgres => new PostgresAdvisoryLock(_dataSource),
+        _ => throw new ArgumentOutOfRangeException(nameof(serialisedBy), serialisedBy, null)
+    };
 
     private static string Describe(IReadOnlyList<HoldSeatResult> results) =>
         string.Join(", ", results
