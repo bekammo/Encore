@@ -4,31 +4,10 @@ using Microsoft.AspNetCore.Http;
 namespace Encore.Modules.Inventory.Endpoints;
 
 /// <summary>
-/// Turns a use-case outcome into an HTTP response. The only place in the module
-/// that knows a status code.
+/// Maps use-case outcomes to HTTP responses. Refusals about the state of the world are
+/// 409 with a machine-readable <c>reason</c>; only a missing seat is 404. Every switch is
+/// exhaustive, so a new outcome breaks the build.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>The rule, stated once: the status carries the class of failure, and a
-/// <c>reason</c> member carries which failure.</b> Everything that is a refusal
-/// about the state of the world is <c>409 Conflict</c>; only "no such seat"
-/// (404) differs. Splitting refusals across a scatter of codes would make
-/// clients branch on status, and the statuses would then have to stay stable
-/// forever; a machine-readable <c>reason</c> string is the thing worth
-/// promising.
-/// </para>
-/// <para>
-/// There is no 401 or 403 anywhere, because there is no authentication —
-/// <c>X-Client-Id</c> is a claimed identity. A 403 would imply an authorisation
-/// system that does not exist.
-/// </para>
-/// <para>
-/// Extracted from the endpoints so it can be tested without a host: every
-/// switch below is exhaustive with no default arm, so adding an outcome breaks
-/// the build rather than silently falling through — which is the entire point
-/// of those enums being closed sets.
-/// </para>
-/// </remarks>
 internal static class SeatResults
 {
     /// <summary>Maps the outcome of a hold.</summary>
@@ -116,9 +95,7 @@ internal static class SeatResults
         };
 
     /// <summary>
-    /// "No such seat at this event" — which also covers a seat that exists under
-    /// a different event. Deliberately the same answer, so nobody can discover
-    /// which seat ids exist by asking about an event they are not looking at.
+    /// A missing seat and a seat under another event get the same answer, so ids cannot be probed.
     /// </summary>
     private static IResult NotFound(PathString path) =>
         TypedResults.Problem(
@@ -139,10 +116,7 @@ internal static class SeatResults
         {
             ["reason"] = reason,
 
-            // Whether trying the identical request again could plausibly work.
-            // Under flash-sale load most refusals are ordinary, not faults, and
-            // a client needs to know which ones are worth another attempt
-            // without hard-coding a list of reason strings.
+            // Whether repeating the identical request could succeed.
             ["retriable"] = retriable
         };
 

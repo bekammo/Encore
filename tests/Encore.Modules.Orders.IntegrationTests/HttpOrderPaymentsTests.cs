@@ -13,26 +13,10 @@ using Microsoft.Extensions.Logging;
 namespace Encore.Modules.Orders.IntegrationTests;
 
 /// <summary>
-/// The adapter that talks to Payments when it is its own service, against a real
-/// socket. DECISIONS 061.
+/// The HTTP adapter to the Payments service, against a stub on a real loopback socket, so
+/// refused connections and unanswered requests are real. <c>PaymentServiceEndpointsTests</c>
+/// pins the other end of the wire format.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>The far side is a stub, deliberately.</b> What is under test here is the
-/// mapping — a wire answer to a member of <see cref="AuthorizePaymentStatus"/> and
-/// its siblings — and driving the real module would test Payments' behaviour again
-/// while making the bodies harder to control. The other half of the contract, that
-/// the real endpoints actually emit these bodies, is
-/// <c>PaymentServiceEndpointsTests</c> in the Payments suite. Neither is much use
-/// without the other, and together they pin both ends of the format.
-/// </para>
-/// <para>
-/// A real Kestrel on a real loopback port rather than a mocked
-/// <see cref="HttpMessageHandler"/>, because two of the behaviours worth pinning —
-/// a connection that fails and a server that never answers — are properties of the
-/// transport, and a handler that fakes them is a handler asserting its own fiction.
-/// </para>
-/// </remarks>
 public sealed class HttpOrderPaymentsTests : IAsyncLifetime
 {
     private static readonly Guid OrderId = Guid.Parse("11111111-1111-1111-1111-111111111111");
@@ -60,9 +44,7 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
 
         _service = builder.Build();
 
-        // One handler for all three routes: the adapter chooses the path, and what
-        // comes back is whatever the test set. Which path was asked for is checked
-        // by the tests that care.
+        // One handler for all three routes; tests that care check which path was asked for.
         _service.Map("/internal/payments/{operation}", async (HttpContext http) =>
         {
             _paths.Add(http.Request.Path);
@@ -113,9 +95,7 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
         Assert.Equal(PaymentId, response.PaymentId);
     }
 
-    /// <summary>
-    /// The one authorize answer that names no attempt, because none was opened.
-    /// </summary>
+    /// <summary>The one authorize answer that names no attempt.</summary>
     [Fact]
     public async Task Authorize_WhenAnotherAttemptIsInFlight_ShouldCarryNoPaymentId()
     {
@@ -184,15 +164,9 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
     // -- when the far side does not answer --------------------------------
 
     /// <summary>
-    /// The rule the whole adapter turns on: anything unreadable is a timeout.
+    /// Anything unreadable is a timeout: the one status already handled safely for "the money
+    /// may or may not be held".
     /// </summary>
-    /// <remarks>
-    /// Not a decline, which would be a guess that loses money, and not an
-    /// authorisation, which would be a guess that sells seats against funds nobody
-    /// holds. A timeout is the one status whose handling is already correct for "the
-    /// money may or may not be held" — the order stays Pending and the next confirm
-    /// asks again under the same key.
-    /// </remarks>
     [Theory]
     [InlineData(500, "{}")]
     [InlineData(502, "<html>upstream is angry</html>")]
@@ -209,10 +183,6 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
     }
 
     /// <summary>A service that never answers is a timeout, not an exception.</summary>
-    /// <remarks>
-    /// A confirm has a customer waiting on it, so an unhandled exception here is a
-    /// 500 that tells them nothing and leaves the order in a state nobody chose.
-    /// </remarks>
     [Fact]
     public async Task Authorize_WhenTheServiceNeverAnswers_ShouldReportATimeout()
     {
@@ -237,14 +207,7 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
         Assert.Equal(AuthorizePaymentStatus.TimedOut, response.Status);
     }
 
-    /// <summary>
-    /// A rejected token is the one failure that is not a payment outcome.
-    /// </summary>
-    /// <remarks>
-    /// It is configuration, it will not fix itself by being retried into a timeout,
-    /// and every subsequent call will fail the same way. Failing loudly on the first
-    /// one is how somebody finds out.
-    /// </remarks>
+    /// <summary>A rejected token is configuration, not a payment outcome, so it throws.</summary>
     [Fact]
     public async Task Authorize_WhenTheTokenIsRejected_ShouldThrowRatherThanReportATimeout()
     {
@@ -254,9 +217,7 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
             Payments().AuthorizeAsync(new AuthorizePaymentRequest(OrderId, ClientId, 10m, "GBP")));
     }
 
-    /// <summary>
-    /// A success that names no attempt is a wire-format bug, not a payment state.
-    /// </summary>
+    /// <summary>A success that names no attempt is a wire-format bug.</summary>
     [Fact]
     public async Task Authorize_WhenASuccessNamesNoAttempt_ShouldThrow()
     {
@@ -268,9 +229,7 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
 
     // -- the request the adapter sends ------------------------------------
 
-    /// <summary>
-    /// The path is the operation, so that the service's three routes are reached.
-    /// </summary>
+    /// <summary>The path is the operation.</summary>
     [Fact]
     public async Task EachOperationShouldPostToItsOwnRoute()
     {
@@ -291,9 +250,8 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
     // -- helpers ----------------------------------------------------------
 
     /// <summary>
-    /// Sets the next answer. A 2xx is written as a success body carrying
-    /// <c>outcome</c>; anything else as the problem+json shape, carrying
-    /// <c>reason</c>. That is the pair the real endpoints emit.
+    /// Sets the next answer: a success body with <c>outcome</c> for 2xx, otherwise problem+json
+    /// with <c>reason</c>, as the real endpoints emit.
     /// </summary>
     private void Answer(int status, string reason, Guid? paymentId)
     {

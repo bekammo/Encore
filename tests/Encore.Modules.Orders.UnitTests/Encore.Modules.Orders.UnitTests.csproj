@@ -1,17 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The outcome-to-HTTP mapping, and nothing else.
-
-       Orders declined a repository port on purpose (DECISIONS 001 and 022), so
-       CheckoutService needs a real database and its tests live next door in the
-       integration suite. What is left here is the part that needs no database at
-       all and is the most expensive to get wrong: roughly twenty responses that
-       decide what every client sees, where a wrong one is invisible until
-       somebody hits it.
-
-       Deliberately no EntityFrameworkCore.InMemory. A fake database that does
-       not enforce the partial unique index would let these tests pass while the
-       thing the schema exists for went untested. -->
+  <!-- The HTTP mapping and the strangler switch, with no database. CheckoutService needs a
+       real database and is tested in the integration suite. -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>
@@ -26,11 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Encore.Modules.Orders\Encore.Modules.Orders.csproj" />
-    <!-- Payments as well, and this is the only test project with both. The
-         Strangler Fig switch is a property of the two modules composed together:
-         each of them registers IOrderPayments, and which registration survives is
-         the entire question. A test that can only see one of them cannot ask it,
-         which is why nothing caught 061's inert switch. DECISIONS 063. -->
+    <!-- Payments too: the strangler switch only exists when both modules are composed. -->
     <ProjectReference Include="..\..\src\Encore.Modules.Payments\Encore.Modules.Payments.csproj" />
   </ItemGroup>
 

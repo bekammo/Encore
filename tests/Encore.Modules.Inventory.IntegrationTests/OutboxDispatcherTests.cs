@@ -14,24 +14,10 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// Delivery: at-least-once, in id order, claimed by one dispatcher at a time, and
-/// bounded when a handler keeps refusing.
+/// Delivery: at-least-once, in id order, one dispatcher per row, bounded retries. Uses a real
+/// DI container, since scope management and handler resolution are the dispatcher's job, and
+/// drives one tick at a time rather than waiting on the hosted service.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>This class builds a DI container, which no other test here does</b>, and the
-/// exception is the point rather than a lapse. Everything else in this suite
-/// constructs its subject by hand because its subject is a class; the dispatcher's
-/// job is largely scope management and handler resolution, so a hand-built instance
-/// would test everything except the part that can actually be wrong.
-/// </para>
-/// <para>
-/// <b>One tick is driven directly rather than by starting the hosted service.</b> A
-/// test that called <c>StartAsync</c> and waited would be timing-dependent, and a
-/// flaky test about an at-least-once mechanism is worse than no test — its failure
-/// is indistinguishable from the bug it exists to catch.
-/// </para>
-/// </remarks>
 public sealed class OutboxDispatcherTests : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
@@ -128,10 +114,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
             handler.Delivered.Select(delivery => delivery.SeatId).ToArray());
     }
 
-    /// <summary>
-    /// A handler that throws leaves the message undelivered, counted, and scheduled
-    /// for later — not marked processed, and not lost.
-    /// </summary>
+    /// <summary>A throwing handler leaves the message undelivered, counted and scheduled for later.</summary>
     [Fact]
     public async Task Dispatch_WhenTheHandlerThrows_ShouldRecordTheFailureAndBackOff()
     {
@@ -149,20 +132,11 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         Assert.NotNull(stored.LastError);
         Assert.Contains("handler refused", stored.LastError, StringComparison.Ordinal);
 
-        // Backed off into the future, so the very next tick does not immediately
-        // burn a second attempt on it.
+        // Backed off, so the next tick does not immediately retry it.
         Assert.True(stored.NextAttemptAt > stored.OccurredAt);
     }
 
-    /// <summary>
-    /// A failing message does not block the ones behind it.
-    /// </summary>
-    /// <remarks>
-    /// This is the cost of the design stated as a test: the queue keeps moving, and
-    /// the price is that a backed-off message is overtaken. Blocking instead would
-    /// preserve a global order nothing has asked for, at the price of one bad row
-    /// stopping every good one.
-    /// </remarks>
+    /// <summary>A failing message does not block the ones behind it.</summary>
     [Fact]
     public async Task Dispatch_WhenOneMessageFails_ShouldStillDeliverTheRest()
     {
@@ -184,17 +158,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         Assert.NotNull(messages[1].ProcessedAt);
     }
 
-    /// <summary>
-    /// A handler that overruns its deadline is failed like any other handler, and
-    /// the tick carries on.
-    /// </summary>
-    /// <remarks>
-    /// The bound 064's fourth fault showed was missing. Delivery happens inside the
-    /// claim transaction, so before <c>DECISIONS.md</c> 069 a consumer blocked on a
-    /// table lock held that transaction — and the batch's row locks — for as long as
-    /// it was blocked, which in that run was twenty seconds. The message backs off
-    /// and is retried; what does not happen is the rest of the system waiting for it.
-    /// </remarks>
+    /// <summary>A handler that overruns its deadline fails like any other, and the tick carries on.</summary>
     [Fact]
     public async Task Dispatch_WhenAHandlerOverrunsItsDeadline_ShouldFailThatMessageAndCarryOn()
     {
@@ -212,7 +176,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
 
         Assert.Equal(1, await host.Dispatcher.DispatchBatchAsync(CancellationToken.None));
 
-        // The point of the whole change: the tick took the deadline, not the stall.
+        // The tick took the deadline, not the stall.
         Assert.True(
             started.Elapsed < TimeSpan.FromSeconds(10),
             $"The tick waited {started.Elapsed} on a handler it had given 100ms.");
@@ -225,15 +189,9 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// When the tick's own budget runs out it commits what it delivered and leaves
-    /// the rest untouched for the next one.
+    /// When the tick's budget runs out it commits what it delivered; the rest are untouched, not
+    /// counted as attempts.
     /// </summary>
-    /// <remarks>
-    /// The other half of 069's bound. A per-message deadline alone still allows a
-    /// batch of fifty to hold one transaction open for fifty deadlines; this is what
-    /// makes the worst case a number somebody chose. A message the tick never reached
-    /// is not failed and not counted against its attempts — it was never tried.
-    /// </remarks>
     [Fact]
     public async Task Dispatch_WhenTheBatchBudgetRunsOut_ShouldLeaveTheRestForTheNextTick()
     {
@@ -252,8 +210,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
                 options.MaxBatchDuration = TimeSpan.FromMilliseconds(100);
             });
 
-        // Claimed three, delivered one, and stopped: the budget is spent once the
-        // first handler has taken longer than all of it.
+        // Claimed three, delivered one: the first handler used the whole budget.
         Assert.Equal(3, await host.Dispatcher.DispatchBatchAsync(CancellationToken.None));
 
         var afterFirst = await MessagesAsync();
@@ -261,17 +218,14 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         Assert.Single(afterFirst, message => message.ProcessedAt is not null);
         Assert.Equal(2, afterFirst.Count(message => message.ProcessedAt is null && message.Attempts == 0));
 
-        // Untouched means claimable, so the next tick picks them up normally.
+        // Untouched, so the next tick claims them normally.
         await using var patient = Host(new RecordingHandler());
 
         Assert.Equal(2, await patient.Dispatcher.DispatchBatchAsync(CancellationToken.None));
         Assert.All(await MessagesAsync(), message => Assert.NotNull(message.ProcessedAt));
     }
 
-    /// <summary>
-    /// Past its attempt budget a message stops being claimed, and sits there as a
-    /// dead letter rather than being retried forever or deleted.
-    /// </summary>
+    /// <summary>Past its attempt budget a message becomes a dead letter: kept, no longer claimed.</summary>
     [Fact]
     public async Task Dispatch_WhenAMessageExhaustsItsAttempts_ShouldStopClaimingIt()
     {
@@ -279,8 +233,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
 
         var handler = new RecordingHandler { Fail = true };
 
-        // Two attempts and no backoff, so the budget is reachable inside a test
-        // without waiting for a real delay.
+        // Two attempts and no backoff, so the budget is reachable in a test.
         await using var host = Host(
             handler,
             options =>
@@ -303,16 +256,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         Assert.Equal(2, handler.Delivered.Count + handler.Failures);
     }
 
-    /// <summary>
-    /// Two dispatchers over one table deliver each message exactly once.
-    /// </summary>
-    /// <remarks>
-    /// <c>FOR UPDATE SKIP LOCKED</c> is the whole mechanism: each claim passes over
-    /// the rows the other already holds rather than waiting on them. Without it the
-    /// two would either block each other or, worse, both read the same rows and
-    /// deliver them twice. There is one host today, and there will be more the day
-    /// this deploys.
-    /// </remarks>
+    /// <summary>Two dispatchers over one table deliver each message exactly once (SKIP LOCKED).</summary>
     [Fact]
     public async Task Dispatch_WhenTwoDispatchersRunTogether_ShouldDeliverEachMessageOnce()
     {
@@ -325,7 +269,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
 
         var handler = new RecordingHandler();
 
-        // One batch each, so neither can take the lot before the other starts.
+        // Half a batch each, so neither takes everything first.
         await using var left = Host(handler, options => options.BatchSize = Messages / 2);
         await using var right = Host(handler, options => options.BatchSize = Messages / 2);
 
@@ -348,7 +292,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         gate.SetResult();
         var claimed = await Task.WhenAll(runs);
 
-        // Neither delivered anything twice, and between them they covered the batch.
+        // Nothing delivered twice, and together they covered the batch.
         var seatIds = handler.Delivered.Select(delivery => delivery.SeatId).ToList();
 
         Assert.Equal(seatIds.Count, seatIds.Distinct().Count());
@@ -358,15 +302,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         Assert.Equal(seatIds.Count, processed);
     }
 
-    /// <summary>
-    /// Writes one <c>SeatSold</c> outbox row directly and returns its message id.
-    /// </summary>
-    /// <remarks>
-    /// Seeded rather than produced by holding and selling a seat, because what is
-    /// under test here is delivery. <c>OutboxDrainTests</c> is where the rows are
-    /// proven to arrive from real transitions; conflating the two would make every
-    /// failure in this file ambiguous about which half broke.
-    /// </remarks>
+    /// <summary>Writes one SeatSold outbox row directly; the drain is tested separately.</summary>
     private async Task<Guid> SeedSoldAsync(Guid seatId)
     {
         var occurredAt = DateTime.UtcNow;
@@ -416,8 +352,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         services.AddDbContext<InventoryDbContext>(builder =>
             builder.UseInventoryNpgsql(_connectionString));
 
-        // The same instance for the dispatcher and for the assertions, so what the
-        // test reads is what the handler actually saw.
+        // The same instance for the dispatcher and the assertions.
         services.AddSingleton(handler);
 
         var provider = services.BuildServiceProvider();
@@ -440,14 +375,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         public ValueTask DisposeAsync() => provider.DisposeAsync();
     }
 
-    /// <summary>
-    /// Hand-written, like every other fake in this repo — there is no mocking
-    /// library here and this needs none.
-    /// </summary>
-    /// <remarks>
-    /// Thread-safe because one test runs two dispatchers against one instance, and a
-    /// <c>List</c> torn by concurrent adds would fail that test for the wrong reason.
-    /// </remarks>
+    /// <summary>A hand-written, thread-safe recording handler.</summary>
     private sealed class RecordingHandler : IIntegrationEventHandler<SeatSoldV1>
     {
         private readonly ConcurrentQueue<Delivery> _delivered = new();
@@ -459,10 +387,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         /// <summary>Refuse only the message about this seat.</summary>
         internal Guid? FailFor { get; init; }
 
-        /// <summary>
-        /// Take this long before answering — a consumer blocked on a lock, a slow
-        /// query, or a dependency that has stopped answering. DECISIONS 069.
-        /// </summary>
+        /// <summary>How long to take before answering, simulating a blocked consumer.</summary>
         internal TimeSpan Stall { get; init; }
 
         internal IReadOnlyList<Delivery> Delivered => [.. _delivered];
@@ -476,10 +401,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         {
             if (Stall > TimeSpan.Zero)
             {
-                // The token is honoured, as a handler doing real work would honour
-                // it: the dispatcher's deadline arrives as a cancellation, and a
-                // handler that ignored it would be testing nothing about the
-                // deadline and everything about Task.Delay.
+                // Honour the token, as real work would; the deadline arrives as a cancellation.
                 await Task.Delay(Stall, cancellationToken);
             }
 
@@ -493,11 +415,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
             _delivered.Enqueue(new Delivery(messageId, integrationEvent));
         }
 
-        /// <summary>
-        /// Both halves of what a handler is given. The id is a parameter rather than
-        /// a field on the payload, so recording only the payload would leave the
-        /// deduplication key — the thing consumers actually depend on — untested.
-        /// </summary>
+        /// <summary>The payload and the message id, which is the deduplication key.</summary>
         internal sealed record Delivery(Guid MessageId, SeatSoldV1 Event)
         {
             internal Guid SeatId => Event.SeatId;

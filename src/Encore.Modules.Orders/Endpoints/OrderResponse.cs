@@ -4,18 +4,8 @@ namespace Encore.Modules.Orders.Endpoints;
 
 /// <summary>An order as a client sees it.</summary>
 /// <remarks>
-/// <para>
-/// <b><paramref name="Status"/> is the stored status, never a derived one.</b>
-/// This response does not decide that a <c>pending</c> order has expired because
-/// <paramref name="HoldsExpireAt"/> has passed — deriving it here would be this
-/// module judging a rule Inventory owns, and it would be wrong in the other
-/// direction too, since a seat released early makes the field optimistic. See
-/// <c>DECISIONS.md</c> 021.
-/// </para>
-/// <para>
-/// <paramref name="HoldsExpireAt"/> is returned anyway so a client can render a
-/// countdown. The countdown is a hint; the status is the fact.
-/// </para>
+/// <paramref name="Status"/> is the stored status, never derived from
+/// <paramref name="HoldsExpireAt"/>, which is only a hint for a countdown.
 /// </remarks>
 /// <param name="Id">Identity, assigned when checkout started.</param>
 /// <param name="EventId">The event being bought into.</param>
@@ -54,9 +44,7 @@ public sealed record OrderResponse(
             [.. order.Lines.Select(line => new OrderLineResponse(line.SeatId, line.UnitPrice, line.Currency))]);
 
     /// <summary>
-    /// <c>AwaitingCapture</c> to <c>awaiting_capture</c>. The four original
-    /// statuses are single words and come through this unchanged, so nothing a
-    /// client already matches on moves.
+    /// <c>AwaitingCapture</c> to <c>awaiting_capture</c>.
     /// </summary>
     private static string SnakeCase(string name) =>
         string.Concat(name.Select((character, index) =>

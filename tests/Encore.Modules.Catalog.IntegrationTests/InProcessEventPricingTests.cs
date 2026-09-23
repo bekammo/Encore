@@ -7,14 +7,9 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Catalog.IntegrationTests;
 
 /// <summary>
-/// The adapter behind <see cref="IEventPricing"/>, against real Postgres.
+/// The <see cref="IEventPricing"/> adapter against real Postgres: a missing event is a status,
+/// a found one carries every field, and the sale window survives as UTC.
 /// </summary>
-/// <remarks>
-/// This is the contract Orders will take a dependency on, so what is worth
-/// proving is that the promises on the interface actually hold: a missing event
-/// is an ordinary answer rather than an exception, a found one carries every
-/// field a caller needs, and the sale window survives the round trip as UTC.
-/// </remarks>
 public sealed class InProcessEventPricingTests : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
@@ -61,12 +56,7 @@ public sealed class InProcessEventPricingTests : IAsyncLifetime
         Assert.Equal(StartsAt, response.StartsAt);
     }
 
-    /// <summary>
-    /// A missing event is an ordinary answer, not an exception. Orders decides
-    /// whether to start a checkout by switching on this status, and branching on
-    /// exception types to do it would be exactly the shape DECISIONS 008 argues
-    /// against above the aggregate.
-    /// </summary>
+    /// <summary>A missing event is an ordinary answer, not an exception.</summary>
     [Fact]
     public async Task Get_WhenEventMissing_ShouldReportNotFoundRatherThanThrow()
     {
@@ -80,10 +70,7 @@ public sealed class InProcessEventPricingTests : IAsyncLifetime
         Assert.Null(response.Currency);
     }
 
-    /// <summary>
-    /// Null means on sale immediately, and the contract has to be able to carry
-    /// that distinction or the gate in Orders cannot read it.
-    /// </summary>
+    /// <summary>A null on-sale time is carried through as null.</summary>
     [Fact]
     public async Task Get_WhenNoOnSaleDate_ShouldReportNull()
     {

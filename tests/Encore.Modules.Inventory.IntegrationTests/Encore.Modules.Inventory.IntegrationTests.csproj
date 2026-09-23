@@ -1,8 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Adapter tests against real Postgres and Redis, spun up per-run by
-       Testcontainers. These verify that the EF Core and Redis adapters
-       actually honour the port contracts the unit tests fake out. -->
+  <!-- Adapter tests against real Postgres and Redis via Testcontainers. -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>

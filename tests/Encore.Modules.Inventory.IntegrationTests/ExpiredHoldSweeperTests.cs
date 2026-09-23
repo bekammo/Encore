@@ -13,25 +13,9 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// The expired-hold sweep against real Postgres: what it tidies, what it leaves
-/// alone, and what it does when the row moves underneath it.
+/// The expired-hold sweep against real Postgres: what it tidies, what it leaves alone, and
+/// what happens when a row moves underneath it. One sweep is driven directly per test.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>Every test here is about the sweep doing no harm.</b> That is the inverted
-/// shape this job deserves — the good it does is cosmetic (a row that reads
-/// <c>Available</c> rather than a lapsed <c>Held</c>) while the harm it could do is
-/// real, because a sweep that expired a live hold would take a seat away from a
-/// customer mid-checkout. <c>ExpiryWithoutTheSweepTests</c> is the other half of
-/// the argument: that nothing breaks when this never runs.
-/// </para>
-/// <para>
-/// <b>One sweep is driven directly rather than by starting the hosted service</b>,
-/// for <c>OutboxDispatcherTests</c>' reason: a test that started it and waited
-/// would be timing-dependent, and about a background job specifically, timing
-/// flake is indistinguishable from the bug under test.
-/// </para>
-/// </remarks>
 public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
@@ -44,15 +28,7 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
     private readonly Guid _clientA = Guid.NewGuid();
     private readonly Guid _clientB = Guid.NewGuid();
 
-    /// <summary>
-    /// The instant every test calls "now", truncated to whole microseconds.
-    /// </summary>
-    /// <remarks>
-    /// Postgres <c>timestamptz</c> resolves to a microsecond and a <c>DateTime</c>
-    /// tick is 100ns, so an untruncated instant does not survive the round trip —
-    /// and an expiry assertion would then fail on a hold that was perfectly
-    /// correct. <c>ConcurrentHoldTests</c> truncates for the same reason.
-    /// </remarks>
+    /// <summary>"Now" for every test, truncated to microseconds to survive the Postgres round trip.</summary>
     private readonly DateTime _now = new(DateTime.UtcNow.Ticks / 10 * 10, DateTimeKind.Utc);
 
     private DbContextOptions<InventoryDbContext> _options = null!;
@@ -90,16 +66,7 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
         Assert.Null(seat.HoldExpiresAt);
     }
 
-    /// <summary>
-    /// The sweep publishes, and that is the half a bulk UPDATE would have lost.
-    /// </summary>
-    /// <remarks>
-    /// A hold nobody ever came back for would otherwise end with no record of it
-    /// ending — the log would show a claim and then silence, and 007's promise that
-    /// hold history is reconstructable would hold only for seats that happened to
-    /// be popular. The row lands through the aggregate and therefore through the
-    /// drain, in the same transaction as the state change.
-    /// </remarks>
+    /// <summary>The sweep publishes SeatReleased(Expired), which a bulk UPDATE would have lost.</summary>
     [Fact]
     public async Task Sweep_WhenAHoldHasLapsed_ShouldWriteSeatReleasedToTheOutbox()
     {
@@ -112,8 +79,7 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
 
         Assert.Equal(InventoryEventTypes.SeatReleased, message.EventType);
 
-        // Deserialised rather than string-matched: the column is jsonb, so
-        // Postgres normalises the whitespace and does not promise key order.
+        // Deserialised: jsonb does not preserve whitespace or key order.
         var released = JsonSerializer.Deserialize<SeatReleasedV1>(
             message.Payload,
             SeatEventPublication.SerializerOptions);
@@ -124,7 +90,7 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
         Assert.Equal(_now, released.OccurredAt);
     }
 
-    /// <summary>The one that would be a customer losing their seat.</summary>
+    /// <summary>A live hold is never expired.</summary>
     [Fact]
     public async Task Sweep_WhenAHoldIsStillLive_ShouldLeaveItAlone()
     {
@@ -156,18 +122,9 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A seat re-held between the candidate query and the write keeps its new
-    /// hold, because the aggregate re-decides on the instance the sweep actually
-    /// loaded.
+    /// A seat re-held between the candidate query and the write keeps its new hold: the
+    /// aggregate re-decides.
     /// </summary>
-    /// <remarks>
-    /// This is the case that would go wrong if the SQL predicate were treated as
-    /// the verdict: the query named this seat, and by the time the sweep reached
-    /// it the answer had changed. A bulk UPDATE over the same predicate would
-    /// re-evaluate it under Postgres' own row locking and also get this right —
-    /// but only because of an isolation-level subtlety, rather than because
-    /// anything asked the rules.
-    /// </remarks>
     [Fact]
     public async Task Sweep_WhenTheSeatIsReHeldFirst_ShouldLeaveTheNewHoldStanding()
     {
@@ -175,8 +132,7 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
 
         await using var host = Host();
 
-        // The lazy reclaim, exactly as a request would do it, between the sweep's
-        // query and its write.
+        // A lazy reclaim between the sweep's query and its write.
         await ReHoldAsync(seatId, _clientB);
 
         await host.Sweeper.SweepBatchAsync(CancellationToken.None);
@@ -187,18 +143,7 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
         Assert.Equal(_clientB, seat.HeldByClientId);
     }
 
-    /// <summary>
-    /// Two sweeps over one table expire each seat once, with no lease and no lock
-    /// between them.
-    /// </summary>
-    /// <remarks>
-    /// <c>xmin</c> is the whole mechanism (062). The loser of each row finds out at
-    /// its save, writes nothing and publishes nothing, so the count of
-    /// <c>SeatReleased</c> rows is the assertion that matters — a duplicated sweep
-    /// showing up as duplicated announcements is the failure this rules out. It is
-    /// the contrast with <c>PaymentReconciler</c>, whose duplicate work reaches a
-    /// gateway that no token arbitrates (061).
-    /// </remarks>
+    /// <summary>Two sweeps over one table expire each seat once; xmin arbitrates.</summary>
     [Fact]
     public async Task Sweep_WhenTwoSweepsRunTogether_ShouldExpireEachSeatOnce()
     {
@@ -237,8 +182,7 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
             Seats,
             await context.Seats.CountAsync(seat => seat.Status == SeatStatus.Available));
 
-        // One announcement per seat, not two. This is the assertion the whole
-        // no-lease argument rests on.
+        // One announcement per seat, not two.
         Assert.Equal(Seats, (await OutboxAsync()).Count);
     }
 
@@ -269,10 +213,7 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
         Assert.Empty(await OutboxAsync());
     }
 
-    /// <summary>
-    /// Sweeping twice announces once, which is what makes a restarted or
-    /// overlapping job harmless.
-    /// </summary>
+    /// <summary>Sweeping twice announces once.</summary>
     [Fact]
     public async Task Sweep_WhenRunTwice_ShouldAnnounceOnce()
     {
@@ -287,13 +228,9 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Writes a seat holding a hold taken at <paramref name="heldAt"/>.
+    /// Writes a seat held since <paramref name="heldAt"/>, through <c>Seat.Hold</c>, then clears
+    /// its events so only the sweep's rows are asserted.
     /// </summary>
-    /// <remarks>
-    /// Built through <c>Seat.Hold</c> rather than by setting columns, because 005
-    /// leaves no other way in — and then the events are cleared so that the outbox
-    /// assertions above see only what the sweep itself wrote.
-    /// </remarks>
     private async Task<Guid> SeedHeldAsync(Guid clientId, DateTime heldAt)
     {
         var seatId = Guid.NewGuid();
@@ -352,14 +289,7 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
             .ToListAsync();
     }
 
-    /// <summary>
-    /// A container holding just enough to resolve <c>ISeatRepository</c> per scope,
-    /// which is all the sweeper asks of the world.
-    /// </summary>
-    /// <remarks>
-    /// The clock is fixed at <see cref="_now"/> so that "lapsed" is a property of
-    /// the seeded data rather than of how long the test took to run.
-    /// </remarks>
+    /// <summary>A container resolving <c>ISeatRepository</c> per scope, with a fixed clock.</summary>
     private SweeperHost Host(Action<ExpiredHoldSweepOptions>? configure = null)
     {
         var options = new ExpiredHoldSweepOptions();

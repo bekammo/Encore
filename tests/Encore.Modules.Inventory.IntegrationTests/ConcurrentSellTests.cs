@@ -7,17 +7,9 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// The sale under contention. Holding the wrong seat costs somebody a refund
-/// email; selling the same seat twice puts two people outside a sold-out venue
-/// holding valid receipts, which is the failure this architecture exists to make
-/// impossible.
+/// The sale under contention, against real Postgres and with no Redis lock: the <c>xmin</c>
+/// token alone must prevent a double sale.
 /// </summary>
-/// <remarks>
-/// Real Postgres via Testcontainers, and no Redis lock anywhere — as with
-/// <see cref="ConcurrentHoldTests"/>, the point is that the <c>xmin</c>
-/// concurrency token carries the invariant on its own. One container serves both
-/// facts; each seeds its own seat so they cannot interfere.
-/// </remarks>
 public sealed class ConcurrentSellTests : IAsyncLifetime
 {
     /// <summary>How many times one impatient client submits the checkout form.</summary>
@@ -66,10 +58,7 @@ public sealed class ConcurrentSellTests : IAsyncLifetime
     /// <inheritdoc />
     public async Task DisposeAsync() => await _postgres.DisposeAsync();
 
-    /// <summary>
-    /// Postgres timestamptz resolves to a microsecond; DateTime ticks are 100ns.
-    /// Truncating up front keeps round-tripped instants exactly comparable.
-    /// </summary>
+    /// <summary>Truncated to microseconds, the resolution Postgres stores.</summary>
     private static DateTime Truncate(DateTime value) =>
         new(value.Ticks / 10 * 10, DateTimeKind.Utc);
 
@@ -89,11 +78,7 @@ public sealed class ConcurrentSellTests : IAsyncLifetime
         return seatId;
     }
 
-    /// <summary>
-    /// One client, fifty simultaneous checkout submissions, one seat. Exactly one
-    /// write may reach the row — the other forty-nine must be refused by the
-    /// database, not by luck.
-    /// </summary>
+    /// <summary>One client, fifty simultaneous submissions, one seat: exactly one write lands.</summary>
     [Fact]
     public async Task Sell_WhenOneClientSubmitsCheckoutManyTimes_ShouldWriteTheSaleExactlyOnce()
     {
@@ -104,8 +89,7 @@ public sealed class ConcurrentSellTests : IAsyncLifetime
         var contexts = new List<InventoryDbContext>(ConcurrentSubmissions);
         var sessions = new List<(EfSeatRepository Repository, Seat Seat)>(ConcurrentSubmissions);
 
-        // Every submission loads before the gate opens, so all fifty carry the
-        // same row version and collide on the write rather than queueing.
+        // All load before the gate, so all collide on the write.
         for (var i = 0; i < ConcurrentSubmissions; i++)
         {
             var context = new InventoryDbContext(_options);
@@ -173,12 +157,9 @@ public sealed class ConcurrentSellTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The genuinely nasty one: a hold lapsing at the same instant its owner
-    /// completes checkout. Client A selling inside their hold and Client B
-    /// reclaiming the lapsed hold are <em>both</em> legal transitions in the
-    /// aggregate — they disagree only about what time it is. Nothing in the domain
-    /// can separate them, so the row version has to, and the seat must end up
-    /// unambiguously one thing or the other.
+    /// A hold lapsing at the instant its owner checks out while another client reclaims it. Both
+    /// are legal transitions; only the row version can separate them, and the seat must end up
+    /// one coherent state.
     /// </summary>
     [Fact]
     public async Task Sell_WhenRacingAReclaimOfTheExpiringHold_ExactlyOneShouldWin()
@@ -244,8 +225,7 @@ public sealed class ConcurrentSellTests : IAsyncLifetime
         Assert.Equal(1, outcomes.Count(o => o == Outcome.Won));
         Assert.Equal(1, outcomes.Count(o => o == Outcome.LostRace));
 
-        // Whichever won, the row must read as exactly one coherent state — never a
-        // sale wearing a reclaimed hold's expiry, or the reverse.
+        // Whichever won, the row reads as one coherent state.
         await using var verification = new InventoryDbContext(_options);
         var persisted = await verification.Seats.SingleAsync(seat => seat.Id == seatId);
 

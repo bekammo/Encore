@@ -9,23 +9,9 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// The drain: every domain event a seat raises becomes an outbox row, in the same
-/// transaction as the seat, exactly once.
+/// The drain: every domain event a seat raises becomes exactly one outbox row, in the same
+/// transaction as the seat. Against real Postgres, with no dispatcher involved.
 /// </summary>
-/// <remarks>
-/// <para>
-/// Integration rather than unit tests, because the thing under test is a
-/// <c>SaveChanges</c> override and there is no honest way to exercise one without a
-/// database. An in-memory provider would not do: the claims here are about what
-/// lands in Postgres and what does not when a transaction is rejected.
-/// </para>
-/// <para>
-/// No dispatcher anywhere in this file. Writing the row and delivering it are
-/// separate halves with separate failure modes, and only the first is atomic with
-/// the seat — keeping them apart in the tests is the same discipline as keeping
-/// them apart in the code.
-/// </para>
-/// </remarks>
 public sealed class OutboxDrainTests : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
@@ -49,9 +35,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
 
         await using var context = new InventoryDbContext(_options);
 
-        // Migrate rather than EnsureCreated, so this also proves the generated
-        // migration applies against real Postgres — including the partial index,
-        // whose filter is a SQL literal no compiler checks.
+        // Migrate rather than EnsureCreated, so the real migration and its partial index are exercised.
         await context.Database.MigrateAsync();
     }
 
@@ -82,10 +66,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
         Assert.Equal(0, message.Attempts);
         Assert.NotEqual(Guid.Empty, message.MessageId);
 
-        // The payload is the published contract, not the domain record. If someone
-        // switches the drain to serialise SeatHeld directly this still passes on
-        // three fields and fails on the fourth, because the domain record has no
-        // notion of a version and names its reason differently.
+        // The payload is the published contract, not the domain record.
         var payload = JsonSerializer.Deserialize<SeatHeldV1>(
             message.Payload,
             SeatEventPublication.SerializerOptions);
@@ -98,15 +79,8 @@ public sealed class OutboxDrainTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The ordering guarantee 007 depends on: a reclaim ends the old hold in the log
-    /// before it starts the new one, so hold history stays reconstructable.
+    /// A reclaim writes SeatReleased before SeatHeld, with adjacent ids from one save.
     /// </summary>
-    /// <remarks>
-    /// One save raises both events, so this is the case the sequence really does
-    /// promise — the ids are adjacent and assigned in the order the aggregate raised
-    /// them. Across transactions there is no such promise, which is why this test
-    /// deliberately drives both events through a single write.
-    /// </remarks>
     [Fact]
     public async Task Hold_WhenReclaimingALapsedHold_ShouldWriteReleasedBeforeHeld()
     {
@@ -124,7 +98,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
             await seats.SaveAsync(seat);
         }
 
-        // Past the five-minute window, so the next hold reclaims rather than refuses.
+        // Past the hold window, so the next hold reclaims.
         var afterExpiry = utcNow + Seat.HoldDuration + TimeSpan.FromSeconds(1);
 
         await using (var context = new InventoryDbContext(_options))
@@ -143,8 +117,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
         Assert.Equal(InventoryEventTypes.SeatReleased, messages[1].EventType);
         Assert.Equal(InventoryEventTypes.SeatHeld, messages[2].EventType);
 
-        // Ascending ids, so a consumer reading in id order sees the reclaim in the
-        // order it happened.
+        // Ascending ids, so a reader in id order sees the reclaim as it happened.
         Assert.True(messages[1].Id < messages[2].Id);
 
         var released = JsonSerializer.Deserialize<SeatReleasedV1>(
@@ -157,17 +130,9 @@ public sealed class OutboxDrainTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The bug this whole design exists to prevent, and the reason 044's open
-    /// question about clearing had to be answered "yes".
+    /// Four holds through one context write four rows, not ten: the drain clears each seat's
+    /// events after its save.
     /// </summary>
-    /// <remarks>
-    /// A four-seat checkout drives four holds through one scoped context. Each
-    /// handler clears only the seat it is about to transition, so a seat that kept
-    /// its events after its own save would have them drained again by every save
-    /// that followed — four rows for the first seat's hold, three for the second,
-    /// and so on. Delete the <c>ClearDomainEvents</c> call in
-    /// <c>InventoryDbContext</c> and this test reports ten rows instead of four.
-    /// </remarks>
     [Fact]
     public async Task Hold_WhenSeveralSeatsAreHeldOnOneContext_ShouldWriteEachEventExactlyOnce()
     {
@@ -215,10 +180,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
         Assert.Equal(4, messages.Select(message => message.MessageId).Distinct().Count());
     }
 
-    /// <summary>
-    /// A rejected save writes nothing at all — which is the single guarantee an
-    /// outbox exists to make.
-    /// </summary>
+    /// <summary>A rejected save writes nothing at all.</summary>
     [Fact]
     public async Task Save_WhenTheWriteIsRejected_ShouldWriteNoOutboxRow()
     {
@@ -228,8 +190,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
         await using var loser = new InventoryDbContext(_options);
         var loserSeats = new EfSeatRepository(loser);
 
-        // Loaded before anybody else writes, so it is holding a row version that is
-        // about to go stale.
+        // Loaded before anyone else writes, so its row version goes stale.
         var stale = await loserSeats.GetByIdAsync(seatId);
 
         await BumpSeatAsync(seatId, utcNow);
@@ -243,11 +204,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
         Assert.Equal(before, await CountAsync());
     }
 
-    /// <summary>
-    /// 044's named hazard: a rejected save leaves its outbox rows tracked as Added,
-    /// and all three seat handlers retry once. The attempt that succeeds must not
-    /// carry the rejected attempt's events along with its own.
-    /// </summary>
+    /// <summary>A retry after a rejected save does not carry the rejected attempt's rows along.</summary>
     [Fact]
     public async Task Save_WhenARejectedAttemptIsRetried_ShouldWriteOnlyTheSuccessfulAttempt()
     {
@@ -260,14 +217,13 @@ public sealed class OutboxDrainTests : IAsyncLifetime
 
         var stale = await seats.GetByIdAsync(seatId);
 
-        // Somebody else holds and releases it, so the row moves on twice and comes
-        // back Available — the loser's retry can then succeed.
+        // Someone else holds and releases it, so the retry can then succeed.
         await BumpSeatAsync(seatId, utcNow);
 
         stale!.Hold(clientId, utcNow);
         await Assert.ThrowsAsync<ConcurrentSeatModificationException>(() => seats.SaveAsync(stale));
 
-        // The retry, exactly as a handler performs it: reload, scrub, try again.
+        // The retry, as a handler performs it: reload, scrub, try again.
         var reloaded = await seats.GetByIdAsync(seatId);
         reloaded!.ClearDomainEvents();
         reloaded.Hold(clientId, utcNow);
@@ -275,8 +231,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
 
         var messages = await MessagesForAsync(seatId);
 
-        // The other writer's hold and release, then one hold from the retry. Three,
-        // not four: the rejected attempt contributed nothing.
+        // The other writer's hold and release, plus one hold from the retry.
         Assert.Equal(3, messages.Count);
 
         var held = messages
@@ -290,15 +245,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
         Assert.Single(held, payload => payload.ClientId == clientId);
     }
 
-    /// <summary>
-    /// Re-holding a seat you already hold raises nothing, so it publishes nothing.
-    /// </summary>
-    /// <remarks>
-    /// The idempotent path in <c>Seat.Hold</c> returns without touching state (007).
-    /// If it ever started raising an event, a client retrying a dropped response
-    /// would publish a second hold for a hold that never moved — so this pins the
-    /// silence rather than the behaviour.
-    /// </remarks>
+    /// <summary>Re-holding a seat you already hold publishes nothing.</summary>
     [Fact]
     public async Task Hold_WhenTheSameClientReholds_ShouldWriteNoSecondRow()
     {
@@ -328,16 +275,8 @@ public sealed class OutboxDrainTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The bulk-creation path drains too, and today that means it writes nothing.
+    /// Bulk creation goes through the drain too; <c>Seat.Create</c> raises nothing, so no rows.
     /// </summary>
-    /// <remarks>
-    /// <c>Seat.Create</c> raises no events, so this asserts zero. That is a fact
-    /// about this week's domain rather than a guarantee, which is exactly why the
-    /// path is pinned: <c>EfSeatRepository</c> calls <c>SaveChangesAsync</c> from
-    /// <c>AddRangeAsync</c> as well as from <c>SaveAsync</c>, and 044 records that a
-    /// drain written in the repository would have covered only one of them. The day
-    /// creation raises something, this test is where the change shows up.
-    /// </remarks>
     [Fact]
     public async Task AddRange_ShouldGoThroughTheDrainAndWriteNothingToday()
     {
@@ -356,23 +295,8 @@ public sealed class OutboxDrainTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The drain discards the leavings of its own rejected save, and nobody else's.
+    /// The drain discards only its own rejected rows, never a row someone else added and saved.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// This pins a trap rather than a symptom. The first version of
-    /// <c>DiscardRejectedOutboxRows</c> detached <em>every</em> outbox row tracked as
-    /// <c>Added</c>, reasoning that a committed row is <c>Unchanged</c> so nothing else
-    /// could be caught. That is wrong about anybody who adds a row and saves it
-    /// themselves — theirs is <c>Added</c> too, and it was silently thrown away.
-    /// </para>
-    /// <para>
-    /// Nothing in production adds an outbox row by hand today, so the bug had no
-    /// symptom in the running system at all. It surfaced only because
-    /// <c>OutboxDispatcherTests</c> seeds its rows that way and then found nothing to
-    /// claim. A test is cheaper than rediscovering that.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task Save_WhenSomethingElseAddedAnOutboxRow_ShouldNotDiscardIt()
     {
@@ -381,7 +305,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
 
         await using var context = new InventoryDbContext(_options);
 
-        // Added by hand, exactly as a seeder or a reconciliation job would.
+        // Added by hand, as a seeder would.
         var byHand = OutboxMessage.For(
             Guid.CreateVersion7(),
             InventoryEventTypes.SeatSold,
@@ -390,7 +314,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
 
         context.OutboxMessages.Add(byHand);
 
-        // Saved alongside a transition, so the drain runs in the same breath.
+        // Saved alongside a transition, so the drain runs in the same save.
         var seats = new EfSeatRepository(context);
         var seat = await seats.GetByIdAsync(seatId);
 
@@ -448,10 +372,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
         return seatId;
     }
 
-    /// <summary>
-    /// Moves the seat on by two row versions through another context, leaving it
-    /// Available again and two outbox rows behind.
-    /// </summary>
+    /// <summary>Moves the seat on by two row versions through another context, leaving it Available.</summary>
     private async Task BumpSeatAsync(Guid seatId, DateTime utcNow)
     {
         var other = Guid.NewGuid();
@@ -472,9 +393,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
     {
         await using var context = new InventoryDbContext(_options);
 
-        // Filtering in the payload is what the jsonb column is for, and it is the
-        // only way to scope these assertions to one seat while the container is
-        // shared across every test in this class.
+        // Filter on the jsonb payload to scope to one seat in a shared container.
         return await context.OutboxMessages.AsNoTracking()
             .Where(message => EF.Functions.JsonContains(
                 message.Payload,
@@ -490,12 +409,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
         return await context.OutboxMessages.CountAsync();
     }
 
-    /// <summary>
-    /// Truncated to whole microseconds, because Postgres <c>timestamptz</c> resolves
-    /// to a microsecond while <see cref="DateTime"/> ticks are 100ns — an untruncated
-    /// instant comes back slightly different from what went in, and the payload
-    /// assertions here compare instants for equality.
-    /// </summary>
+    /// <summary>Truncated to microseconds, the resolution Postgres stores, so instants compare equal.</summary>
     private static DateTime Now()
     {
         var utcNow = DateTime.UtcNow;

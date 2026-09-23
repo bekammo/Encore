@@ -6,24 +6,9 @@ namespace Encore.Modules.Orders.Data;
 
 /// <summary>Maps <see cref="Order"/> to the <c>orders.orders</c> table.</summary>
 /// <remarks>
-/// <para>
-/// <b>The partial unique index is the load-bearing line in this file.</b> It
-/// allows at most one <see cref="OrderStatus.Pending"/> order per client per
-/// event, which is what makes a retried <c>POST /orders</c> safe: without it a
-/// dropped response leads to a second order whose re-holds all succeed —
-/// idempotently, because they are the first order's own holds — so the
-/// duplicate looks perfectly valid. A check before inserting is not enough,
-/// because two requests can both pass it; the database has to be the one that
-/// says no.
-/// </para>
-/// <para>
-/// <b>The filter is a SQL literal, and nothing checks it against the enum.</b>
-/// <c>"Status" = 0</c> depends on <see cref="OrderStatus.Pending"/> being zero
-/// and on the conversion below being to <c>int</c>. Both are pinned and
-/// commented at their own definitions. A wrong filter here produces a silently
-/// different index rather than an error, so the generated migration is worth
-/// reading rather than trusting.
-/// </para>
+/// The partial unique index allows one pending order per client per event; it is the real
+/// guard against a duplicate checkout. Its filter is a SQL literal that depends on
+/// <see cref="OrderStatus.Pending"/> being zero.
 /// </remarks>
 public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
 {
@@ -76,10 +61,7 @@ public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
             .HasForeignKey(line => line.OrderId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        // One open checkout per client per event. See the remarks above: this is
-        // the real guard, and the check in CheckoutService is only a courtesy
-        // that turns the common case into a readable refusal instead of a
-        // constraint violation.
+        // One open checkout per client per event.
         builder
             .HasIndex(order => new { order.ClientId, order.EventId })
             .IsUnique()

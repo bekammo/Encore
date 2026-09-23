@@ -6,15 +6,7 @@ using Microsoft.AspNetCore.Http.HttpResults;
 
 namespace Encore.Modules.Orders.UnitTests;
 
-/// <summary>
-/// The outcome-to-HTTP mapping, tested without a host.
-/// </summary>
-/// <remarks>
-/// The twin of <c>SeatResultsTests</c>, and for the same reason: every response
-/// a client can receive is decided in one class, so all of them are reachable in
-/// microseconds instead of through a <c>WebApplicationFactory</c> and a
-/// container.
-/// </remarks>
+/// <summary>The outcome-to-HTTP mapping, tested without a host.</summary>
 public class OrderResultsTests
 {
     private static readonly Guid OrderId = Guid.Parse("11111111-1111-1111-1111-111111111111");
@@ -72,10 +64,7 @@ public class OrderResultsTests
         Assert.Equal(SeatId, Assert.Single(created.Value.Lines).SeatId);
     }
 
-    /// <summary>
-    /// The 400s: everything a client could have known was wrong before it sent
-    /// the request.
-    /// </summary>
+    /// <summary>The 400s: what a client could have known was wrong before sending.</summary>
     [Theory]
     [InlineData(CheckoutOutcome.NoSeats, "no_seats")]
     [InlineData(CheckoutOutcome.DuplicateSeat, "duplicate_seat")]
@@ -90,10 +79,7 @@ public class OrderResultsTests
         Assert.Equal(expectedReason, ReasonOf(result));
     }
 
-    /// <summary>
-    /// The 409s: refusals about the state of the world rather than the shape of
-    /// the request. 014's rule, applied here.
-    /// </summary>
+    /// <summary>The 409s: refusals about the state of the world.</summary>
     [Theory]
     [InlineData(CheckoutOutcome.EventNotFound, "event_not_found", false)]
     [InlineData(CheckoutOutcome.NotOnSale, "not_on_sale", true)]
@@ -110,10 +96,7 @@ public class OrderResultsTests
         Assert.Equal(expectedRetriable, RetriableOf(result));
     }
 
-    /// <summary>
-    /// A missing event is 409 rather than 404 because <c>/orders</c> — the thing
-    /// actually addressed — exists perfectly well. 018 settled this for everyone.
-    /// </summary>
+    /// <summary>A missing event is 409, not 404: the addressed <c>/orders</c> exists.</summary>
     [Fact]
     public void ForCheckout_WhenEventMissing_ShouldNotBe404()
     {
@@ -123,10 +106,7 @@ public class OrderResultsTests
         Assert.NotEqual(StatusCodes.Status404NotFound, StatusOf(result));
     }
 
-    /// <summary>
-    /// Asking for more seats than the cap is a 400 and states the number, so a
-    /// client can tell the customer the limit without hard-coding it.
-    /// </summary>
+    /// <summary>Too many seats is a 400 that states the limit.</summary>
     [Fact]
     public void ForCheckout_WhenTooManySeats_ShouldReportTheLimit()
     {
@@ -163,11 +143,7 @@ public class OrderResultsTests
         Assert.Equal(2, seats.Cast<object>().Count());
     }
 
-    /// <summary>
-    /// The top-level flag answers one precise question: could this identical
-    /// request succeed on another attempt? One sold seat makes the whole list a
-    /// lost cause however many of the others merely lost a race.
-    /// </summary>
+    /// <summary>The top-level <c>retriable</c> is true only if every seat's refusal is.</summary>
     [Fact]
     public void ForCheckout_WhenEveryRefusalIsRetriable_ShouldBeRetriable()
     {
@@ -196,11 +172,7 @@ public class OrderResultsTests
         Assert.False(RetriableOf(result));
     }
 
-    /// <summary>
-    /// Every refusal Inventory can report has to map to something, because a
-    /// checkout can surface any of them. An unmapped one would throw at the
-    /// worst possible moment.
-    /// </summary>
+    /// <summary>Every refusal Inventory can report maps to something.</summary>
     [Theory]
     [InlineData(HoldSeatStatus.AlreadyHeld)]
     [InlineData(HoldSeatStatus.AlreadySold)]
@@ -229,11 +201,7 @@ public class OrderResultsTests
         Assert.Equal("confirmed", ok.Value!.Status);
     }
 
-    /// <summary>
-    /// A confirm whose holds had lapsed still <i>ran</i>. The outcome says
-    /// completed and the order says expired, which is 021's split between the
-    /// operation and the fact.
-    /// </summary>
+    /// <summary>A confirm whose holds lapsed still completed; the order says Expired.</summary>
     [Theory]
     [InlineData(OrderStatus.Expired, "holds_expired")]
     [InlineData(OrderStatus.Failed, "order_failed")]
@@ -272,11 +240,7 @@ public class OrderResultsTests
         Assert.Contains("cancelled", problem.ProblemDetails.Detail);
     }
 
-    /// <summary>
-    /// 200, not a conflict. The customer has every seat they asked for; the only
-    /// thing outstanding is ours to finish, and the status field says so for any
-    /// client that cares to look. See <c>DECISIONS.md</c> 027.
-    /// </summary>
+    /// <summary>AwaitingCapture is a 200: the customer has every seat.</summary>
     [Fact]
     public void ForConfirm_WhenAwaitingCapture_ShouldBe200WithTheStatusSaidPlainly()
     {
@@ -288,12 +252,7 @@ public class OrderResultsTests
         Assert.Equal("awaiting_capture", ok.Value!.Status);
     }
 
-    /// <summary>
-    /// Both are retriable, and this is the one place in the module where that
-    /// flag means "try again with something different" rather than "send the
-    /// identical request again" — the order is untouched and its holds are still
-    /// live, which is the whole reason a decline does not end it.
-    /// </summary>
+    /// <summary>Payment failures are retriable, with a different card if need be.</summary>
     [Theory]
     [InlineData(OrderActionOutcome.PaymentDeclined, "payment_declined")]
     [InlineData(OrderActionOutcome.PaymentTimedOut, "payment_timed_out")]
@@ -309,10 +268,7 @@ public class OrderResultsTests
         Assert.True(RetriableOf(result));
     }
 
-    /// <summary>
-    /// The status in the sentence is spelled the way the body spells it. It only
-    /// started to matter when one of them became two words.
-    /// </summary>
+    /// <summary>The status in the message is spelled as the body spells it.</summary>
     [Fact]
     public void ForCancel_WhenAwaitingCapture_ShouldSayTheStatusTheSameWayTheBodyDoes()
     {
@@ -337,11 +293,7 @@ public class OrderResultsTests
         Assert.True(RetriableOf(result));
     }
 
-    /// <summary>
-    /// A completed confirm that left the order pending would mean the service and
-    /// this mapping disagree about the state machine. That is a bug, and it
-    /// should sound like one rather than returning a plausible response.
-    /// </summary>
+    /// <summary>A completed confirm that left the order pending is a bug and throws.</summary>
     [Fact]
     public void ForConfirm_WhenCompletedButStillPending_ShouldThrow()
     {
@@ -386,10 +338,7 @@ public class OrderResultsTests
 
     // -- Reading ----------------------------------------------------------
 
-    /// <summary>
-    /// A pending order whose holds have lapsed still reads <c>pending</c>. This
-    /// mapping does not derive expiry, because only Inventory can say — 021.
-    /// </summary>
+    /// <summary>A pending order whose holds lapsed still reads pending; only Inventory can say otherwise.</summary>
     [Fact]
     public void ForRead_ShouldReturnTheStoredStatusWithoutDerivingExpiry()
     {

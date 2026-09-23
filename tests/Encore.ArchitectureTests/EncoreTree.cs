@@ -4,22 +4,10 @@ using System.Xml.Linq;
 namespace Encore.ArchitectureTests;
 
 /// <summary>
-/// Locates the repository on disk and reads it the two ways this suite needs:
-/// as compiled assemblies, and as csproj source.
+/// Locates the repository and reads it as compiled assemblies and as csproj source. The root
+/// comes from an assembly attribute written by the csproj, not from walking up directories.
+/// Nothing here takes a compile-time dependency on what it inspects.
 /// </summary>
-/// <remarks>
-/// <para>
-/// The root arrives as an assembly attribute written by the csproj rather than
-/// being discovered at run time. Walking up from <c>AppContext.BaseDirectory</c>
-/// looking for a <c>.sln</c> works until it does not — a different output layout,
-/// a published test bundle, someone running from a temp directory — and fails as
-/// "file not found" rather than as "I looked in the wrong place".
-/// </para>
-/// <para>
-/// Nothing here takes a compile-time dependency on anything it inspects. See the
-/// <c>ReferenceOutputAssembly="false"</c> comment in the csproj, and DECISIONS 037.
-/// </para>
-/// </remarks>
 internal static class EncoreTree
 {
     private static readonly Dictionary<string, Assembly> Loaded = [];
@@ -28,12 +16,7 @@ internal static class EncoreTree
     /// <summary>Absolute path to the repository root, with a trailing separator.</summary>
     internal static string Root { get; } = Metadata("EncoreRepositoryRoot");
 
-    /// <summary>The assemblies this suite asserts about, by simple name.</summary>
-    /// <remarks>
-    /// Every name a test mentions appears here, so a typo is caught once by
-    /// <c>AssemblyReferenceTests.EveryInspectedAssemblyShouldBePresent</c> rather
-    /// than showing up as several confusing unrelated failures.
-    /// </remarks>
+    /// <summary>Every assembly this suite asserts about, so a typo fails in one place.</summary>
     internal static readonly string[] AllAssemblies =
     [
         "Encore.Api",
@@ -51,18 +34,10 @@ internal static class EncoreTree
         "Encore.Modules.Shared.Persistence"
     ];
 
-    /// <summary>The shared persistence building block. DECISIONS 058.</summary>
+    /// <summary>The shared persistence project.</summary>
     internal const string SharedPersistence = "Encore.Modules.Shared.Persistence";
 
-    /// <summary>
-    /// Every host. Two since DECISIONS 061 extracted Payments, and the rules about
-    /// hosts are rules about all of them.
-    /// </summary>
-    /// <remarks>
-    /// A list rather than the string <c>"Encore.Api"</c> spelled into each test,
-    /// because the failure mode of the old spelling is silent: a second host
-    /// inherits none of the first one's rules and nothing says so.
-    /// </remarks>
+    /// <summary>Every host. A list, so a new host inherits the rules instead of silently escaping them.</summary>
     internal static readonly string[] Hosts =
     [
         "Encore.Api",
@@ -70,15 +45,9 @@ internal static class EncoreTree
     ];
 
     /// <summary>
-    /// The projects allowed the BCL and nothing else — the five that declare
-    /// <c>EncoreZeroDependency</c> in their csproj.
+    /// The projects that declare <c>EncoreZeroDependency</c>. None may reach
+    /// <see cref="SharedPersistence"/>, which carries EF Core.
     /// </summary>
-    /// <remarks>
-    /// Named as a set because DECISIONS 058 turns on them as one: none may reach
-    /// <see cref="SharedPersistence"/>, which carries EF Core and Npgsql on
-    /// purpose. <c>Encore.Shared</c> is the one that matters most, being the
-    /// Domain's only <c>ProjectReference</c> and therefore the back door.
-    /// </remarks>
     internal static readonly string[] ZeroDependencyProjects =
     [
         "Encore.Shared",
@@ -96,10 +65,7 @@ internal static class EncoreTree
         "Encore.Modules.Payments.Contracts"
     ];
 
-    /// <summary>
-    /// The module implementations. Exact names, never prefixes — see
-    /// <see cref="OtherModules"/>.
-    /// </summary>
+    /// <summary>The module implementations. Exact names, never prefixes.</summary>
     internal static readonly string[] ModuleAssemblies =
     [
         "Encore.Modules.Catalog",
@@ -122,14 +88,9 @@ internal static class EncoreTree
             name + ".dll");
 
     /// <summary>
-    /// Loads a compiled assembly by simple name, without resolving its closure.
+    /// Loads an assembly's metadata without resolving its references, so
+    /// <see cref="Assembly.GetReferencedAssemblies"/> works even when they are absent.
     /// </summary>
-    /// <remarks>
-    /// <see cref="Assembly.LoadFrom(string)"/> reads the metadata tables, so
-    /// <see cref="Assembly.GetReferencedAssemblies"/> answers without any of the
-    /// referenced assemblies needing to be present. That matters: this process
-    /// has no ASP.NET Core loaded, and <c>Encore.Api</c> still loads fine.
-    /// </remarks>
     internal static Assembly Load(string name)
     {
         lock (Gate)
@@ -150,24 +111,16 @@ internal static class EncoreTree
         [.. Load(name).GetReferencedAssemblies().Select(reference => reference.Name ?? string.Empty)];
 
     /// <summary>
-    /// Every module implementation except this one, plus the Domain. What a module
-    /// is forbidden to name.
+    /// Every other module implementation, plus the Domain: what a module may not name. Exact
+    /// names, since <c>Inventory.Contracts</c> starts with <c>Inventory</c>.
     /// </summary>
-    /// <remarks>
-    /// <b>Exact-name comparison, never a prefix test.</b>
-    /// <c>Encore.Modules.Inventory.Contracts</c> starts with
-    /// <c>Encore.Modules.Inventory</c>, so a <c>StartsWith</c> here would ban the
-    /// very seam these rules exist to permit.
-    /// </remarks>
     internal static IEnumerable<string> OtherModules(string self) =>
         ModuleAssemblies.Where(module => !string.Equals(module, self, StringComparison.Ordinal));
 
-    /// <summary>Whether a referenced assembly name is part of the base class library.</summary>
-    /// <remarks>
-    /// <c>Microsoft.*</c> is deliberately absent. <c>Microsoft.Extensions.*</c> is a
-    /// package like any other, and treating the prefix as BCL would wave through
-    /// exactly the dependency the domain-purity rule exists to refuse.
-    /// </remarks>
+    /// <summary>
+    /// Whether a referenced assembly is part of the BCL. <c>Microsoft.*</c> is not assumed to be:
+    /// <c>Microsoft.Extensions.*</c> are ordinary packages.
+    /// </summary>
     internal static bool IsBcl(string name) =>
         name is "mscorlib" or "netstandard" or "System"
         || name.StartsWith("System.", StringComparison.Ordinal);
@@ -178,10 +131,7 @@ internal static class EncoreTree
             .EnumerateFiles(Path.Combine(Root, "src"), "*.csproj", SearchOption.AllDirectories)
             .ToDictionary(file => Path.GetFileNameWithoutExtension(file), XDocument.Load, StringComparer.Ordinal);
 
-    /// <summary>
-    /// The project names a csproj declares a <c>ProjectReference</c> to, whether or
-    /// not the compiler ended up emitting one.
-    /// </summary>
+    /// <summary>The project names a csproj declares a reference to, whether or not the compiler emitted one.</summary>
     internal static IReadOnlyList<string> DeclaredProjectReferences(XDocument project) =>
         [.. project
             .Descendants("ProjectReference")

@@ -1,16 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Payments' one enforced rule — at most one live attempt per order — lives
-       in a partial unique index, and the adapter that relies on it catches a
-       constraint violation by name. Neither can be tested without real Postgres,
-       which is why this project exists alongside the unit tests rather than
-       instead of them: the state machine is in-memory and stays there.
-
-       No Redis. PaymentReconciler takes a lease since 073, but it is a Postgres
-       advisory lock taken through the same PaymentsDbContext everything else
-       here uses, not a second dependency. No EntityFrameworkCore.InMemory either
-       — it does not enforce a partial unique index, so it would fake away the
-       guard these tests are here for. -->
+  <!-- The one-live-attempt index and the adapter that relies on it need real Postgres. The
+       reconciler's lease is a Postgres advisory lock, so no Redis. No in-memory provider. -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>

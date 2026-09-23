@@ -1,24 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Payments' public face: the only thing another module is allowed to know
-       about this one. Three requests, three responses, three closed status enums
-       and an interface — no logic, no infrastructure, and deliberately no
-       reference to Payments itself.
-
-       Zero PackageReference items and zero ProjectReference items, both on
-       purpose, exactly as the Catalog and Inventory contracts assemblies. A
-       consumer takes a dependency on this assembly and nothing else, so
-       referencing it cannot drag EF Core or Payments' entities into a module
-       that has no business seeing them.
-
-       019 argues why a flat module gets a contracts assembly at all. Here the
-       argument is stronger than it was for Catalog: Payments is the module
-       Soundcheck extracts first (004), so this seam is the one that will
-       actually be spent, and Orders' checkout tests need a gateway that declines
-       on demand — substitution really performed, not hypothetical. -->
-
-  <!-- The line that turns the paragraph above into something the build checks.
-       See Directory.Build.targets: ENCORE001, ENCORE002, ENCORE003. -->
+  <!-- Payments' public face: the only thing another module may know about it.
+       No packages and no project references (ENCORE001-003 in Directory.Build.targets). -->
   <PropertyGroup>
     <EncoreZeroDependency>true</EncoreZeroDependency>
   </PropertyGroup>

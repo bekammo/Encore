@@ -1,36 +1,19 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Flat module: Models / Data, and not even an Endpoints folder. Notifications
-       has no HTTP surface at all — see NotificationsModule for why, and DECISIONS
-       033 for the precedent that a module's write side living only behind its
-       integration tests is an acceptable cost rather than a gap.
-
-       No Ports/, no Adapters/, no domain assembly. This module reacts to one event
-       and writes one row; there is nothing here to protect and nothing that will
-       ever be substituted, which is exactly the case DECISIONS 001 says not to
-       layer. -->
+  <!-- Flat module: Models / Data, no Endpoints. It reacts to one event and writes one row. -->
 
   <ItemGroup>
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
 
-    <!-- Inventory's public face, for the event contracts and their published
-         names. Never Encore.Modules.Inventory itself: a module may name another
-         module's contracts and nothing else, which the architecture tests assert
-         over both the compiled metadata and this file. -->
+    <!-- Only Inventory's contracts, never the module itself. -->
     <ProjectReference Include="..\Encore.Modules.Inventory.Contracts\Encore.Modules.Inventory.Contracts.csproj" />
   </ItemGroup>
 
-  <!-- The consumer and the context are implementation details; the integration
-       tests reach them because nothing else can. -->
   <ItemGroup>
     <InternalsVisibleTo Include="Encore.Modules.Notifications.IntegrationTests" />
   </ItemGroup>
 
-  <!-- No <FrameworkReference Include="Microsoft.AspNetCore.App" />, unlike every other
-       module. This one has no routes, so it needs the hosting and configuration
-       abstractions and nothing else. Taking the whole web framework to get
-       IHostedLifecycleService would put Kestrel, MVC and the middleware pipeline on the
-       compile surface of a module that will never serve a request. -->
+  <!-- No ASP.NET Core framework reference: it has no routes, so the hosting abstractions suffice. -->
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.4" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.4" />
@@ -45,11 +28,7 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
-  <!-- The startup migrator and the Npgsql/history-table wiring, shared since
-       DECISIONS 058. The edge runs this way and only this way: a module names
-       this project, and this project names nothing at all — least of all a
-       module. It carries EF Core and Npgsql on purpose, which is exactly why
-       nothing zero-dependency is allowed to reach it. -->
+  <!-- Shared startup migrator and Npgsql wiring. It names no module. -->
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Shared.Persistence\Encore.Modules.Shared.Persistence.csproj" />
   </ItemGroup>

@@ -4,23 +4,8 @@ namespace Encore.Modules.Orders.Models;
 /// One seat on an <see cref="Order"/>, captured at the price it sold for.
 /// </summary>
 /// <remarks>
-/// <para>
-/// <b>The price is copied on purpose, and it is the one field here that must
-/// not track its source.</b> Catalog owns what an event costs today; this line
-/// owns what the customer agreed to pay. If an operator raises the price an
-/// hour after somebody checked out, nothing about that order may change.
-/// </para>
-/// <para>
-/// Nothing else is copied. There is no event name or seat description here,
-/// because <see cref="Order.EventId"/> and <see cref="SeatId"/> are enough to
-/// render an order and a duplicated name is a second copy of a truth that can
-/// drift — the same argument <c>SeatActionResponse</c> makes. Price is different
-/// precisely because drifting is what it must not do.
-/// </para>
-/// <para>
-/// One line per seat, and no quantity: a seat is a thing you can buy exactly
-/// one of.
-/// </para>
+/// The price is copied so a later price change never touches an existing order. Nothing
+/// else is copied. One line per seat, no quantity.
 /// </remarks>
 public sealed class OrderLine
 {

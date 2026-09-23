@@ -1,14 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Orders' tests need a database, and that is a consequence of a design
-       choice rather than an accident. Inventory hides Postgres behind a port and
-       buys microsecond unit tests with it; Orders declined the port, because a
-       flat module over uncontended tables should not pay for one (DECISIONS 001
-       and 022), and pays for that here in container startup instead.
-
-       No Redis: Orders never takes a lock. No EntityFrameworkCore.InMemory
-       either — it does not enforce a partial unique index, which is the single
-       most load-bearing line in this module's schema. -->
+  <!-- Orders has no repository port, so its checkout is tested against real Postgres. No
+       in-memory provider: it would not enforce the partial unique index. -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>

@@ -4,35 +4,14 @@ using Encore.Modules.Inventory.Ports;
 namespace Encore.Modules.Inventory.Application;
 
 /// <summary>
-/// Brings an event's seats into existence. The only production caller of
-/// <see cref="Seat.Create"/>.
+/// Creates an event's seats in one transaction. No lock, since the rows are new, and no
+/// outcome enum, since nothing can refuse a new seat.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>No lock here, and that is not an oversight.</b> The other three use cases
-/// take one because they contend for a row that already exists; this one writes
-/// rows that do not exist yet, so there is nothing to contend for and no
-/// concurrency token to lose. Taking a lock anyway would be cargo-cult
-/// symmetry.
-/// </para>
-/// <para>
-/// <b>No outcome enum either.</b> There is no domain refusal on this path —
-/// every seat is born <c>Available</c> and nothing can object. The only way to
-/// fail is to ask for a nonsense number, which is a malformed request rather
-/// than a refusal, so it throws rather than returning a result the caller would
-/// have to branch on.
-/// </para>
-/// </remarks>
 public sealed class CreateSeatMapCommandHandler(ISeatRepository seats)
 {
     /// <summary>
     /// The largest seat map one request may create.
     /// </summary>
-    /// <remarks>
-    /// Comfortably above a real arena, and low enough that a typo cannot ask the
-    /// database for a million rows in one transaction. A venue needing more than
-    /// this can be built from several calls.
-    /// </remarks>
     public const int MaxSeatsPerRequest = 10_000;
 
     private readonly ISeatRepository _seats = seats;

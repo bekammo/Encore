@@ -12,18 +12,9 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Encore.Modules.Payments;
 
-/// <summary>
-/// The Payments module's single composition seam.
-/// </summary>
-/// <remarks>
-/// The host knows these two methods and nothing else about this module, which is
-/// what makes Soundcheck's extraction a change to one line rather than a project.
-/// Payments is the module 004 nominated to be strangled first, so this seam is the
-/// one most likely to be spent.
-/// </remarks>
+/// <summary>The Payments module's composition seam.</summary>
 public static class PaymentsModule
 {
-    /// <summary>Registers the module's services.</summary>
     public static IServiceCollection AddPaymentsModule(
         this IServiceCollection services,
         IConfiguration configuration)
@@ -36,41 +27,13 @@ public static class PaymentsModule
         services.Configure<PaymentSimulationOptions>(
             configuration.GetSection(PaymentSimulationOptions.SectionName));
 
-        // Still a singleton, but no longer for the reason this comment used to give.
-        //
-        // It said the instance had to live because the gateway's memory of which
-        // keys it had answered lived on it — which was true, and was the bug. That
-        // memory is a table since 066, so a new instance now remembers everything
-        // the old one did and a second process sees the same answers. What is left
-        // on the instance is the simulation's own state: one seeded Random, which
-        // has to be one sequence for a seed to mean anything.
+        // Singleton so a seeded Random is one sequence; the gateway's memory is a table.
         services.AddSingleton<SimulatedPaymentGateway>();
 
-        // TryAdd, not Add, and the difference is the whole Strangler Fig.
-        //
-        // 061 registered this with Add and argued in OrdersModule that
-        // ServiceCollectionDescriptorExtensions.Replace made the outcome
-        // independent of which module Program.cs registers first. It does not.
-        // Replace removes the first existing registration and appends its own, so
-        // with Orders registered before Payments — which is the order in
-        // Encore.Api — there was nothing to remove when the HTTP client was
-        // registered, and this line then appended the in-process adapter after it.
-        // Last-wins handed every call to InProcessOrderPayments, and the
-        // strangled configuration was quietly still a monolith.
-        //
-        // The chaos harness is what found it: run 3 stopped payments-api and the
-        // confirms kept succeeding, with captured rows appearing in a database no
-        // running process was supposed to be writing to. DECISIONS 063.
-        //
-        // TryAdd makes the pair order-independent for real. Orders first: this
-        // sees the HTTP registration and stands down. Payments first: this
-        // registers and Orders' Replace takes it out. No BaseAddress at all:
-        // Orders registers nothing and this is the only candidate, which is the
-        // monolith, unchanged.
+        // TryAdd, so Orders' HTTP client wins whichever module registers first.
+        // StranglerSwitchTests pins all four orders.
         services.TryAddScoped<IOrderPayments, InProcessOrderPayments>();
 
-        // This module's half of /health/ready, and in payments-api the only half
-        // there is. 070.
         services.AddScoped<IReadinessCheck, PaymentsReadinessCheck>();
 
         services.TryAddSingleton(TimeProvider.System);
@@ -88,22 +51,6 @@ public static class PaymentsModule
     /// <summary>
     /// Registers the sweep that settles attempts the gateway never answered.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Read once for the registration decision and bound separately for the
-    /// reconciler's own use, the same shape <c>InventoryModule.AddOutbox</c> uses
-    /// and for the same reason: whether a hosted service exists at all is a
-    /// composition-time question, and rebinding it at resolve time would be
-    /// pretending it could change.
-    /// </para>
-    /// <para>
-    /// <b>No port, and no interface over the sweep.</b> It reads this module's own
-    /// table and calls this module's own gateway, and nothing will ever substitute
-    /// it — which is 001's test for whether an abstraction has earned its place.
-    /// It sits in <c>Data/</c> beside <c>PaymentsMigrator</c>, the module's other
-    /// hosted service, rather than in a folder invented for it.
-    /// </para>
-    /// </remarks>
     private static void AddReconciliation(IServiceCollection services, IConfiguration configuration)
     {
         var section = configuration.GetSection(PaymentReconciliationOptions.SectionName);
@@ -118,12 +65,10 @@ public static class PaymentsModule
         }
     }
 
-    /// <summary>Maps the module's customer-facing HTTP surface.</summary>
-    /// <remarks>
-    /// Read-only, and deliberately so: DECISIONS 033. The write side is
-    /// <see cref="MapPaymentsServiceApi"/>, which this does not call and which no
-    /// customer can reach.
-    /// </remarks>
+    /// <summary>
+    /// Maps the customer-facing routes, which are read-only. The write side is
+    /// <see cref="MapPaymentsServiceApi"/>, which no customer can reach.
+    /// </summary>
     public static IEndpointRouteBuilder MapPaymentsModule(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapPaymentEndpoints();
@@ -131,24 +76,9 @@ public static class PaymentsModule
     }
 
     /// <summary>
-    /// Maps the service API that Orders calls when Payments is out of process.
-    /// DECISIONS 061.
+    /// Maps the service API Orders calls when Payments runs out of process. A separate seam,
+    /// so a host must opt in; a missing service token fails startup rather than defaulting.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// A second seam rather than a flag on the first, because the two surfaces have
-    /// different audiences and different authentication, and a host should have to
-    /// say which of them it is opening. The Payments host calls both; the monolith
-    /// calls only <see cref="MapPaymentsModule"/> unless it is deliberately standing
-    /// in for the Payments service.
-    /// </para>
-    /// <para>
-    /// <b>Missing configuration throws rather than defaults.</b> A service token with
-    /// a fallback value is a service token everybody has, and the failure mode of
-    /// getting this wrong is an open authorise endpoint. Refusing to start is the
-    /// cheapest possible way to find out.
-    /// </para>
-    /// </remarks>
     public static IEndpointRouteBuilder MapPaymentsServiceApi(
         this IEndpointRouteBuilder endpoints,
         IConfiguration configuration)

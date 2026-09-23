@@ -4,32 +4,10 @@ using Encore.Modules.Inventory.Contracts;
 namespace Encore.Modules.Inventory.Adapters.InProcess;
 
 /// <summary>
-/// Serves <see cref="ISeatReservations"/> by calling the module's use cases
-/// directly, in the caller's process and transaction-less as they already are.
+/// Serves <see cref="ISeatReservations"/> in process by calling the use cases directly,
+/// translating their outcomes into the public contract so internal enums never become
+/// part of it.
 /// </summary>
-/// <remarks>
-/// <para>
-/// This is a driving adapter, and the in-process twin of
-/// <c>SeatEndpoints</c> — a second way in to the same four use cases, for
-/// callers that are modules rather than HTTP clients. Both translate the
-/// Application layer's outcome enums into a vocabulary their own audience
-/// owns, and neither re-decides anything: no rule about when a seat may change
-/// hands exists anywhere but inside <c>Seat</c>.
-/// </para>
-/// <para>
-/// <b>Why translate the enums at all, rather than publish the Application
-/// ones.</b> Publishing them would make every internal outcome a public
-/// contract, so renaming <c>HoldSeatOutcome.LostRace</c> would break another
-/// module — and once Inventory is extracted the wire format would be pinned to
-/// an internal type. The cost is one mapping per operation, which is the same
-/// duty <c>SeatResults</c> performs for HTTP and for the same reason.
-/// </para>
-/// <para>
-/// Every switch maps each named member explicitly, so adding an outcome to an
-/// Application enum fails the build here rather than silently reaching the
-/// throwing arm at run time.
-/// </para>
-/// </remarks>
 internal sealed class InProcessSeatReservations(
     HoldSeatCommandHandler holdSeat,
     ReleaseSeatCommandHandler releaseSeat,
@@ -92,9 +70,6 @@ internal sealed class InProcessSeatReservations(
 
     private static HoldSeatResponse ToResponse(Guid seatId, HoldSeatResult result) => result.Outcome switch
     {
-        // The expiry is only ever present on success, which is exactly the
-        // promise HoldSeatResponse makes, so the bang is safe here and nowhere
-        // else.
         HoldSeatOutcome.Held =>
             new HoldSeatResponse(seatId, HoldSeatStatus.Held, result.HoldExpiresAt!.Value),
 

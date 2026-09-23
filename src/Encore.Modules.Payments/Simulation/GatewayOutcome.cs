@@ -1,24 +1,17 @@
 namespace Encore.Modules.Payments.Simulation;
 
-/// <summary>
-/// What a call to the gateway did. The gateway's own vocabulary, deliberately
-/// smaller than the module's: it says what happened on the wire, and
-/// <c>InProcessOrderPayments</c> decides what that means for a payment.
-/// </summary>
+/// <summary>What a gateway call did, in the gateway's own vocabulary.</summary>
 internal enum GatewayOutcome
 {
-    /// <summary>The gateway did what was asked.</summary>
     Succeeded = 0,
 
     /// <summary>
-    /// The gateway refused. Only an authorisation can be refused — see
-    /// <c>PaymentSimulationOptions.DeclineRate</c>.
+    /// The gateway refused. Only authorisations are ever refused.
     /// </summary>
     Declined = 1,
 
     /// <summary>
-    /// No answer came back. Whether the other end acted is unknown, and that
-    /// ambiguity is the point of this outcome existing.
+    /// No answer came back; whether the gateway acted is unknown.
     /// </summary>
     TimedOut = 2
 }

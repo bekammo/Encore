@@ -8,15 +8,8 @@ using Testcontainers.Redis;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// The Redis lock adapter against real Redis, and against no Redis at all.
+/// The Redis lock adapter against real Redis and against no Redis at all.
 /// </summary>
-/// <remarks>
-/// The check-and-delete release script is the sort of thing that is easy to get
-/// subtly wrong and impossible to notice, and the unavailable path is the one
-/// the architecture's central claim rests on — that correctness survives Redis
-/// being gone. Neither can be proved with a fake, because a fake would be
-/// asserting this test's own assumptions back at it.
-/// </remarks>
 public sealed class RedisDistributedLockTests : IAsyncLifetime
 {
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5);
@@ -74,11 +67,7 @@ public sealed class RedisDistributedLockTests : IAsyncLifetime
         Assert.Equal(LockOutcome.Acquired, (await _lock.TryAcquireAsync(resource, Ttl)).Outcome);
     }
 
-    /// <summary>
-    /// The race the Lua script exists to close. A stalled holder whose lock has
-    /// already expired and been taken by somebody else must not be able to free
-    /// the new owner's lock with a blind delete.
-    /// </summary>
+    /// <summary>A stalled holder whose lock expired and was taken cannot free the new owner's lock.</summary>
     [Fact]
     public async Task Release_WhenNotTheOwner_ShouldNotFreeSomebodyElsesLock()
     {
@@ -92,19 +81,9 @@ public sealed class RedisDistributedLockTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The regression test for the defect that made "correctness survives Redis
-    /// being gone" untrue: an unreachable Redis used to throw out of the handler
-    /// and fail the whole hold. It must report itself and let the caller decide.
+    /// An unreachable Redis is reported as Unavailable, not thrown. Points at a closed port, so
+    /// the shared container is not disturbed.
     /// </summary>
-    /// <remarks>
-    /// Points at a closed port rather than stopping the container, so it stays
-    /// fast and cannot leave the shared container broken for other facts in this
-    /// class. <c>AbortOnConnectFail = false</c> is what lets
-    /// <see cref="ConnectionMultiplexer.Connect(ConfigurationOptions, TextWriter)"/>
-    /// return at all against a dead endpoint — with the default, the throw
-    /// happens here, before any adapter code could translate it, which is
-    /// exactly how the defect hid in the DI container.
-    /// </remarks>
     [Fact]
     public async Task TryAcquire_WhenRedisIsUnreachable_ShouldReportUnavailableRatherThanThrow()
     {
@@ -136,11 +115,7 @@ public sealed class RedisDistributedLockTests : IAsyncLifetime
         Assert.False(await deadLock.ReleaseAsync(NewResource(), "token"));
     }
 
-    /// <summary>
-    /// An outage is one warning, not one per attempt. 079 counted 95,244 warnings
-    /// with stack traces in 30 seconds, and they were the prime suspect for what an
-    /// outage still cost requests that never touch the lock (080).
-    /// </summary>
+    /// <summary>An outage logs one warning, not one per attempt.</summary>
     [Fact]
     public async Task TryAcquire_WhenRedisStaysUnreachable_ShouldWarnOnceForTheWholeOutage()
     {

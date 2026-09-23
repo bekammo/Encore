@@ -1,72 +1,53 @@
-// Encore's flash-sale load harness, and since DECISIONS 064 its chaos harness too.
+// Encore's flash-sale load harness, and the traffic half of the chaos rig (019).
 //
-// The project's central claim is that seat contention is handled correctly under
-// flash-sale load. Until the harness existed that claim was proven by
-// ConcurrentHoldTests: fifty tasks in one process, against a Testcontainers
-// Postgres, asserting exactly one winner. That is a correctness proof and it stays
-// the important one. It is not a measurement — it says nothing about what the hold
-// path costs at the ninety-ninth percentile, or where the Redis lock stops helping,
-// or whether xmin rejections turn into a retry storm when two hundred clients want
-// the same row.
+// ConcurrentHoldTests proves one winner per seat; it is the correctness proof and stays
+// the important one. It is not a measurement: it says nothing about the hold path's p99,
+// where the Redis lock stops helping, or whether xmin rejections become a retry storm.
+// This file measures those and asserts the invariant while it does: if the API ever
+// sells more seats than exist, the seats_sold threshold fails the run.
 //
-// This file answers those questions and asserts the invariant while it does it.
-// The threshold on seats_sold is the load-test equivalent of the unit suite's
-// oversell assertion: if the API ever sells more seats than exist, k6 exits
-// non-zero and the run fails. Everything else here is measurement.
-//
-// Two baseline scenarios, run one after the other rather than together, because
-// they answer different questions and overlapping them would make neither number
-// attributable:
+// Two baseline scenarios, run one after the other so each number is attributable:
 //
 //   contention — many clients, a handful of seats, hold then immediately release.
-//                The pool never drains, so contention stays at full pressure for
-//                the whole window. This is the hot-path number.
-//   flash_sale — many clients, a real seat map, hold then purchase. Inventory
-//                drains the way it would on sale day, and the refusal mix shifts
-//                from already_held to already_sold as it does.
+//                The pool never drains, so pressure stays full. The hot-path number.
+//   flash_sale — many clients, a real seat map, hold then purchase. Inventory drains
+//                as it would on sale day, and refusals shift from already_held to
+//                already_sold.
 //
-// No sleep between iterations anywhere in those two. A flash sale is not a Poisson
-// arrival process with think time; it is everyone pressing the button at once.
+// No sleep between iterations: a flash sale is everyone pressing the button at once.
 //
-// == The chaos scenarios (064) ==
+// == The chaos scenarios ==
 //
-// CHAOS_PHASES selects them, and an empty value — the default — registers exactly
-// the two scenarios above and nothing else. That is deliberate: a baseline run
-// after this change must be comparable with the three configurations in 056, and
-// a rig that quietly grew extra scenarios would have invalidated its own history.
+// CHAOS_PHASES selects them. Empty, the default, registers only the two scenarios
+// above, so a baseline run stays comparable with earlier ones.
 //
-//   redis       four scenarios in two windows, identical in every respect except
-//               that Redis is stopped for the second. The A/B is the point: a
-//               single window with an outage in the middle measures a mixture.
-//   payments    two windows of real checkouts, with payments-api stopped for the
-//               second. What is under test is a behaviour, not a latency.
-//   stall       a paced, known rate of sales while the outbox's consumer is
-//               blocked. Delivery latency is read out of notifications afterwards
-//               rather than measured here, because this side cannot see it.
-//   reconciler  checkouts against a gateway that loses answers, run while two
-//               reconcilers sweep one table. 061's debt, deliberately incurred.
-//   orders      multi-seat checkouts, some confirmed, some cancelled, and some
-//               confirmed and cancelled at the same instant. Nothing is injected;
-//               the fault is the customer. 076's atomic sale and 077's race
-//               under load rather than in a test with hooks. DECISIONS 080.
+//   redis       two identical windows, Redis stopped for the second. One window with
+//               an outage in the middle would measure a mixture.
+//   payments    two windows of real checkouts, payments-api stopped for the second.
+//               Under test is a behaviour, not a latency.
+//   stall       a paced rate of sales while the outbox's consumer is blocked. Delivery
+//               latency is read from notifications afterwards; this side cannot see it.
+//   reconciler  checkouts against a gateway that loses answers, while two reconcilers
+//               sweep one table.
+//   orders      multi-seat checkouts, confirmed, cancelled, or both at once. Nothing
+//               is injected; the fault is the customer. Puts 011's all-or-none sale
+//               and 012's cancel under load rather than in a test with hooks.
 //
-// This script does not inject anything. It cannot: k6 has no access to the Docker
-// daemon and should not. load/chaos.sh owns the timeline and does the injecting,
-// and the windows below are separated by gaps so that a second or two of skew
-// between the two clocks cannot land a fault in the wrong window.
+// This script injects nothing; k6 has no access to the Docker daemon. load/chaos.sh
+// owns the timeline, and gaps between windows keep clock skew from landing a fault in
+// the wrong one.
 import { sleep } from 'k6';
 import http from 'k6/http';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
 const BASE_URL = __ENV.ENCORE_BASE_URL || 'http://api:8080';
 
-// Where handleSummary writes the machine-readable summary. Set it to an empty
-// string to run without a mounted volume and get the digest on stdout only.
+// Where handleSummary writes the summary. Empty runs without a mounted volume and
+// prints the digest on stdout only.
 const RESULTS_DIR = __ENV.ENCORE_RESULTS_DIR === undefined ? '/results' : __ENV.ENCORE_RESULTS_DIR;
 
-// Names this run in the summary filename and in the digest. Several runs land in
-// one directory during a chaos session and "which one was this" is not a question
-// a timestamp answers well.
+// Names this run in the summary filename and the digest; a chaos session puts several
+// runs in one directory.
 const RUN_LABEL = __ENV.RUN_LABEL || 'baseline';
 
 const CONTENDED_SEATS = Number(__ENV.CONTENDED_SEATS || 5);
@@ -77,13 +58,12 @@ const SALE_SEATS = Number(__ENV.SALE_SEATS || 500);
 const SALE_VUS = Number(__ENV.SALE_VUS || 100);
 const SALE_SECONDS = Number(__ENV.SALE_SECONDS || 60);
 
-// Long enough for the first scenario's in-flight requests to land before the
-// second one starts competing for the same connection pool.
+// Long enough for one scenario's in-flight requests to land before the next competes
+// for the same connection pool.
 const GAP_SECONDS = 5;
 
-// Which faults this invocation is shaped for. One fault per invocation is the
-// rule: a run that carried all four would take a fault's aftermath into the next
-// fault's measurement, and the aftermath is half of what each one is about.
+// Which faults this invocation is shaped for. One per invocation, so a fault's
+// aftermath does not leak into the next fault's measurement.
 const PHASES = (__ENV.CHAOS_PHASES || '')
   .split(',')
   .map(function (name) { return name.trim(); })
@@ -96,14 +76,12 @@ function running(phase) {
 const BASELINE = PHASES.length === 0;
 
 // -- Redis outage ------------------------------------------------------------
-// Two windows, one variable. Both carry the same two scenarios at the same VUs
-// against pools of the same size, so the only difference between them is whether
-// the lock exists — which is what makes the p99 delta attributable to it.
+// Two windows, one variable: same scenarios, same VUs, same pool sizes, so the p99
+// delta is attributable to the lock.
 const REDIS_VUS = Number(__ENV.REDIS_VUS || 200);
 const REDIS_SALE_VUS = Number(__ENV.REDIS_SALE_VUS || 50);
 const REDIS_SECONDS = Number(__ENV.REDIS_SECONDS || 30);
-// Split in half, one half per window, so neither window inherits the other's
-// drained pool.
+// Split in half, one half per window, so neither inherits the other's drained pool.
 const REDIS_SEATS = Number(__ENV.REDIS_SEATS || 1000);
 const REDIS_HALF = Math.floor(REDIS_SEATS / 2);
 
@@ -113,11 +91,9 @@ const PAYMENTS_SECONDS = Number(__ENV.PAYMENTS_SECONDS || 20);
 const CHECKOUT_SEATS = Number(__ENV.CHECKOUT_SEATS || 3000);
 
 // -- Dispatcher stall --------------------------------------------------------
-// A paced arrival rate rather than a mob, and this is the one place in the file
-// where that is right. The question is what a backlog does to delivery latency,
-// which needs a known and sustained event rate for the whole window; a flash-sale
-// mob drains any affordable seat map in seconds and then produces no events at
-// all, which would measure a stall against silence.
+// A paced arrival rate, the one place in this file where that is right: a backlog
+// needs a sustained, known event rate, and a mob drains any seat map in seconds and
+// then produces nothing, which would measure a stall against silence.
 const STALL_RATE = Number(__ENV.STALL_RATE || 100);
 const STALL_SECONDS = Number(__ENV.STALL_SECONDS || 60);
 const STALL_SEATS = Number(__ENV.STALL_SEATS || 6500);
@@ -127,20 +103,13 @@ const RECONCILER_VUS = Number(__ENV.RECONCILER_VUS || 8);
 const RECONCILER_SECONDS = Number(__ENV.RECONCILER_SECONDS || 45);
 
 // -- Multi-seat orders and the confirm/cancel race ---------------------------
-// Every other checkout in this file is one seat and is only ever confirmed, so
-// neither 076's all-or-none sale nor 077's cancel-during-confirm had been under
-// load. Each iteration here opens an order for one to four seats and then does
-// one of three things with it. RACE_SHARE of them send a confirm, and while it is
-// in flight send a cancel for the same order: the same customer pressing both
-// buttons.
+// Each iteration opens an order for one to four seats and does one of three things
+// with it. RACE_SHARE of them send a confirm and, while it is in flight, a cancel for
+// the same order: the same customer pressing both buttons.
 //
-// The cancel leaves after a random delay rather than at the same instant, and
-// that is what makes this reach 077's interleaving at all. The first run of this
-// phase sent both together, and since a cancel takes ~11ms and a confirm ~320ms
-// (the simulated gateway's authorisation is the slow part), every one of 438
-// races was settled before the confirm got as far as selling. 077's case is a
-// cancel landing between the sale and the capture, near the end of the confirm,
-// so the delay is spread across the confirm's whole duration.
+// The cancel leaves after a random delay across the confirm's duration. Sent together,
+// a ~11 ms cancel settles every race before a ~320 ms confirm reaches the sale, and the
+// interleaving that matters (012) is a cancel between the sale and the capture.
 const ORDERS_VUS = Number(__ENV.ORDERS_VUS || 10);
 const ORDERS_SECONDS = Number(__ENV.ORDERS_SECONDS || 30);
 const ORDERS_SEATS = Number(__ENV.ORDERS_SEATS || 6000);
@@ -148,18 +117,15 @@ const RACE_SHARE = Number(__ENV.RACE_SHARE || 0.4);
 const CANCEL_SHARE = Number(__ENV.CANCEL_SHARE || 0.2);
 const RACE_DELAY_MAX_MS = Number(__ENV.RACE_DELAY_MAX_MS || 700);
 
-// Every answer a confirm or a cancel is documented to give. Declared up front
-// because k6 reports a tagged submetric only when a threshold names it, and the
-// race's outcome pairs are the thing the digest exists to show.
+// Every answer a confirm or cancel is documented to give. Declared up front because k6
+// reports a tagged submetric only when a threshold names it.
 const CONFIRM_ANSWERS = ['confirmed', 'awaiting_capture', 'order_failed', 'holds_expired', 'lost_race',
   'order_not_pending', 'payment_declined', 'payment_timed_out'];
 const CANCEL_ANSWERS = ['cancelled', 'lost_race', 'order_not_pending'];
 
-// When set, setup() creates a venue with this name as its very last act. It is
-// the starting gun: chaos.sh polls Postgres for the row and starts its clock the
-// moment it appears, so the injection timeline is pinned to the end of setup
-// rather than to the start of a container. Without it the harness would be
-// guessing how long seat-map creation took on the day.
+// When set, setup() creates a venue with this name as its very last act. chaos.sh
+// polls for it and starts its clock, so the injection timeline is pinned to the end of
+// setup rather than to the start of a container.
 const CHAOS_MARKER = __ENV.CHAOS_MARKER || '';
 
 const holdLatency = new Trend('hold_latency', true);
@@ -173,8 +139,8 @@ const saleRefused = new Counter('sale_refused');
 const releaseRefused = new Counter('release_refused');
 const unexpected = new Counter('unexpected_responses');
 
-// The checkout path, which the baseline scenarios never touch: it is the only one
-// that reaches Orders and therefore the only one that reaches Payments.
+// The checkout path, which the baseline scenarios never touch: the only one that
+// reaches Orders and so Payments.
 const ordersCreated = new Counter('orders_created');
 const ordersConfirmed = new Counter('orders_confirmed');
 const ordersAwaitingCapture = new Counter('orders_awaiting_capture');
@@ -182,24 +148,20 @@ const checkoutRefused = new Counter('checkout_refused');
 const confirmRefused = new Counter('confirm_refused');
 const confirmTimedOut = new Counter('confirm_timed_out');
 
-// The orders phase. Answers are tagged rather than split across counters, so one
-// declaration per answer is all the digest needs.
+// The orders phase. Answers are tagged rather than split across counters.
 const orderSeats = new Counter('order_seats');
 const confirmAnswered = new Counter('confirm_answered');
 const cancelAnswered = new Counter('cancel_answered');
 const raceAnswered = new Counter('race_answered');
 const cancelLatency = new Trend('cancel_latency', true);
 
-// How long after the sale opened each seat went. The interesting number from the
-// sale scenario is not its latency — it is how long the inventory lasted, because
-// at a few thousand attempts a second any finite seat map drains in seconds and
-// everything after that is the system refusing politely. min is the first sale and
-// max is the sell-out.
+// How long after the sale opened each seat went. The sale's interesting number is how
+// long inventory lasted, not latency: min is the first sale, max the sell-out.
 const soldAfter = new Trend('sold_after_ms', true);
 
-// Every seat pool a `buy`-shaped scenario can draw from. The oversell threshold is
-// a count over all of them, so it stays exactly SALE_SEATS on a baseline run and
-// cannot fail spuriously just because a chaos phase also sells seats.
+// Every seat pool a `buy`-shaped scenario draws from. The oversell threshold counts
+// over all of them, so it is exactly SALE_SEATS on a baseline run and a chaos phase's
+// sales cannot fail it spuriously.
 function sellableSeats() {
   var total = SALE_SEATS;
 
@@ -217,9 +179,8 @@ function sellableSeats() {
 function scenarios() {
   var all = {};
 
-  // The baseline pair runs on every invocation, chaos or not. On a fault run they
-  // are the warm-up and the control: the same two numbers under the same
-  // parameters, measured on the same stack minutes before anything was broken.
+  // The baseline pair runs on every invocation. On a fault run it is the warm-up and
+  // the same-day control.
   all.contention = {
     executor: 'constant-vus',
     vus: CONTENTION_VUS,
@@ -263,8 +224,8 @@ function scenarios() {
       gracefulStop: '10s',
     };
 
-    // The gap is where chaos.sh stops Redis. Injecting between windows rather
-    // than inside one is what makes the experiment insensitive to clock skew.
+    // The gap is where chaos.sh stops Redis, so clock skew cannot move the fault
+    // into a window.
     var down = after + REDIS_SECONDS + GAP_SECONDS;
 
     all.redis_down_contend = {
@@ -354,22 +315,18 @@ function scenarios() {
 
 function thresholds() {
   var t = {
-    // The invariant. Every 200 from a purchase is one seat leaving inventory,
-    // and each iteration buys at most once with a client id nobody else uses, so
-    // this counter is a count of distinct seats sold. More of them than there are
-    // seats means the system oversold, which is the one outcome that must fail
-    // the run rather than appear in a report.
+    // The invariant. Each 200 from a purchase is one seat leaving inventory, and each
+    // iteration buys at most once with a client id nobody else uses, so this counts
+    // distinct seats sold. More than exist is an oversell, and it fails the run.
     seats_sold: ['count<=' + sellableSeats()],
 
-    // Anything outside the statuses these routes are documented to return — a
-    // 500, a timeout, a 415 — is a fault rather than a refusal.
+    // Anything the routes are not documented to return — a 500, a timeout, a 415 — is
+    // a fault rather than a refusal.
     unexpected_responses: ['count==0'],
 
-    // The rest of these are submetric declarations, not assertions: k6 only puts
-    // a tagged submetric in the summary if a threshold names it, and >=0 is
-    // always true. This is what makes the digest below able to break refusals
-    // down by reason and latency down by phase, which is the whole point of
-    // running more than one scenario.
+    // The rest are submetric declarations, not assertions: k6 only reports a tagged
+    // submetric a threshold names, and >=0 is always true. They let the digest break
+    // refusals down by reason and latency down by phase.
     'hold_latency{phase:contention}': ['p(99)>=0'],
     'hold_latency{phase:sale}': ['p(99)>=0'],
     'holds_refused{reason:already_held}': ['count>=0'],
@@ -379,10 +336,9 @@ function thresholds() {
     'holds_refused{reason:concurrent_request_in_flight}': ['count>=0'],
   };
 
-  // Per-phase assertions. Registered only for the phases this invocation runs,
-  // because a threshold over a metric with no samples is either vacuously true —
-  // which reports a pass nobody earned — or vacuously false, which reports a
-  // failure nobody caused. Both are worse than not asking.
+  // Per-phase assertions, registered only for the phases this invocation runs: a
+  // threshold over a metric with no samples reports a pass nobody earned or a failure
+  // nobody caused.
   if (running('redis')) {
     t['hold_latency{phase:redis_up}'] = ['p(99)>=0'];
     t['hold_latency{phase:redis_down}'] = ['p(99)>=0'];
@@ -393,21 +349,17 @@ function thresholds() {
     // The fault must not turn a refusal into a fault.
     t['unexpected_responses{phase:redis_down}'] = ['count==0'];
 
-    // A declaration, and the one that makes the assertion above mean anything.
-    // The first session recorded 111 5xx across the run with only 4 inside the
-    // outage window, and without this submetric there was no way to tell whether
-    // the other 107 came from the outage or from 250 VUs being more than this
-    // machine's Postgres will take. An A/B whose control window is unmeasured is
-    // not an A/B. DECISIONS 064.
+    // A declaration, and the one that gives the assertion above a control. Without it
+    // there is no telling whether 5xx came from the outage or from an overloaded
+    // Postgres in the healthy window (019).
     t['unexpected_responses{phase:redis_up}'] = ['count>=0'];
 
     // Oversell, asserted separately per window because each has its own pool.
     t['seats_sold{phase:redis_up}'] = ['count<=' + REDIS_HALF];
     t['seats_sold{phase:redis_down}'] = ['count<=' + REDIS_HALF];
 
-    // The hold path still does work without the lock. A run where every hold
-    // failed would satisfy every assertion above and demonstrate nothing, so
-    // this is the one threshold here that asserts something happened.
+    // The hold path still works without the lock. A run where every hold failed would
+    // pass everything above and demonstrate nothing.
     t['holds_won{phase:redis_down}'] = ['count>0'];
   }
 
@@ -419,17 +371,13 @@ function thresholds() {
     t['confirm_refused{reason:lost_race}'] = ['count>=0'];
     t['checkout_refused{reason:seats_unavailable}'] = ['count>=0'];
 
-    // Declarations, not assertions. The digest prints the healthy window beside
-    // the broken one, and k6 only computes a tagged submetric when a threshold
-    // names it — so without these two the control window reports zero and the
-    // comparison silently becomes a comparison with nothing. The first smoke run
-    // of this rig did exactly that.
+    // Declarations, not assertions: without them the control window reports zero and
+    // the comparison is with nothing.
     t['orders_confirmed{phase:payments_up}'] = ['count>=0'];
     t['confirm_timed_out{phase:payments_up}'] = ['count>=0'];
 
-    // A service that is down must present as a timeout and as nothing else.
-    // This is 061's claim — an unreadable answer is a timeout — asserted under
-    // load rather than in a unit test with a stubbed handler.
+    // A service that is down must present as a timeout and nothing else (018),
+    // asserted under load rather than against a stubbed handler.
     t['confirm_timed_out{phase:payments_down}'] = ['count>0'];
     t['orders_confirmed{phase:payments_down}'] = ['count==0'];
   }
@@ -442,9 +390,8 @@ function thresholds() {
   }
 
   if (running('orders')) {
-    // The assertion k6 can make. The ones that matter here — no order partly
-    // sold, none sold and unpaid, none paid and unsold — are about rows, and
-    // chaos.sh reads them out of Postgres afterwards.
+    // The assertion k6 can make. The ones that matter — no order partly sold, none
+    // sold and unpaid, none paid and unsold — are about rows, and chaos.sh reads them.
     t['unexpected_responses{phase:orders}'] = ['count==0'];
     t['orders_created{phase:orders}'] = ['count>0'];
     t['confirm_latency{phase:orders}'] = ['p(99)>=0'];
@@ -479,9 +426,8 @@ export const options = {
   thresholds: thresholds(),
 };
 
-// A client id is a claimed identity the API parses as a GUID and nothing more, so
-// this is four lines of Math.random rather than a jslib import. The harness
-// reaches the network for the API under test and for nothing else.
+// A client id is a GUID the API parses and nothing more, so Math.random rather than a
+// jslib import: the harness reaches the network for the API under test only.
 function uuid() {
   let s = '';
   for (let i = 0; i < 36; i++) {
@@ -519,14 +465,12 @@ function seatAction(eventId, seatId, clientId, action) {
     { headers: { 'X-Client-Id': clientId }, tags: { name: action } });
 }
 
-// Builds the world the run measures: one venue, one event on sale immediately,
-// one seat map. Seats are split rather than shared — the contention pool has to
-// stay small to keep pressure on one row, the sale pool has to be large enough to
-// survive its window, and each chaos phase needs a pool of its own so that one
-// fault's drained inventory is not the next fault's starting condition.
+// Builds the world the run measures: one venue, one event on sale now, one seat map.
+// Pools are separate: the contention pool stays small to keep pressure on one row, the
+// sale pool must survive its window, and each chaos phase gets its own so one fault's
+// drained inventory is not the next one's starting condition.
 export function setup() {
-  // Give the counter a sample, so its threshold is evaluated against real data
-  // even on a run where nothing goes wrong.
+  // Give the counter a sample, so its threshold is evaluated even when nothing fails.
   unexpected.add(0);
 
   const pools = [
@@ -581,12 +525,9 @@ export function setup() {
     offset += pool.count;
   }
 
-  // One hold and release before anybody is measured. The first request through
-  // this path pays for JIT, four EF Core models being built and an empty Npgsql
-  // pool, and it costs seconds — enough that it was the reported maximum of an
-  // entire run whose p99 was 41ms. Warming it here rather than subtracting it
-  // later keeps the maximum a number about the system rather than about startup.
-  // Called through seatAction rather than hold(), so it lands in no metric.
+  // One unmeasured hold and release first. The first request pays for JIT, EF Core
+  // model building and an empty pool — seconds, enough to be a whole run's maximum.
+  // Through seatAction rather than hold(), so it lands in no metric.
   const warmupClient = uuid();
   seatAction(eventId, data.sale[0], warmupClient, 'hold');
   seatAction(eventId, data.sale[0], warmupClient, 'release');
@@ -603,8 +544,8 @@ export function setup() {
     }
   }
 
-  // Captured last, so it is as close as possible to the moment k6 starts the
-  // scenarios: the sale offsets itself against this.
+  // Captured last, as close as possible to the scenarios starting; the sale offsets
+  // itself against this.
   data.startedAt = Date.now();
 
   return data;
@@ -628,8 +569,8 @@ function hold(eventId, seatId, clientId) {
   return res;
 }
 
-// Hold, then hand it straight back. The release keeps the pool from draining, so
-// every iteration of every VU meets a seat somebody else is fighting for.
+// Hold, then hand it straight back. The release keeps the pool from draining, so every
+// iteration meets a seat somebody else is fighting for.
 export function contend(data) {
   const clientId = uuid();
   const seatId = pick(data.contended);
@@ -640,16 +581,15 @@ export function contend(data) {
 
   const res = seatAction(data.eventId, seatId, clientId, 'release');
   if (res.status === 409) {
-    // Legitimate under contention rather than a fault: lost_race means the row
-    // moved under us, which is the optimistic-concurrency path doing its job.
+    // A refusal, not a fault: lost_race is optimistic concurrency doing its job.
     releaseRefused.add(1, { reason: reasonOf(res) });
   } else if (res.status !== 200) {
     unexpected.add(1, { route: 'release', status: String(res.status) });
   }
 }
 
-// Hold, then buy. Nothing is retried: a refusal is the answer, and retrying it
-// would measure the harness's patience rather than the system's behaviour.
+// Hold, then buy. Nothing is retried: a refusal is the answer, and a retry would
+// measure the harness's patience.
 function purchase(data, seats, timed) {
   const clientId = uuid();
   const seatId = pick(seats);
@@ -664,9 +604,8 @@ function purchase(data, seats, timed) {
   if (res.status === 200) {
     seatsSold.add(1);
     if (timed) {
-      // k6 starts this scenario startTime after the run begins, and data.startedAt
-      // was taken as setup ended, so subtracting both leaves time since the sale
-      // opened rather than time since the process started.
+      // Subtract the scenario's startTime from time since setup ended, leaving time
+      // since the sale opened.
       soldAfter.add(Date.now() - data.startedAt - (CONTENTION_SECONDS + GAP_SECONDS) * 1000);
     }
   } else if (res.status === 409) {
@@ -692,14 +631,11 @@ export function buyStall(data) {
   purchase(data, data.stall, false);
 }
 
-// The checkout path: create an order over held seats, then confirm it, which is
-// the only route in this system that reaches Payments. One seat per order, so an
-// order's fate is never a partial one and the counters mean what they say.
+// The checkout path: create an order over held seats, then confirm it, the only route
+// that reaches Payments. One seat per order, so no order ends partly.
 //
-// Nothing is retried here either, and that matters more than it does on the seat
-// path: a confirm that timed out is exactly the state 031 and 057 are about, and
-// retrying it in the harness would resolve the ambiguity this run exists to
-// observe.
+// Nothing is retried: a confirm that timed out is exactly the state reconciliation is
+// about (014), and a harness retry would resolve the ambiguity this run observes.
 function checkout(data) {
   const clientId = uuid();
   const seatId = pick(data.checkout);
@@ -736,8 +672,8 @@ function checkout(data) {
     const status = res.json('status');
 
     if (status === 'awaiting_capture') {
-      // 027: authorised and sold, but the capture went unanswered. Non-terminal
-      // and resolved by the next confirm, so it is neither a success nor a fault.
+      // Authorised and sold, capture unanswered (010). Resolved by the next confirm,
+      // so neither a success nor a fault.
       ordersAwaitingCapture.add(1);
     } else {
       ordersConfirmed.add(1);
@@ -789,8 +725,8 @@ function orderParams(clientId, action) {
   return { headers: { 'X-Client-Id': clientId }, tags: { name: action } };
 }
 
-// What a confirm said, as one word: the order's status on a 200, the reason on a
-// 409, and null for anything the route is not documented to return.
+// What a confirm said, as one word: the order's status on a 200, the reason on a 409,
+// null for anything undocumented.
 function confirmAnswer(res) {
   if (res.status === 200) {
     return res.json('status');
@@ -833,10 +769,8 @@ function recordCancel(res) {
   return answer;
 }
 
-// One customer, one order of one to four seats, and then one of three endings.
-// Nothing is retried, for the reason the checkout above gives: the ambiguous
-// answer is the thing being observed, and chaos.sh reads what actually happened
-// out of Postgres.
+// One customer, one order of one to four seats, then one of three endings. Nothing is
+// retried, as in checkout above; chaos.sh reads what actually happened from Postgres.
 export async function orders(data) {
   const clientId = uuid();
   const seatIds = pickDistinct(data.orders, 1 + Math.floor(Math.random() * 4));
@@ -912,9 +846,8 @@ function latencyLine(metrics, label, name) {
     + '  max ' + stat(metrics, name, 'max'));
 }
 
-// Whether a threshold passed, as k6 recorded it rather than as this file
-// recomputes it. Reading it back out is what lets the digest print an invariant
-// matrix that cannot disagree with the exit code.
+// Whether a threshold passed, as k6 recorded it, so the digest's invariant matrix
+// cannot disagree with the exit code.
 function verdict(data, name) {
   const metric = data.metrics[name];
 
@@ -980,10 +913,8 @@ function invariants(data) {
   return out;
 }
 
-// k6's default summary is replaced when handleSummary is defined, and keeping it
-// would mean importing textSummary from jslib over the network. The numbers that
-// matter here are few enough to print directly, and a digest that names them is
-// more use than the default wall of output anyway.
+// Replaces k6's default summary, which would need textSummary from jslib over the
+// network. The numbers that matter are few enough to print directly.
 export function handleSummary(data) {
   const m = data.metrics;
   const sold = total(m, 'seats_sold');
@@ -1079,9 +1010,8 @@ export function handleSummary(data) {
       }
     }
 
-    // Both halves of each race, paired. The pairs that should never appear are
-    // the ones where both sides report an ending — confirmed and cancelled —
-    // because one of the two saves has to lose on the order row's xmin.
+    // Both halves of each race, paired. Confirmed + cancelled should never appear:
+    // one of the two saves must lose on the order row's xmin.
     out += '\n  raced, confirm + cancel\n';
     for (const answer of CONFIRM_ANSWERS) {
       for (const cancelled of CANCEL_ANSWERS) {

@@ -1,60 +1,30 @@
 namespace Encore.Modules.Inventory.Application;
 
 /// <summary>
-/// How an attempt to hold a seat turned out. A closed set, so an endpoint can
-/// switch on it and map every case to a distinct response.
+/// How a hold attempt turned out. A closed set; refusals are ordinary outcomes under
+/// load, so they are returned rather than thrown.
 /// </summary>
-/// <remarks>
-/// Only <see cref="Held"/> is a success. The rest are ordinary outcomes rather
-/// than faults: under flash-sale load, losing a seat to somebody else is the
-/// common path, not the exceptional one, which is why they travel as a return
-/// value instead of an exception.
-/// </remarks>
 public enum HoldSeatOutcome
 {
-    /// <summary>The client now holds the seat.</summary>
     Held = 0,
 
-    /// <summary>Somebody else holds it and their hold is still live.</summary>
+    /// <summary>Somebody else holds it.</summary>
     AlreadyHeld = 1,
 
-    /// <summary>The seat is sold. Terminal — nothing moves it from here.</summary>
     AlreadySold = 2,
 
-    /// <summary>
-    /// No such seat at that event. Covers both "no seat with that id" and "that
-    /// seat belongs to a different event" — from the caller's side those are the
-    /// same mistake, and distinguishing them would let anyone probe which seat
-    /// ids exist by asking about an event they are not looking at.
-    /// </summary>
+    /// <summary>No such seat at that event. A seat under another event looks the same, so ids cannot be probed.</summary>
     SeatNotFound = 3,
 
-    /// <summary>
-    /// The seat changed underneath this attempt twice: once on the first write,
-    /// and again after reloading. Rare, and the honest answer is "try again".
-    /// </summary>
+    /// <summary>Lost the race twice, including after a reload. Retryable.</summary>
     LostRace = 4,
 
-    /// <summary>
-    /// The client already holds the most seats they may hold at this event
-    /// (<c>DECISIONS.md</c> 006). They must release one or complete checkout
-    /// before taking another. Unlike every other refusal here, this one is a
-    /// policy rather than an invariant, and is enforced best-effort: with Redis
-    /// unavailable a client can slip past it.
-    /// </summary>
+    /// <summary>The client already holds the maximum at this event.</summary>
     HoldCapReached = 5,
 
     /// <summary>
-    /// This client already has another hold request in flight for this event, so
-    /// the cap cannot be counted accurately right now. Retryable, and ordinarily
-    /// resolved within milliseconds.
+    /// Another hold request by this client for this event is in flight, so the cap cannot
+    /// be counted safely. Retryable.
     /// </summary>
-    /// <remarks>
-    /// The only refusal here caused by the system rather than the seat. Holding
-    /// is refused rather than allowed through because nothing downstream
-    /// enforces the cap — unlike a contended seat, where the row's concurrency
-    /// token settles the race whatever the lock does. Better a retryable refusal
-    /// than a silently breached cap.
-    /// </remarks>
     ConcurrentRequestInFlight = 6
 }

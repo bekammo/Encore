@@ -8,23 +8,9 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Notifications.IntegrationTests;
 
 /// <summary>
-/// The first consumer of anything this system publishes: it records a sale, and it
-/// survives being told about the same sale twice.
+/// The SeatSold consumer records a sale and survives redelivery. Against real Postgres, because
+/// the guard is a unique index, not handler code.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>Idempotency is the whole subject here.</b> Delivery is at-least-once by
-/// design — a dispatcher that dies between handling a message and marking it will
-/// redeliver on the next tick, and that is the outbox working rather than failing.
-/// So every one of these tests is really asking the same question: does a
-/// redelivery cost anything.
-/// </para>
-/// <para>
-/// Real Postgres, because the answer is a unique index rather than any C# in the
-/// handler. The read-then-write version of this guard is the one two concurrent
-/// deliveries both pass, which is exactly what the last test here demonstrates.
-/// </para>
-/// </remarks>
 public sealed class SeatSoldNotifierTests : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
@@ -46,9 +32,7 @@ public sealed class SeatSoldNotifierTests : IAsyncLifetime
 
         await using var context = new NotificationsDbContext(_options);
 
-        // Migrate rather than EnsureCreated, so this also proves the generated
-        // migration applies against real Postgres — including the unique index that
-        // every assertion below depends on.
+        // Migrate rather than EnsureCreated, so the real migration and its unique index are exercised.
         await context.Database.MigrateAsync();
     }
 
@@ -73,15 +57,12 @@ public sealed class SeatSoldNotifierTests : IAsyncLifetime
         Assert.Equal(sold.SeatId, notification.SeatId);
         Assert.Equal(NotificationKind.SeatSold, notification.Kind);
 
-        // Copied from the event rather than read from a clock here, so the row says
-        // when the sale happened rather than when the backlog got round to it.
+        // Copied from the event, so the row says when the sale happened, not when it was delivered.
         Assert.Equal(sold.OccurredAt, notification.OccurredAt);
         Assert.True(notification.CreatedAt >= sold.OccurredAt);
     }
 
-    /// <summary>
-    /// The redelivery case, which the outbox guarantees will happen eventually.
-    /// </summary>
+    /// <summary>A redelivered message records nothing new.</summary>
     [Fact]
     public async Task Handle_WhenTheSameMessageArrivesTwice_ShouldRecordOneNotification()
     {
@@ -98,15 +79,7 @@ public sealed class SeatSoldNotifierTests : IAsyncLifetime
         Assert.Single(await ForMessageAsync(messageId));
     }
 
-    /// <summary>
-    /// Two events about the same seat are two notifications, not one.
-    /// </summary>
-    /// <remarks>
-    /// The deduplication key is the message, never the seat. Getting that wrong
-    /// would look correct in every test above and would silently swallow the second
-    /// of two genuinely different things that happened to one seat — which, once
-    /// releases and holds have consumers too, is most of them.
-    /// </remarks>
+    /// <summary>Two different events about one seat are two notifications: the key is the message.</summary>
     [Fact]
     public async Task Handle_WhenTwoMessagesDescribeOneSeat_ShouldRecordBoth()
     {
@@ -129,16 +102,9 @@ public sealed class SeatSoldNotifierTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Two deliveries of one message at the same instant still produce one row.
+    /// Two simultaneous deliveries of one message produce one row. A read-then-write check would
+    /// fail this.
     /// </summary>
-    /// <remarks>
-    /// This is the test that says the unique index is the guard and the handler's
-    /// catch is a courtesy. A read-then-write check would pass every other test in
-    /// this file and fail this one, because two deliveries can both read "nothing
-    /// there" before either writes. Two dispatchers on two hosts is exactly the
-    /// arrangement <c>SKIP LOCKED</c> exists to make possible, so this is not a
-    /// hypothetical.
-    /// </remarks>
     [Fact]
     public async Task Handle_WhenTwoDeliveriesRace_ShouldRecordOneNotification()
     {
@@ -159,8 +125,7 @@ public sealed class SeatSoldNotifierTests : IAsyncLifetime
         var running = deliveries.ToArray();
         gate.SetResult();
 
-        // Neither delivery may surface an error: under at-least-once semantics a
-        // redelivery is the mechanism working, so losing the race is a success.
+        // Neither delivery surfaces an error: losing the race is a success.
         await Task.WhenAll(running);
 
         Assert.Single(await ForMessageAsync(messageId));
@@ -181,11 +146,7 @@ public sealed class SeatSoldNotifierTests : IAsyncLifetime
             .ToListAsync();
     }
 
-    /// <summary>
-    /// Truncated to whole microseconds: Postgres <c>timestamptz</c> resolves to a
-    /// microsecond while <see cref="DateTime"/> ticks are 100ns, so an untruncated
-    /// instant comes back slightly different from what went in.
-    /// </summary>
+    /// <summary>Truncated to microseconds, the resolution Postgres stores.</summary>
     private static DateTime Truncated(DateTime value) =>
         new(value.Ticks - (value.Ticks % TimeSpan.TicksPerMicrosecond), DateTimeKind.Utc);
 }

@@ -3,26 +3,12 @@ using System.Reflection;
 namespace Encore.ArchitectureTests;
 
 /// <summary>
-/// What the compiled assemblies actually reach, read from their metadata tables.
+/// What the compiled assemblies actually reference, read from their metadata. This half sees
+/// transitive reach; <see cref="ProjectGraphTests"/> sees declared references.
 /// </summary>
-/// <remarks>
-/// <para>
-/// This is the half of the suite that sees transitively: an assembly's reference
-/// list names everything the compiler emitted a reference to, whatever route it
-/// arrived by. <see cref="ProjectGraphTests"/> is the other half, and neither
-/// subsumes the other — see DECISIONS 037.
-/// </para>
-/// <para>
-/// Nothing here has a compile-time dependency on anything it inspects; the
-/// assemblies are named as strings and loaded from disk.
-/// </para>
-/// </remarks>
 public class AssemblyReferenceTests
 {
-    /// <summary>
-    /// Runs first in spirit: a typo in a name should read as one clear "not found
-    /// at this path" rather than as nine confusing unrelated failures.
-    /// </summary>
+    /// <summary>A typo in a name reads as one clear "not found" rather than many failures.</summary>
     [Fact]
     public void EveryInspectedAssemblyShouldBePresent()
     {
@@ -37,15 +23,9 @@ public class AssemblyReferenceTests
     }
 
     /// <summary>
-    /// The rule the whole hexagon exists to make true, asserted a step later than
-    /// the build guards assert it.
+    /// The Domain references nothing outside the BCL and <c>Encore.Shared</c>, checked on the
+    /// compiled output after the build rules.
     /// </summary>
-    /// <remarks>
-    /// ENCORE001/002/003 stop a forbidden dependency getting into the Domain's
-    /// compile surface. This reads what the compiler actually emitted afterwards,
-    /// which is a different question and the one a reader of CLAUDE.md is really
-    /// asking.
-    /// </remarks>
     [Fact]
     public void InventoryDomain_ShouldReferenceNothingButEncoreSharedAndTheBcl()
     {
@@ -60,15 +40,8 @@ public class AssemblyReferenceTests
     }
 
     /// <summary>
-    /// The sign on the fence that the previous test is.
+    /// Redundant with the test above, kept for a failure message that names the rule.
     /// </summary>
-    /// <remarks>
-    /// Redundant by construction — anything here would already have failed above —
-    /// and kept anyway, because this is the one whose failure message names the
-    /// rule in CLAUDE.md rather than leaving the reader to work out why
-    /// <c>Npgsql</c> is not on an allow-list. The same belt-and-braces the
-    /// aggregate itself uses.
-    /// </remarks>
     [Fact]
     public void InventoryDomain_ShouldReferenceNoInfrastructureAssembly()
     {
@@ -85,10 +58,7 @@ public class AssemblyReferenceTests
             $"The domain must reference zero infrastructure — EF Core, Npgsql, Redis and ASP.NET Core live on the far side of the ports. Found: {string.Join(", ", leaked)}");
     }
 
-    /// <summary>
-    /// The three contracts assemblies claim "zero packages, zero refs" in prose.
-    /// Until this test, nothing checked any of them.
-    /// </summary>
+    /// <summary>The contracts assemblies reference nothing outside the BCL.</summary>
     [Theory]
     [InlineData("Encore.Modules.Catalog.Contracts")]
     [InlineData("Encore.Modules.Inventory.Contracts")]
@@ -105,11 +75,7 @@ public class AssemblyReferenceTests
             $"{assembly} is a public face: a consumer takes a dependency on it and nothing else, so it may reference only the BCL. Found: {string.Join(", ", foreign)}");
     }
 
-    /// <summary>
-    /// A module may reach another module through its contracts assembly and by no
-    /// other route. This is the rule that makes extracting a module later a matter
-    /// of changing one registration.
-    /// </summary>
+    /// <summary>A module may reach another module only through its contracts assembly.</summary>
     [Theory]
     [InlineData("Encore.Modules.Catalog")]
     [InlineData("Encore.Modules.Orders")]
@@ -154,10 +120,7 @@ public class AssemblyReferenceTests
         Assert.DoesNotContain("Encore.Api", EncoreTree.ReferencedNames(assembly));
     }
 
-    /// <summary>
-    /// The host owns no business logic and talks to no database. DECISIONS 014 and
-    /// 017 both partly rest on this, and <c>Program.cs</c> states it in a comment.
-    /// </summary>
+    /// <summary>The host owns no business logic and talks to no database directly.</summary>
     [Theory]
     [InlineData("Encore.Api")]
     [InlineData("Encore.Payments.Api")]
@@ -176,14 +139,9 @@ public class AssemblyReferenceTests
     }
 
     /// <summary>
-    /// The host list and the projects that actually are hosts agree.
+    /// The host list matches the projects that use the Web SDK, so a new host cannot silently
+    /// escape the rules above.
     /// </summary>
-    /// <remarks>
-    /// The theories above are hand-written lists, and DECISIONS 061 added a second
-    /// host to every one of them. A third would inherit none of these rules silently,
-    /// so this reads the Web SDK out of the csprojs and fails when the two disagree
-    /// in either direction.
-    /// </remarks>
     [Fact]
     public void TheHostListShouldMatchTheProjectsUsingTheWebSdk()
     {
@@ -199,18 +157,7 @@ public class AssemblyReferenceTests
         Assert.Equal(EncoreTree.Hosts.Order(StringComparer.Ordinal), webProjects);
     }
 
-    /// <summary>
-    /// The shared persistence project may not name a module or a contracts
-    /// assembly. DECISIONS 058, answering 017's strongest objection.
-    /// </summary>
-    /// <remarks>
-    /// 017 refused to share this code because a shared migrator would have to know
-    /// every module's context, which is a drawer with five modules' names in it.
-    /// 058 only supersedes that because the type parameter took the module's name
-    /// out of the shared code entirely. This is the test that keeps it out: the
-    /// day this assembly names <c>Catalog</c>, the argument for its existence has
-    /// gone, whatever the code looks like.
-    /// </remarks>
+    /// <summary>The shared persistence project may not name a module or a contracts assembly.</summary>
     [Fact]
     public void SharedPersistence_ShouldNameNoModuleOrContractsAssembly()
     {
@@ -228,24 +175,12 @@ public class AssemblyReferenceTests
             $"{EncoreTree.SharedPersistence} knows what a DbContext and a schema are and may not know that a module exists. Found: {string.Join(", ", named)}");
     }
 
-    /// <summary>
-    /// Sharing an implementation is not the same as sharing a step. DECISIONS 058,
-    /// leaving 017's refusal of a host-level migrator standing.
-    /// </summary>
-    /// <remarks>
-    /// Each module still registers its own migrator, over its own context, behind
-    /// its own <c>{Module}:MigrateOnStartup</c> flag, and carries it away when it
-    /// is extracted. The host still does not know that a module has a database —
-    /// which is what <see cref="Host_ShouldNameNoPersistenceOrCacheAssembly"/> says
-    /// about EF Core and this says about the thing that wraps it.
-    /// </remarks>
+    /// <summary>The host never names the shared persistence project: each module registers its own migrator.</summary>
     [Fact]
     public void Host_ShouldNotNameTheSharedPersistenceAssembly() =>
         Assert.DoesNotContain(EncoreTree.SharedPersistence, EncoreTree.ReferencedNames("Encore.Api"));
 
-    /// <summary>
-    /// The namespace-level assertion DECISIONS 002 anticipated.
-    /// </summary>
+    /// <summary>Every type in the Domain assembly lives in the Domain namespace.</summary>
     [Fact]
     public void InventoryDomain_ShouldDeclareEveryTypeInItsOwnNamespace()
     {
@@ -259,8 +194,7 @@ public class AssemblyReferenceTests
         }
         catch (ReflectionTypeLoadException exception)
         {
-            // Report a load problem as a load problem rather than as a namespace
-            // violation, then carry on with whatever did load.
+            // Report a load problem as such, then carry on.
             Assert.Fail(
                 "Could not load every type in the domain assembly: "
                 + string.Join(" | ", exception.LoaderExceptions.Select(e => e?.Message)));

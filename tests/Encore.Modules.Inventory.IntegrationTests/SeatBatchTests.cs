@@ -10,21 +10,10 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// An order's seats written together (076): a sale of every seat or none, and
-/// holds and releases that answer each seat but land in one transaction.
+/// An order's seats written together against real Postgres: a sale of every seat or none, and
+/// holds and releases answered per seat but written in one transaction. Seats written together
+/// share one <c>xmin</c>, which is how "one transaction" is checked.
 /// </summary>
-/// <remarks>
-/// <para>
-/// Real Postgres, because the claim is about what a transaction does and a fake
-/// repository can only be told what to pretend. The unit tests pin the handlers'
-/// sequencing; these pin that the database agrees with them.
-/// </para>
-/// <para>
-/// "One transaction" is checked, not assumed. Postgres stamps every row a
-/// transaction writes with that transaction's id in <c>xmin</c>, which is what
-/// <see cref="Seat.RowVersion"/> maps, so seats written together share one.
-/// </para>
-/// </remarks>
 public sealed class SeatBatchTests : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
@@ -73,11 +62,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
         Assert.Equal(4, await CountEventsAsync(seatIds, InventoryEventTypes.SeatSold));
     }
 
-    /// <summary>
-    /// The case 028 had to leave for a person: four seats, the last hold lapsed.
-    /// Sold one at a time, three stayed sold with nobody paying for them. Now none
-    /// sell, nothing is announced, and the three live holds are still the client's.
-    /// </summary>
+    /// <summary>Four seats, the last hold lapsed: none sell, nothing is announced, the live holds remain.</summary>
     [Fact]
     public async Task Sell_WhenOneOfFourHoldsHasLapsed_ShouldSellNone()
     {
@@ -101,10 +86,8 @@ public sealed class SeatBatchTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The hazard the refused path has to close. The seats that would have sold
-    /// already read Sold in memory when the lapsed one refused; if they stayed
-    /// that way, the next save on the same unit of work — any save, for any
-    /// reason — would sell them. The handler reads them again so it cannot.
+    /// After a refused sale, a later save on the same context sells nothing: the seats that read
+    /// Sold in memory were reloaded.
     /// </summary>
     [Fact]
     public async Task Sell_WhenRefused_ShouldLeaveNothingForALaterSaveToWrite()
@@ -128,9 +111,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The transaction itself, beneath the handler: another writer moves one seat
-    /// between the load and the save, and the seat that was not touched does not
-    /// sell either. This is the property the whole of 076 rests on.
+    /// Another writer moves one seat between load and save; the untouched seat does not sell either.
     /// </summary>
     [Fact]
     public async Task Save_WhenAnotherWriterMovesOneSeat_ShouldCommitNone()
@@ -156,10 +137,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
         Assert.Equal(0, await CountEventsAsync(seatIds, InventoryEventTypes.SeatSold));
     }
 
-    /// <summary>
-    /// A confirm retried after the sale went through: every seat is already the
-    /// client's, which is success, and nothing is announced twice.
-    /// </summary>
+    /// <summary>A retried confirm after the sale: success, and nothing announced twice.</summary>
     [Fact]
     public async Task Sell_WhenRetriedAfterTheSale_ShouldSucceedWithoutASecondEvent()
     {
@@ -175,10 +153,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
 
     // -- Holding: every seat answered, one transaction ----------------------
 
-    /// <summary>
-    /// 023 survives the batch: the seat somebody else holds is refused and the
-    /// two free ones are held — together, in one write.
-    /// </summary>
+    /// <summary>A seat someone else holds is refused; the free ones are held in one write.</summary>
     [Fact]
     public async Task Hold_WhenOneSeatIsTaken_ShouldHoldTheOthersInOneTransaction()
     {
@@ -199,11 +174,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
         Assert.Equal(2, await CountEventsAsync(free, InventoryEventTypes.SeatHeld));
     }
 
-    /// <summary>
-    /// The cap counts across the batch as it did across separate calls: two
-    /// holds elsewhere leave room for two of the four asked for, and the
-    /// database ends with exactly the cap.
-    /// </summary>
+    /// <summary>The cap counts across the batch: the database ends with exactly the cap.</summary>
     [Fact]
     public async Task Hold_WhenTheCapRunsOutPartWay_ShouldStopAtTheCap()
     {
@@ -299,11 +270,8 @@ public sealed class SeatBatchTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Writes to one seat through another context without changing whose it is:
-    /// the client releases it and holds it again, two writes, so its row version
-    /// moves while it stays theirs. One write would not do — releasing and
-    /// re-holding at the same instant leaves every column as it was, and EF sends
-    /// no UPDATE for a row with nothing to change.
+    /// Moves a seat's row version through another context without changing its holder: release
+    /// and re-hold. One write would not do, since EF sends no UPDATE when nothing changed.
     /// </summary>
     private async Task MoveAsync(Guid seatId, Guid clientId)
     {
@@ -332,8 +300,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
 
         var count = 0;
 
-        // One query per seat, filtered in the payload the way OutboxDrainTests
-        // scopes its assertions, because the container is shared across the class.
+        // One query per seat, filtered on the payload, because the container is shared.
         foreach (var seatId in seatIds)
         {
             count += await context.OutboxMessages.AsNoTracking()
@@ -352,10 +319,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
         return new DateTime(utcNow.Ticks - (utcNow.Ticks % TimeSpan.TicksPerMicrosecond), DateTimeKind.Utc);
     }
 
-    /// <summary>
-    /// A lock that grants everything. The hold handler takes the port; nothing
-    /// here races the client against itself, so there is nothing to serialise.
-    /// </summary>
+    /// <summary>A lock that grants everything; nothing here needs serialising.</summary>
     private sealed class AlwaysGrantingLock : IDistributedLock
     {
         public Task<LockAcquisition> TryAcquireAsync(

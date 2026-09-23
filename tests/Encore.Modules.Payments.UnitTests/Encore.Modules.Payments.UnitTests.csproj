@@ -1,11 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Fast, in-memory tests for the payment state machine, the simulated
-       gateway and the outcome-to-status mapping. Deliberately no Testcontainers
-       here: the one rule in this module that a database enforces — at most one
-       live attempt per order — is tested where it lives, in
-       Encore.Modules.Payments.IntegrationTests, because a fake that did not
-       enforce the partial unique index would fake away the guard. -->
+  <!-- In-memory tests for the payment state machine and the HTTP mapping. No Testcontainers. -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>

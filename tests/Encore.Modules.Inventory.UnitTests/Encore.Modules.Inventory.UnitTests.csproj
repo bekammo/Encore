@@ -1,9 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Fast, in-memory tests for the domain aggregate and the use-case handler.
-       Deliberately no Testcontainers here: if a test in this project needs a
-       database, the design has leaked and the port abstraction is not doing
-       its job. -->
+  <!-- In-memory tests for the aggregate and the handlers. No Testcontainers: needing a
+       database here would mean the ports are not doing their job. -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>

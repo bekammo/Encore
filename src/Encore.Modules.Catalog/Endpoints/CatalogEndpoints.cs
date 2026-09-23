@@ -8,38 +8,16 @@ using Microsoft.EntityFrameworkCore;
 namespace Encore.Modules.Catalog.Endpoints;
 
 /// <summary>
-/// Minimal API endpoints for browsing and populating the catalogue. Straight
-/// CRUD against <see cref="CatalogDbContext"/> — no handler indirection,
-/// because there is no behaviour here worth indirecting.
+/// Endpoints for browsing and populating the catalogue: straight CRUD against
+/// <see cref="CatalogDbContext"/>. No client identity: the catalogue is public and writes
+/// are operator-facing. Ids are generated here.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>No client identity on any route.</b> A catalogue is public, and creating
-/// venues and events is operator-facing — the same footing as
-/// <c>POST /events/{eventId}/seats</c>, which also has no filter. When Identity
-/// exists, the write routes are the ones that grow an authorisation check; the
-/// reads stay open.
-/// </para>
-/// <para>
-/// <b>Ids are generated here, not supplied.</b> Venues and events have no
-/// natural key, and a caller that has just created one needs something to hold
-/// — the same call 012 made for seat maps.
-/// </para>
-/// <para>
-/// Reads are <c>AsNoTracking</c>: nothing in this module mutates what it reads
-/// back, and a change tracker that will never be consulted is pure cost on the
-/// path this module spends most of its life on.
-/// </para>
-/// </remarks>
 public static class CatalogEndpoints
 {
-    /// <summary>Longest name this module will store.</summary>
     private const int MaxNameLength = 200;
 
-    /// <summary>Longest address this module will store.</summary>
     private const int MaxAddressLength = 500;
 
-    /// <summary>Maps the /catalog route group.</summary>
     public static IEndpointRouteBuilder MapCatalogEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var catalog = endpoints.MapGroup("/catalog");
@@ -196,10 +174,7 @@ public static class CatalogEndpoints
                 "invalid_currency");
         }
 
-        // Checked rather than constrained: a foreign key would be a second
-        // enforcement point for a rule with exactly one writer, and it would
-        // surface as a provider exception rather than as an answer a client can
-        // read. See EventConfiguration.
+        // Checked rather than constrained, so the client gets a readable answer.
         var venueExists = await catalog.Venues
             .AsNoTracking()
             .AnyAsync(venue => venue.Id == request.VenueId, cancellationToken)
@@ -207,8 +182,7 @@ public static class CatalogEndpoints
 
         if (!venueExists)
         {
-            // 409, not 404: /catalog/events exists and was addressed correctly.
-            // It is the venue the body names that does not.
+            // 409, not 404: the addressed route exists; the venue named in the body does not.
             return CatalogResults.Conflict(
                 context.Request.Path,
                 "venue_not_found",
@@ -272,19 +246,9 @@ public static class CatalogEndpoints
     }
 
     /// <summary>
-    /// Normalises an incoming instant to UTC, refusing one that does not say
-    /// which timezone it meant.
+    /// Normalises an instant to UTC, refusing one with no timezone. Guessing would put a
+    /// show on sale at the wrong instant.
     /// </summary>
-    /// <remarks>
-    /// System.Text.Json yields <see cref="DateTimeKind.Utc"/> for a trailing
-    /// Z, <see cref="DateTimeKind.Local"/> for an explicit offset, and
-    /// <see cref="DateTimeKind.Unspecified"/> for neither. Npgsql rejects a
-    /// non-UTC value for <c>timestamptz</c>, so left alone the third case
-    /// surfaces as a 500 from inside the provider. Guessing on the caller's
-    /// behalf would be worse: a wall-clock time with no zone is a different
-    /// instant in London and in Los Angeles, and a show that goes on sale at
-    /// the wrong one is wrong in a way nobody notices until the day.
-    /// </remarks>
     private static bool TryToUtc(DateTime value, out DateTime utc)
     {
         utc = value.Kind switch
@@ -305,8 +269,7 @@ public static class CatalogEndpoints
             "ambiguous_timestamp");
 
     /// <summary>
-    /// Three ASCII letters. A length-and-shape check catches the typo that
-    /// matters without this module pretending to own a copy of ISO 4217.
+    /// Three ASCII letters; a shape check, not a copy of ISO 4217.
     /// </summary>
     private static bool IsCurrencyCode(string? currency) =>
         currency is { Length: 3 } && currency.All(char.IsAsciiLetter);

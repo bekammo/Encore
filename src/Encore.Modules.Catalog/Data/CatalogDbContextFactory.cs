@@ -7,12 +7,6 @@ namespace Encore.Modules.Catalog.Data;
 /// Lets <c>dotnet ef</c> construct a <see cref="CatalogDbContext"/> without
 /// booting the API host. Design-time only — nothing at runtime goes through here.
 /// </summary>
-/// <remarks>
-/// The alternative was to reference <c>Microsoft.EntityFrameworkCore.Design</c>
-/// from <c>Encore.Api</c>, which is what the EF tooling assumes by default. This
-/// way keeps the host at zero package references and keeps each module's
-/// migrations self-contained, so they travel with the module.
-/// </remarks>
 public sealed class CatalogDbContextFactory : IDesignTimeDbContextFactory<CatalogDbContext>
 {
     /// <summary>Matches the Postgres service in docker-compose.yml.</summary>

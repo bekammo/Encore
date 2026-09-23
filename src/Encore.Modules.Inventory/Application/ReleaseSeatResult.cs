@@ -7,11 +7,7 @@ namespace Encore.Modules.Inventory.Application;
 public sealed record ReleaseSeatResult(ReleaseSeatOutcome Outcome)
 {
     /// <summary>
-    /// The client is no longer holding the seat. Returned for a hold given up by
-    /// this call and, idempotently, for one that had already lapsed or had never
-    /// been taken — the caller asked not to be holding this seat, and they are
-    /// not. Reporting failure for a state that already holds would turn a retry
-    /// into an error.
+    /// The client no longer holds the seat, including when the hold had already lapsed.
     /// </summary>
     public static ReleaseSeatResult Released { get; } = new(ReleaseSeatOutcome.Released);
 
@@ -19,10 +15,7 @@ public sealed record ReleaseSeatResult(ReleaseSeatOutcome Outcome)
     public static ReleaseSeatResult AlreadySold { get; } = new(ReleaseSeatOutcome.AlreadySold);
 
     /// <summary>
-    /// The seat is sold to this client. Still a refusal — a sale is not undone by
-    /// releasing — but one that says the client's own purchase completed, which is
-    /// what an order being cancelled mid-confirm needs to hear before it gives
-    /// any money back (<c>DECISIONS.md</c> 077).
+    /// Sold to this client. A cancel racing its own confirm uses this to back off.
     /// </summary>
     public static ReleaseSeatResult SoldToYou { get; } = new(ReleaseSeatOutcome.SoldToYou);
 

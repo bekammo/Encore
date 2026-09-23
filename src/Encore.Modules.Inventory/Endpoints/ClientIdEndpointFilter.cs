@@ -3,29 +3,12 @@ using Microsoft.AspNetCore.Http;
 namespace Encore.Modules.Inventory.Endpoints;
 
 /// <summary>
-/// Reads and validates the <c>X-Client-Id</c> header for every route that acts
-/// on behalf of a client.
+/// Reads and validates the <c>X-Client-Id</c> header. A claimed identity standing in for
+/// an Identity module, not authentication. Applied to the route group so a new endpoint
+/// cannot forget it, and so a bad header gets a readable 400 rather than an empty one.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>This is not authentication.</b> Anyone can send any client id, and
-/// changing the header resets their hold cap. It is a deliberate stand-in for
-/// the Identity module that does not exist yet, so that the seat use cases can
-/// be exercised end to end without inventing an auth story first. Nothing here
-/// returns 401 or 403, because there is nothing doing the authorising — every
-/// refusal on these routes is about the state of a seat, not about permission.
-/// </para>
-/// <para>
-/// A filter on the route group rather than a bound parameter, for two reasons.
-/// A failed parameter bind produces a framework 400 with an empty body, which
-/// is exactly the response nobody can diagnose from a load harness at 3am; and
-/// a group filter cannot be forgotten by the next endpoint added, where a
-/// parameter can simply be left off.
-/// </para>
-/// </remarks>
 internal sealed class ClientIdEndpointFilter : IEndpointFilter
 {
-    /// <summary>The header carrying the caller's claimed identity.</summary>
     internal const string HeaderName = "X-Client-Id";
 
     private const string ItemKey = "Encore.Inventory.ClientId";
@@ -58,14 +41,8 @@ internal sealed class ClientIdEndpointFilter : IEndpointFilter
     }
 
     /// <summary>
-    /// The client id for this request.
+    /// The client id for this request. Throws if the filter was not applied to the route.
     /// </summary>
-    /// <remarks>
-    /// Only valid on routes carrying <see cref="ClientIdEndpointFilter"/>; the
-    /// filter has already rejected the request otherwise, so reaching this with
-    /// nothing stored means the filter was not applied, which is a wiring bug
-    /// and throws rather than inventing an identity.
-    /// </remarks>
     internal static Guid ClientId(HttpContext context) =>
         context.Items[ItemKey] is Guid clientId
             ? clientId

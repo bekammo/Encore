@@ -4,38 +4,21 @@ using System.Text.RegularExpressions;
 namespace Encore.ArchitectureTests;
 
 /// <summary>
-/// <c>DECISIONS.md</c>'s index against the entries it indexes.
+/// <c>DECISIONS.md</c>'s index against its entries, so the index cannot drift.
 /// </summary>
-/// <remarks>
-/// <para>
-/// The log is append-only and only gets longer, so 060 gave it an index — and an
-/// index is a second copy of something, which is the thing
-/// <c>Directory.Build.targets</c> opens by arguing against. This is what stops it
-/// becoming a list that used to be true.
-/// </para>
-/// <para>
-/// The log is not code, and that is deliberate rather than an oversight in scope.
-/// Every other rule in this project that matters is enforced by the build or by a
-/// test (043), and the reasoning behind those rules lives here — a log nobody can
-/// navigate is a log nobody reads.
-/// </para>
-/// </remarks>
 public partial class DecisionLogTests
 {
     private static readonly string LogPath = Path.Combine(EncoreTree.Root, "DECISIONS.md");
 
-    /// <summary>An entry heading: <c>## 058 — Title</c>.</summary>
+    /// <summary>An entry heading: <c>## 001 — Title</c>.</summary>
     [GeneratedRegex(@"^## (?<number>\d{3}) — (?<title>.+)$", RegexOptions.Multiline)]
     private static partial Regex HeadingPattern();
 
-    /// <summary>An index line: <c>- [058](#anchor) — Title</c>.</summary>
+    /// <summary>An index line: <c>- [001](#anchor) — Title</c>.</summary>
     [GeneratedRegex(@"^- \[(?<number>\d{3})\]\(#(?<anchor>[^)]+)\) — (?<title>.+)$", RegexOptions.Multiline)]
     private static partial Regex IndexPattern();
 
-    /// <summary>
-    /// Sanity first: an index of nothing matches a log of nothing, and everything
-    /// below passes by finding neither.
-    /// </summary>
+    /// <summary>Sanity: an empty index matches an empty log, and the tests below would pass vacuously.</summary>
     [Fact]
     public void ThereShouldBeEntriesAndIndexLinesToCompare()
     {
@@ -43,14 +26,7 @@ public partial class DecisionLogTests
         Assert.NotEmpty(IndexLines());
     }
 
-    /// <summary>
-    /// The same entries, in the same order, under the same titles.
-    /// </summary>
-    /// <remarks>
-    /// Order matters as much as membership. The log is read top to bottom to see
-    /// what was decided when, wrong turns included, and an index sorted some other
-    /// way would be describing a different document.
-    /// </remarks>
+    /// <summary>The same entries, in the same order, under the same titles.</summary>
     [Fact]
     public void TheIndexShouldListEveryEntryInOrder()
     {
@@ -62,7 +38,7 @@ public partial class DecisionLogTests
 
         Assert.True(
             missing.Count == 0,
-            $"DECISIONS.md has entries with no line in the index (DECISIONS 060). Missing: {string.Join("; ", missing)}");
+            $"DECISIONS.md has entries with no line in the index. Missing: {string.Join("; ", missing)}");
 
         Assert.True(
             extra.Count == 0,
@@ -71,10 +47,7 @@ public partial class DecisionLogTests
         Assert.Equal(entries, indexed);
     }
 
-    /// <summary>
-    /// Numbered from 001 upwards with nothing skipped. Entries are never removed,
-    /// so a gap means a number was skipped when one was written.
-    /// </summary>
+    /// <summary>Numbered from 001 upwards with nothing skipped.</summary>
     [Fact]
     public void EntryNumbersShouldRunFrom001WithoutGaps()
     {
@@ -85,20 +58,9 @@ public partial class DecisionLogTests
     }
 
     /// <summary>
-    /// Every index anchor is the slug GitHub would give that heading.
+    /// Every index anchor is the slug GitHub gives that heading: lower-case, keep letters,
+    /// digits, hyphens and underscores, spaces to hyphens. The em dash leaves a double hyphen.
     /// </summary>
-    /// <remarks>
-    /// The rule is GitHub's: lower-case, drop everything that is not a letter, a
-    /// digit, a space, a hyphen or an underscore, then spaces to hyphens. The em
-    /// dash disappears and leaves the two spaces around it behind, which is why a
-    /// correct anchor has a double hyphen after the number.
-    /// <para>
-    /// What this cannot check is that the rule is GitHub's. That was checked once,
-    /// by clicking. A renderer that disagreed would break all sixty links at the
-    /// same moment, which a reader finds immediately — unlike a single stale link,
-    /// which is what this is for.
-    /// </para>
-    /// </remarks>
     [Fact]
     public void EveryIndexAnchorShouldMatchItsHeading()
     {
@@ -110,7 +72,7 @@ public partial class DecisionLogTests
 
         Assert.True(
             wrong.Count == 0,
-            $"An index anchor in DECISIONS.md does not match the heading it points at (DECISIONS 060). Found: {string.Join("; ", wrong)}");
+            $"An index anchor in DECISIONS.md does not match the heading it points at. Found: {string.Join("; ", wrong)}");
     }
 
     private static string Slug(string heading)
@@ -145,10 +107,6 @@ public partial class DecisionLogTests
                 match.Groups["anchor"].Value,
                 match.Groups["title"].Value.TrimEnd()))];
 
-    /// <remarks>
-    /// Read whole and matched with <see cref="RegexOptions.Multiline"/> rather than
-    /// line by line, so <c>$</c> does the work of stripping the carriage return the
-    /// file carries on every line.
-    /// </remarks>
+    /// <remarks>Matched multiline, so <c>$</c> also strips each line's carriage return.</remarks>
     private static string Log() => File.ReadAllText(LogPath);
 }

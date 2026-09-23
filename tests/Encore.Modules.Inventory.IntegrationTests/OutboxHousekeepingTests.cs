@@ -11,21 +11,9 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// What happens to an outbox row after it has been delivered, and what the module
-/// says about the ones that have not been. <c>DECISIONS.md</c> 070.
+/// After delivery: the retention sweep removes old delivered rows, and the readiness check
+/// counts the rows nobody managed to deliver. A fixed clock throughout.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>Two subjects in one class because they are two questions about one table</b>,
-/// and a container apiece would double this file's cost to say so. The retention
-/// sweep removes delivered rows; the readiness check counts the rows nobody has
-/// managed to deliver. Neither is load-bearing for any seat invariant, which is the
-/// property the first half of this file is really about.
-/// </para>
-/// <para>
-/// A fake clock throughout, so "thirty days ago" is a fact rather than a wait.
-/// </para>
-/// </remarks>
 public sealed class OutboxHousekeepingTests : IAsyncLifetime
 {
     private static readonly DateTime Now = new(2026, 9, 22, 12, 0, 0, DateTimeKind.Utc);
@@ -53,15 +41,7 @@ public sealed class OutboxHousekeepingTests : IAsyncLifetime
 
     // -- Retention --------------------------------------------------------
 
-    /// <summary>
-    /// A delivered message older than the window goes; one delivered yesterday
-    /// stays.
-    /// </summary>
-    /// <remarks>
-    /// 051 refused to build this on the grounds that nothing had an opinion about
-    /// how long an event is worth keeping. 070 supersedes that on one point only:
-    /// "forever" was an opinion too, and nobody had chosen it either.
-    /// </remarks>
+    /// <summary>A delivered message older than the window goes; one delivered yesterday stays.</summary>
     [Fact]
     public async Task Sweep_ShouldDeleteDeliveredMessagesPastTheWindowAndKeepTheRest()
     {
@@ -78,16 +58,7 @@ public sealed class OutboxHousekeepingTests : IAsyncLifetime
         Assert.Contains(recent, left);
     }
 
-    /// <summary>
-    /// An undelivered message is work and a dead letter is evidence. Neither is
-    /// deleted by age, however old it gets.
-    /// </summary>
-    /// <remarks>
-    /// The important half of this file. A retention sweep that went by
-    /// <c>OccurredAt</c> would quietly destroy the record of the one message that
-    /// never arrived — which is precisely the thing somebody eventually comes
-    /// looking for, and which 051 asked to be made visible rather than disposable.
-    /// </remarks>
+    /// <summary>Undelivered messages and dead letters are never deleted, however old.</summary>
     [Fact]
     public async Task Sweep_ShouldNeverDeleteAMessageThatWasNotDelivered()
     {
@@ -104,10 +75,7 @@ public sealed class OutboxHousekeepingTests : IAsyncLifetime
         Assert.Contains(deadLettered, left);
     }
 
-    /// <summary>
-    /// One pass removes at most a batch, so a first run against a table nobody has
-    /// ever pruned is a series of small deletes rather than one enormous one.
-    /// </summary>
+    /// <summary>One pass removes at most a batch.</summary>
     [Fact]
     public async Task Sweep_ShouldDeleteAtMostOneBatch()
     {
@@ -126,15 +94,7 @@ public sealed class OutboxHousekeepingTests : IAsyncLifetime
 
     // -- Readiness --------------------------------------------------------
 
-    /// <summary>
-    /// The count 051 asked to be visible somewhere and nothing surfaced: a message
-    /// that has stopped being retried.
-    /// </summary>
-    /// <remarks>
-    /// <b>And the module stays ready.</b> One <c>SeatSold</c> that never reached
-    /// Notifications is a thing to look at; taking the host out of rotation for it
-    /// would turn a message nobody read into a request path nobody can reach.
-    /// </remarks>
+    /// <summary>Dead letters are counted, and the module stays ready.</summary>
     [Fact]
     public async Task Readiness_ShouldReportTheBacklogWithoutFailing()
     {
@@ -152,11 +112,7 @@ public sealed class OutboxHousekeepingTests : IAsyncLifetime
         Assert.Contains("1 dead-lettered", result.Detail, StringComparison.Ordinal);
     }
 
-    /// <summary>
-    /// A database it cannot read is the one thing that does make this module
-    /// unready, and the check answers rather than throwing — an exception escaping
-    /// here would make the readiness endpoint itself the thing that is down.
-    /// </summary>
+    /// <summary>An unreadable database makes the module unready, and the check answers rather than throws.</summary>
     [Fact]
     public async Task Readiness_WhenTheDatabaseIsUnreachable_ShouldFailRatherThanThrow()
     {
@@ -179,10 +135,7 @@ public sealed class OutboxHousekeepingTests : IAsyncLifetime
             .UseInventoryNpgsql(_connectionString)
             .Options);
 
-    /// <summary>
-    /// One outbox row in whatever state the test needs, written the way the drain
-    /// writes it and then moved on with the aggregate's own methods.
-    /// </summary>
+    /// <summary>One outbox row in the state a test needs, moved on with its own methods.</summary>
     private async Task<Guid> SeedAsync(
         DateTime? deliveredAt,
         DateTime? occurredAt = null,

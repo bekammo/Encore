@@ -1,22 +1,9 @@
 namespace Encore.ArchitectureTests;
 
 /// <summary>
-/// What the csprojs <em>declare</em>, as opposed to what the compiler ended up
-/// emitting.
+/// What the csprojs declare, as opposed to what the compiler emitted. Catches a declared but
+/// unused <c>ProjectReference</c>, which assembly metadata cannot see.
 /// </summary>
-/// <remarks>
-/// <para>
-/// This suite exists because <see cref="AssemblyReferenceTests"/> cannot see a
-/// declared-but-unused <c>ProjectReference</c>: the compiler emits a reference
-/// only when a type is actually named, so a project can take a dependency on a
-/// module it must not touch and stay invisible to assembly metadata until the day
-/// somebody uses it. That latent edge is the one a future contributor will find
-/// and treat as permission.
-/// </para>
-/// <para>
-/// Two questions, two mechanisms. DECISIONS 037.
-/// </para>
-/// </remarks>
 public class ProjectGraphTests
 {
     [Fact]
@@ -65,15 +52,9 @@ public class ProjectGraphTests
     }
 
     /// <summary>
-    /// The shared persistence project declares no <c>ProjectReference</c> at all.
-    /// DECISIONS 058.
+    /// The shared persistence project declares no <c>ProjectReference</c>, so its EF Core has no
+    /// route out.
     /// </summary>
-    /// <remarks>
-    /// The load-bearing half of 058. This project carries EF Core and Npgsql
-    /// deliberately, so every edge <i>out</i> of it is a route by which those
-    /// arrive somewhere they are forbidden. Zero outbound edges is what makes the
-    /// direction of the dependency a fact rather than a habit.
-    /// </remarks>
     [Fact]
     public void SharedPersistence_ShouldDeclareNoProjectReference()
     {
@@ -85,17 +66,9 @@ public class ProjectGraphTests
     }
 
     /// <summary>
-    /// Nothing zero-dependency may reference the shared persistence project.
-    /// DECISIONS 058.
+    /// Nothing zero-dependency may reference the shared persistence project, least of all
+    /// <c>Encore.Shared</c>, the Domain's only reference.
     /// </summary>
-    /// <remarks>
-    /// The other half of the same rule, asserted from the far end. It matters most
-    /// for <c>Encore.Shared</c>: that is <c>Encore.Modules.Inventory.Domain</c>'s
-    /// only <c>ProjectReference</c>, so EF Core arriving there arrives on the
-    /// Domain's compile surface. ENCORE003 would catch it at build time; this says
-    /// which rule was broken and why, rather than leaving a reader to work out what
-    /// <c>Npgsql</c> is doing in a closure listing.
-    /// </remarks>
     [Theory]
     [InlineData("Encore.Shared")]
     [InlineData("Encore.Modules.Catalog.Contracts")]
@@ -107,15 +80,7 @@ public class ProjectGraphTests
         Assert.DoesNotContain(EncoreTree.SharedPersistence, Declared(project));
     }
 
-    /// <summary>
-    /// The set the previous theory covers is the set that actually opts in.
-    /// </summary>
-    /// <remarks>
-    /// A theory over a hand-written list stops being a rule the moment a sixth
-    /// project declares <c>EncoreZeroDependency</c> and nobody adds a row. This
-    /// reads the property out of the csprojs and fails when the two disagree, in
-    /// both directions.
-    /// </remarks>
+    /// <summary>The list above matches the projects that actually declare <c>EncoreZeroDependency</c>.</summary>
     [Fact]
     public void TheZeroDependencyListShouldMatchTheProjectsThatDeclareIt()
     {
@@ -131,16 +96,9 @@ public class ProjectGraphTests
     }
 
     /// <summary>
-    /// Nothing under <c>src/</c> may depend on the host.
+    /// Nothing under <c>src/</c> may depend on the host. This suite's own reference to it is a
+    /// build-order edge only (<c>ReferenceOutputAssembly="false"</c>).
     /// </summary>
-    /// <remarks>
-    /// This suite itself declares one, which is why it reads only <c>src/</c>.
-    /// That reference carries <c>ReferenceOutputAssembly="false"</c>, so it is a
-    /// build-order edge and nothing else: the host's output never reaches this
-    /// project's compile surface, and no type here can name one of its. A real
-    /// dependency and an ordering edge are different things, and only the first
-    /// is what this rule forbids.
-    /// </remarks>
     [Theory]
     [InlineData("Encore.Api")]
     [InlineData("Encore.Payments.Api")]
@@ -156,14 +114,7 @@ public class ProjectGraphTests
             $"A host composes modules; nothing may depend on one. Found a reference to {host} from: {string.Join(", ", offenders)}");
     }
 
-    /// <summary>
-    /// A host composes modules; it does not compose another host. DECISIONS 061.
-    /// </summary>
-    /// <remarks>
-    /// The Payments host and the monolith both serve Payments, and the thing that
-    /// makes that a Strangler Fig rather than a mess is that neither knows the other
-    /// exists. They meet over HTTP and at no other point.
-    /// </remarks>
+    /// <summary>A host may not reference another host; they meet only over HTTP.</summary>
     [Fact]
     public void NoHostShouldReferenceAnotherHost()
     {

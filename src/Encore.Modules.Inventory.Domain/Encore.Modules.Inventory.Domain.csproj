@@ -1,33 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The inside of the hexagon.
-
-       This project exists as its own assembly rather than a folder so the
-       "no infrastructure in the domain" rule is enforced by the compiler
-       instead of by discipline. There is no reference here to EF Core,
-       ASP.NET Core or StackExchange.Redis, so domain code physically cannot
-       name those types — a violation is a build error, not a code review
-       comment. -->
+  <!-- The inside of the hexagon. A separate assembly, so domain code cannot name
+       EF Core, ASP.NET Core or Redis types: a violation is a build error. -->
 
   <ItemGroup>
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
   </ItemGroup>
 
-  <!-- Belt and braces. The rules themselves live in Directory.Build.targets,
-       which is what lets Encore.Shared and the three contracts assemblies have
-       them too — and Encore.Shared having them is what closed the hole this
-       file's own guard could never see, because a package there would have
-       arrived here through the one ProjectReference above.
-
-         ENCORE001  no PackageReference of our own.
-         ENCORE002  no FrameworkReference but the implicit BCL one.
-         ENCORE003  nothing outside the BCL in the resolved closure, which is
-                    the transitive case the first rule is blind to.
-
-       The architecture test this comment used to defer to now exists, in
-       tests/Encore.ArchitectureTests: it asserts the same rule over compiled
-       metadata and over the declared project graph, a step later than these
-       and for the questions a build cannot answer. DECISIONS 036 and 037. -->
+  <!-- Opts into ENCORE001-003 (Directory.Build.targets): no packages, no framework
+       references, nothing outside the BCL in the resolved closure. -->
   <PropertyGroup>
     <EncoreZeroDependency>true</EncoreZeroDependency>
   </PropertyGroup>

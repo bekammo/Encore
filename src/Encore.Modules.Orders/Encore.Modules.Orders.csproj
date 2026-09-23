@@ -1,8 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Flat CRUD module. Endpoints / Data / Models, no layering ceremony.
-       Infrastructure packages sit right next to the endpoints on purpose —
-       this module has no hard problem in it, so it gets no abstraction. -->
+  <!-- Flat module: Endpoints / Data / Models, no layering. -->
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
@@ -11,40 +9,21 @@
   <ItemGroup>
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
 
-    <!-- Inventory's public face, and the only thing Orders is allowed to know
-         about that module. Deliberately not a reference to
-         Encore.Modules.Inventory itself: this is the seam that lets Inventory
-         be extracted without Orders changing, and referencing the module would
-         quietly destroy it. -->
+    <!-- Other modules are reached only through their .Contracts assemblies. -->
     <ProjectReference Include="..\Encore.Modules.Inventory.Contracts\Encore.Modules.Inventory.Contracts.csproj" />
 
-    <!-- Catalog's public face, on the same terms and for the same reason: Orders
-         needs an event's price and sale window, and must not learn Catalog's
-         DbContext or entities to get them. -->
     <ProjectReference Include="..\Encore.Modules.Catalog.Contracts\Encore.Modules.Catalog.Contracts.csproj" />
 
-    <!-- Payments' public face, on the same terms. Orders is the thing that knows
-         what is owed, so Orders is the thing that asks for it to be held and
-         then taken — and it does that without learning Payments' gateway, its
-         entities or its schema. Payments is also the module 004 nominated for
-         extraction first, which makes this the seam most likely to be spent. -->
     <ProjectReference Include="..\Encore.Modules.Payments.Contracts\Encore.Modules.Payments.Contracts.csproj" />
   </ItemGroup>
 
-  <!-- The outcome-to-status mapping and the checkout it maps are internal: they
-       are implementation details of this module's HTTP surface. The mapping is
-       also the part most worth testing directly, since it decides what every
-       client sees and a wrong answer is invisible until somebody hits it. -->
   <ItemGroup>
     <InternalsVisibleTo Include="Encore.Modules.Orders.UnitTests" />
     <InternalsVisibleTo Include="Encore.Modules.Orders.IntegrationTests" />
   </ItemGroup>
 
-  <!-- No PackageReference for IHttpClientFactory, and that is worth a line. The
-       adapter that talks to Payments once it is its own service (DECISIONS 061) uses
-       a typed client, and Microsoft.Extensions.Http ships inside the ASP.NET Core
-       shared framework this module already references. Adding it explicitly is an
-       NU1510 build error, not a redundancy the SDK tolerates. -->
+  <!-- IHttpClientFactory comes from the ASP.NET Core shared framework; referencing
+       Microsoft.Extensions.Http explicitly is an NU1510 error. -->
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.4">
@@ -54,11 +33,7 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
-  <!-- The startup migrator and the Npgsql/history-table wiring, shared since
-       DECISIONS 058. The edge runs this way and only this way: a module names
-       this project, and this project names nothing at all — least of all a
-       module. It carries EF Core and Npgsql on purpose, which is exactly why
-       nothing zero-dependency is allowed to reach it. -->
+  <!-- Shared startup migrator and Npgsql wiring. It names no module. -->
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Shared.Persistence\Encore.Modules.Shared.Persistence.csproj" />
   </ItemGroup>
