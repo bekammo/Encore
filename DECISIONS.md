@@ -250,7 +250,25 @@ contract: a caller needs it *before* acting, and it is already observable afterw
 is copied into the consumer at compile time and would go stale silently once the call crosses
 a process.
 
-Open: measure the client lock against a Postgres-side serialisation of the same check.
+**Measured against a Postgres advisory lock.** `PostgresAdvisoryLock` is the same port on
+`pg_try_advisory_lock`, selected with `Inventory:HoldCapLock = Postgres`. It ran twice per
+configuration, runs alternated, and the cap suite runs against both locks.
+
+- **It costs where the lock does nothing.** On the monolith baseline no client ever contends
+  with itself. There throughput fell about 16% (353k and 319k iterations, against 426k and
+  376k), and a purchase's median rose from 21–26 ms to 28–33 ms. Each hold takes a second
+  pooled connection and a round trip to the busiest server.
+- **It pays where Redis fails.** With Redis stopped, a purchase costs what it did with Redis up
+  (0.94× and 0.96× at the median, against 1.4×–1.7× for the Redis lock). Holds keep being won
+  at the same rate, and the cap stays enforced rather than best-effort.
+- **Under 200 contending VUs it also cut lost races**, from 4,200–5,500 a run to about 1,300.
+  The reason is the one that made the per-seat lock's removal raise them (004): a round trip
+  spreads writers out.
+
+**Redis stays the default.** Sale-day throughput is what this system is for, and a Redis outage
+is the rare case already priced above. The advisory lock stays behind the switch for the day
+the cap has to hold through an outage. Switching costs one key and a second pool of 100
+connections per host.
 
 ---
 
@@ -565,10 +583,15 @@ holding the slot, and the next attempt asks again under the same key. Writing af
 leave nothing, the retry would mint a new key, and a new key at a gateway that received the
 first call is a second authorisation.
 
-**No domain events, deferred on purpose.** Nothing announces a reconciled outcome (014) to the
-order. Doing so needs Payments to have an outbox of its own, and it would reopen 010's choice
-to resolve `AwaitingCapture` by the next confirm. That is the next obvious piece of Payments
-work, and it should not ride inside another change.
+**No domain events, and none are built until something needs one.** Nothing announces a
+reconciled outcome (014) to the order, and the order does not need it. After an authorisation
+times out, the order stays `Pending`. The next confirm asks under the same key and reads
+whatever the reconciler settled (010, 014), so no order is ever wrong for want of the event.
+The only consumer would be a notification. In the strangled arrangement that means delivery from
+`payments-api` into another process, which is a message bus's job, and the bus is deferred.
+Building an outbox with nobody to read it would be machinery proving nothing, the reason
+Notifications exists (016). The trigger for building it is a consumer that needs the fact:
+a customer message, or an order that must close itself.
 
 ---
 
@@ -858,10 +881,16 @@ it out. `BacklogPolicy.FailFast` removed it: a hold's median cost of losing Redi
 and every refusal was "no connection is active". Logging each refused attempt — ~3,000 a second
 — was then the suspect for what purchases still paid; logging an outage's edges instead
 (`LockOutageLog`) took the hold's median cost to zero, but purchases only from 2.0× to 1.78×.
-**A change is never measured by the session that motivated it.** The next step is built and
-not yet measured: after a refusal, `CooldownDistributedLock` stops asking Redis for
-`Inventory:RedisLock:Cooldown` (1 s) and answers "unavailable" itself. `REDIS_LOCK_COOLDOWN=00:00:00`
-is the control.
+**A change is never measured by the session that motivated it.**
+
+The next step was a cooldown. After a refusal, `CooldownDistributedLock` stops asking Redis for
+`Inventory:RedisLock:Cooldown` (1 s) and answers "unavailable" itself. It was measured against
+its own control, `REDIS_LOCK_COOLDOWN=00:00:00`, two runs each, alternated. A purchase's median
+cost of losing Redis fell from 1.53× and 1.73× to 1.47× and 1.42×. The effect is real, since the
+ranges do not overlap, but small. Holds won while Redis was gone stayed about 25% below the
+healthy window in every Redis-lock run, with or without the cooldown, and did not move at all
+with the Postgres lock (005). What remains belongs to losing Redis, not to asking it, and is
+unattributed.
 
 The seat lock's removal was measured the same way: three runs against six, 18% more attempts,
 lost races 0.10% → 0.23% (004). And the partial index suspected of a 62% p99 regression was
@@ -945,5 +974,24 @@ HttpClient propagates W3C context natively.
 
 **Off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set**, so a load run measures the system without
 it, and tests and `dotnet run` are unchanged. Locally, `grafana/otel-lgtm` runs under
-`--profile telemetry`. What exporting costs a flash sale has not been measured. It gets its own
-session, like everything else in 019.
+`--profile telemetry`, with an "Encore — flash sale" dashboard provisioned from `ops/grafana/`.
+
+**What exporting costs, measured.** The collector ran warm through both arms, and each "on" run
+was checked for arrival afterwards. The comparison was two runs each, alternated.
+
+- Throughput fell about 25%: 310k and 311k iterations, against 439k and 394k.
+- A contended hold's median rose from 18 ms to 22 ms, and a sale hold's p95 roughly doubled,
+  from 31–38 ms to 70–72 ms.
+
+On one laptop, the SDK's cost and the collector's CPU cannot be told apart, so this prices the
+whole arrangement. An earlier, unverified pair disagreed with itself (231k and 418k iterations),
+which is why arrival is now checked. Every trace is sampled. A ratio sampler is the obvious
+lever, and it is not measured.
+
+**The dashboard found two things the tests did not.**
+
+- The SDK pushes metrics every 60 s, which gives a one-minute sale one point, so exports now go
+  every 5 s unless `OTEL_METRIC_EXPORT_INTERVAL` says otherwise.
+- The delivery-lag histogram used the SDK's default boundaries, which are sized for
+  milliseconds. Every delivery landed in the 0–5 bucket, and the dashboard read p99 = 5 s. With
+  boundaries in seconds, deliveries take 0.1–2.5 s, which is the dispatcher's 1 s poll showing.

@@ -15,6 +15,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Npgsql;
 using StackExchange.Redis;
 
 namespace Encore.Modules.Inventory;
@@ -59,15 +60,7 @@ public static class InventoryModule
 
         services.AddScoped<ISeatRepository, EfSeatRepository>();
 
-        // Singletons: the cooldown is shared state, one window per process.
-        var redisLock = configuration.GetSection(RedisLockOptions.SectionName).Get<RedisLockOptions>()
-            ?? new RedisLockOptions();
-
-        services.AddSingleton<RedisDistributedLock>();
-        services.AddSingleton<IDistributedLock>(provider => new CooldownDistributedLock(
-            provider.GetRequiredService<RedisDistributedLock>(),
-            redisLock.Cooldown,
-            provider.GetRequiredService<TimeProvider>()));
+        AddHoldCapLock(services, configuration);
 
         // TryAdd: several modules register a clock, and a test replacing one must win.
         services.TryAddSingleton(TimeProvider.System);
@@ -93,6 +86,36 @@ public static class InventoryModule
         AddExpiredHoldSweep(services, configuration);
 
         return services;
+    }
+
+    /// <summary>
+    /// Registers the lock that serialises the hold cap's count (005). Redis by default;
+    /// <c>Inventory:HoldCapLock = Postgres</c> takes an advisory lock instead, so the two can
+    /// be measured against each other. Singletons: the cooldown's window and the advisory
+    /// lock's held sessions are per process.
+    /// </summary>
+    private static void AddHoldCapLock(IServiceCollection services, IConfiguration configuration)
+    {
+        if (string.Equals(configuration["Inventory:HoldCapLock"], "Postgres", StringComparison.OrdinalIgnoreCase))
+        {
+            // Its own data source, so a held lock's session never waits behind the request's
+            // queries for a pooled connection. The connection budget is in docker-compose.yml.
+            services.AddSingleton<IDistributedLock>(_ => new PostgresAdvisoryLock(
+                NpgsqlDataSource.Create(
+                    configuration.GetConnectionString("Inventory")
+                    ?? throw new InvalidOperationException("Missing connection string 'Inventory'."))));
+
+            return;
+        }
+
+        var redisLock = configuration.GetSection(RedisLockOptions.SectionName).Get<RedisLockOptions>()
+            ?? new RedisLockOptions();
+
+        services.AddSingleton<RedisDistributedLock>();
+        services.AddSingleton<IDistributedLock>(provider => new CooldownDistributedLock(
+            provider.GetRequiredService<RedisDistributedLock>(),
+            redisLock.Cooldown,
+            provider.GetRequiredService<TimeProvider>()));
     }
 
     /// <summary>

@@ -61,6 +61,20 @@ public sealed class OutboxDeliveryTraceTests : IDisposable
         Assert.Empty(delivery.Links);
     }
 
+    /// <summary>
+    /// Healthy deliveries take milliseconds. With the SDK's default boundaries, sized for
+    /// milliseconds, every one landed in the 0–5 bucket and the dashboard read p99 = 5 s.
+    /// </summary>
+    [Fact]
+    public void DeliveryLag_ShouldBucketSubSecondDelays()
+    {
+        var boundaries = InventoryTelemetry.OutboxDeliveryLag.Advice?.HistogramBucketBoundaries;
+
+        Assert.NotNull(boundaries);
+        Assert.True(boundaries[0] <= 0.01, $"The first boundary is {boundaries[0]} s.");
+        Assert.Contains(1.0, boundaries);
+    }
+
     private static OutboxMessage Message(string? traceParent) =>
         OutboxMessage.For(
             Guid.NewGuid(),
