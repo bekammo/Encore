@@ -328,6 +328,45 @@ public sealed class PaymentReconcilerTests : IAsyncLifetime
         Assert.Equal(0, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
     }
 
+    /// <summary>
+    /// The lease 073 asked for and this class's own remarks now describe: two
+    /// instances must not both be mid-sweep. The "other instance" here is just
+    /// another connection holding the same advisory lock in an open transaction —
+    /// which is exactly what a second <c>PaymentReconciler</c> process would look
+    /// like from this one's point of view, and cheaper than actually running one.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_WhenAnotherInstanceHoldsTheLease_ShouldSettleNothing()
+    {
+        var (orderId, clientId) = NewOrder();
+        var gateway = Gateway(lostRequestRate: 1);
+
+        await AuthorizeAsync(gateway, orderId, clientId);
+
+        gateway.Options.TimeoutRate = 0;
+        await using var host = Host(gateway);
+
+        await using (var holderContext = new PaymentsDbContext(_options))
+        await using (var holderTransaction = await holderContext.Database.BeginTransactionAsync())
+        {
+            await holderContext.Database
+                .SqlQuery<bool>($"SELECT pg_try_advisory_xact_lock({PaymentReconciler.LeaseKey}) AS \"Value\"")
+                .SingleAsync();
+
+            Assert.Equal(0, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+
+            var stillTimedOut = await ReadAsync(orderId);
+            Assert.Equal(PaymentStatus.TimedOut, stillTimedOut.Status);
+            Assert.True(stillTimedOut.IsLive);
+        }
+
+        // The holder's transaction above released the lease when it ended, so
+        // this sweep — otherwise identical to the one the lease just refused —
+        // gets it and does the work the first one could not.
+        Assert.Equal(1, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(PaymentStatus.Abandoned, (await ReadAsync(orderId)).Status);
+    }
+
     // -- Scaffolding ------------------------------------------------------
 
     private static (Guid OrderId, Guid ClientId) NewOrder() => (Guid.NewGuid(), Guid.NewGuid());

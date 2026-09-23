@@ -136,6 +136,10 @@ services:
       # nothing to sweep — so it should cost nothing measurable. A baseline that
       # cannot switch it off cannot demonstrate that. DECISIONS 057.
       Payments__Reconciliation__Enabled: "${RECONCILER_ENABLED:-true}"
+      # The Redis lock's ConnectTimeout, overridable only by 073's discriminating
+      # experiment: move this alone against a Redis fault and see whether the
+      # ~1,000ms per-lock cost moves with it. Do not set it outside the chaos rig.
+      Inventory__RedisLock__ConnectTimeoutMs: "${REDIS_CONNECT_TIMEOUT_MS:-1000}"
 
   # Payments as its own process. DECISIONS 061.
   #
@@ -255,6 +259,8 @@ services:
       # asking" — and that one line is the entire question when two sweeps run over
       # one table. DECISIONS 063.
       Logging__LogLevel__Encore: "${ENCORE_LOG_LEVEL:-Information}"
+      Inventory__RedisLock__ConnectTimeoutMs: "${REDIS_CONNECT_TIMEOUT_MS:-1000}"
+
   # The load harness. k6 in a container rather than NBomber in a project: this
   # way the rig adds no PackageReference, no fifth test project and nothing the
   # ENCORE001-003 rules have to reason about. `docker compose run --rm --build

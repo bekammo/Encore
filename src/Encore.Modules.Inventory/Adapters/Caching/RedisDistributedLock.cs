@@ -1,4 +1,5 @@
 using Encore.Modules.Inventory.Ports;
+using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 
 namespace Encore.Modules.Inventory.Adapters.Caching;
@@ -25,7 +26,9 @@ namespace Encore.Modules.Inventory.Adapters.Caching;
 /// is reported as <see cref="LockOutcome.Unavailable"/> and the caller decides.
 /// </para>
 /// </remarks>
-public sealed class RedisDistributedLock(IConnectionMultiplexer connection) : IDistributedLock
+public sealed class RedisDistributedLock(
+    IConnectionMultiplexer connection,
+    ILogger<RedisDistributedLock> logger) : IDistributedLock
 {
     /// <summary>
     /// Releases the lock only if it still holds this caller's token.
@@ -44,6 +47,7 @@ public sealed class RedisDistributedLock(IConnectionMultiplexer connection) : ID
     private const string KeyPrefix = "inventory:lock:";
 
     private readonly IConnectionMultiplexer _connection = connection;
+    private readonly ILogger<RedisDistributedLock> _logger = logger;
 
     /// <inheritdoc />
     public async Task<LockAcquisition> TryAcquireAsync(
@@ -65,6 +69,17 @@ public sealed class RedisDistributedLock(IConnectionMultiplexer connection) : ID
         }
         catch (Exception ex) when (IsLockServiceFailure(ex))
         {
+            // The exception's own type is the one thing that distinguishes the
+            // two candidate mechanisms 073 could not tell apart: a connection
+            // failure means the multiplexer itself is down, a timeout means it
+            // answered too slowly. Logged, not just translated, because the
+            // translation is exactly what erased that distinction last time.
+            _logger.LogWarning(
+                ex,
+                "Lock acquire for {Resource} reported Redis unavailable ({ExceptionType}).",
+                resource,
+                ex.GetType().Name);
+
             return LockAcquisition.Unavailable;
         }
     }
@@ -87,9 +102,17 @@ public sealed class RedisDistributedLock(IConnectionMultiplexer connection) : ID
         }
         catch (Exception ex) when (IsLockServiceFailure(ex))
         {
-            // Nothing to do and nothing to report: the key carries a TTL, so an
-            // unreleasable lock frees itself within seconds. Throwing here would
-            // fail an operation that has already succeeded.
+            // Still nothing to do — the key carries a TTL, so an unreleasable
+            // lock frees itself within seconds, and throwing here would fail an
+            // operation that has already succeeded. But it is worth a line for
+            // the same reason acquisition's catch is: the exception type is
+            // evidence for which timeout fired.
+            _logger.LogWarning(
+                ex,
+                "Lock release for {Resource} reported Redis unavailable ({ExceptionType}).",
+                resource,
+                ex.GetType().Name);
+
             return false;
         }
     }

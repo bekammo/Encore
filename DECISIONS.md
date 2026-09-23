@@ -79,6 +79,8 @@ a superseding entry gets added instead.
 - [071](#071--the-openapi-document-learns-which-host-serves-a-route) — The OpenAPI document learns which host serves a route
 - [072](#072--ci-arrives-before-its-phase-and-the-check-it-encodes) — CI arrives before its phase, and the check it encodes
 - [073](#073--the-audit-measured-and-a-timeout-that-only-half-took) — The audit, measured, and a timeout that only half took
+- [074](#074--the-discriminating-experiment-a-fixed-cost-that-is-not-connecttimeout-and-two-fixes-measured-by-the-run-that-motivated-them) — The discriminating experiment, a fixed cost that is not ConnectTimeout, and two fixes measured by the run that motivated them
+- [075](#075--three-and-three-and-068s-index-clears) — Three and three, and 068's index clears
 
 ---
 
@@ -4175,3 +4177,166 @@ latency comparisons across sessions are not, and they are marked where they appe
      the one that finds it; three-and-three baseline runs to settle whether 068's index
      is what moved contention p99; the drain criterion in fault 4; and the reconciler's
      lease, now a matter of duplicated work rather than of correctness. -->
+
+---
+
+## 074 — The discriminating experiment, a fixed cost that is not ConnectTimeout, and two fixes measured by the run that motivated them
+
+073 closed four items and left five for later, in order: the ConnectTimeout experiment
+and a logged catch, `BacklogPolicy.FailFast`, the three-and-three baseline runs, the
+drain criterion in fault 4, and the reconciler's lease. This entry is that list, worked
+in order, on 2026-09-23.
+
+### The logged catch, and the experiment it made possible
+
+`RedisDistributedLock`'s two catch blocks now log a warning naming the exception type
+before translating it to `Unavailable`. 073 could not tell its two candidate mechanisms
+apart because this line did not exist; it exists now, and every failure logged in both
+runs below was `RedisConnectionException`, never `RedisTimeoutException`.
+
+`Inventory:RedisLock:ConnectTimeoutMs` makes `ConnectTimeout` overridable for exactly
+this experiment. Two `bash load/chaos.sh redis` sessions, same machine, same script,
+nothing else changed:
+
+| | `ConnectTimeout` 1,000ms | `ConnectTimeout` 3,000ms |
+|---|---|---|
+| hold ms, lock gone (med / p99) | 1,997.5 / 2,045.5 | 1,996.5 / 2,057.9 |
+| buy ms, lock gone (med / p99) | 979.8 / 1,069.2 | 990.6 / 1,056.8 |
+| holds won, lock gone | 433 | 429 |
+| sold, lock gone | 353 of 500 | 349 of 500 |
+| oversold | no | no |
+
+**Tripling `ConnectTimeout` moved nothing.** The per-lock cost stayed at ~1,000ms
+either side of the change, inside the run-to-run noise 073 already flagged as real for
+this harness. That rules out 073's first candidate — a backlog wait bounded by
+`ConnectTimeout` — cleanly: if the wait were bounded by this setting, tripling it should
+have tripled the cost, and it did not move it at all.
+
+**It does not confirm the second candidate either, and that is worth saying plainly.**
+073's heartbeat theory predicted a `RedisTimeoutException` — the library deciding a
+command had outrun `AsyncTimeout` on its own clock. What was actually thrown, every
+time, was `RedisConnectionException`: the multiplexer reporting itself disconnected,
+not a command reporting itself late. The ~1,000ms figure is real and reproducible, and
+it is not `ConnectTimeout`, but the mechanism that actually produces it — most likely
+the backlog's own wait for a reconnect attempt, on a cadence `ConfigurationOptions`
+does not expose — is narrowed rather than named. A third run instrumenting
+`ConnectionMultiplexer.ConnectionFailed` directly would name it; nothing here does.
+
+### `BacklogPolicy.FailFast`, applied and deliberately unmeasured this session
+
+073's candidate fix, on 073's own rule: a change is not measured by the session that
+motivated it. `InventoryModule` now sets `options.BacklogPolicy = BacklogPolicy.FailFast`
+unconditionally — refusing a command immediately against a known-disconnected
+multiplexer rather than queueing it for a reconnect that this session's evidence says
+takes about a second either way. Every run in this entry used the default backlog
+policy; none of the numbers above test this line. The next chaos session against
+`redis` is what measures it, and it inherits the same 1,000/3,000 `ConnectTimeout` knob
+if the question comes up again.
+
+### The drain criterion in fault 4, and what it was hiding
+
+073 named the bug: `chaos.sh`'s recovery loop asked whether `pending = 0`, which is
+false for as long as the sale keeps selling — a fact about the traffic, not about the
+stall's aftermath. Its own report read "backlog first observed empty 26s after the lock
+expired" and flagged the number as an artifact of exactly this. The loop now asks
+whether anything undelivered is older than 5s — `MaxBatchDuration`'s own budget, and
+comfortably above the ~1s a message takes in steady state.
+
+Run against the same fault: **"backlog first observed drained (nothing undelivered
+older than 5s) 8s after the lock expired."** Different number, and a meaningful one
+this time — it says how long the dispatcher took to work through the stall's backlog
+once traffic caught up, not how long until arrivals happened to pause. 12,834 delivered,
+0 pending, 4 retried, no oversell.
+
+### The reconciler's lease — and a bug the type checker had nothing to say about
+
+`PaymentReconciler.ReconcileBatchAsync` now opens a transaction, takes a
+transaction-scoped Postgres advisory lock (`pg_try_advisory_xact_lock`, keyed on a
+constant, `PaymentReconciler.LeaseKey`) before reading any candidate, and returns 0
+without touching the gateway if it does not get it. Not a row lock — the class's own
+remarks already explain why not, and that reasoning did not change — and no manual
+release: the lease ends when the transaction does, including when the process dies
+with it still open, which a `pg_advisory_unlock` in a `finally` would not survive.
+
+**The first attempt at this was wrong, and running fault 2 is what caught it.**
+`Database.SqlQuery<bool>($"SELECT pg_try_advisory_xact_lock({LeaseKey})")` compiled
+clean and passed every existing test, because nothing existing exercised it. Against a
+real two-reconciler run it threw on every single sweep: `42703: column s.Value does not
+exist`. `SqlQuery<T>` for a scalar type wraps the raw SQL in a query expecting a column
+literally named `Value`; `pg_try_advisory_xact_lock`'s own result column is named after
+the function. The outer retry loop in `ExecuteAsync` swallowed the exception and logged
+it as an ordinary failed sweep, which is exactly the behaviour that rule exists for —
+and it meant neither process ever took the lease, ever read a candidate, or ever
+settled an attempt, for the whole first run. The fix is a one-word alias:
+`... AS "Value"`. A new integration test,
+`Reconcile_WhenAnotherInstanceHoldsTheLease_ShouldSettleNothing`, holds the lease from
+a second connection and asserts a sweep gets nothing while it is held and something the
+moment it is released — the case the first attempt would have failed silently, because
+"settles nothing" was exactly what the broken version always did.
+
+Fault 2, re-run with the fixed lease, same shape as 073's:
+
+| | 064, no lease | 073, no lease | **074, with lease** |
+|---|---|---|---|
+| lost the xmin race | 82 | 17 | **0** |
+| settled by both | 0 | 0 | 0 |
+| payments-api settled | — | — | 70 |
+| api-strangled settled | — | — | 162 |
+| oversold | no | no | no |
+
+Zero races lost, and both processes still did real work — 232 attempts settled between
+them, neither shut out. The lease did what 073 asked of it: two reconcilers no longer
+duplicate a sweep, and correctness was never what was in question. `073`'s own framing
+holds — this was efficiency debt, not a hole — and it is now paid.
+
+### What is still open
+
+The three-and-three baseline runs 068's index question asked for have not been run.
+That is the one item from 073's list this entry does not close.
+
+<!-- Next: three baseline runs with ix_seats_expiring_holds and three without, 056's
+     method, to settle whether 068's partial index is what moved contention hold p99 by
+     62% or whether 070's retention sweeper is the better suspect. Then a chaos session
+     against `redis` with BacklogPolicy.FailFast in place, to see whether it does what
+     073 predicted. -->
+
+---
+
+## 075 — Three and three, and 068's index clears
+
+074 left one item from 073's list open: whether `ix_seats_expiring_holds` is what moved
+the extracted baseline's contention hold p99 by 62% between 064 and 073. 056's method —
+three runs, same configuration, compared as a group rather than as single samples — run
+here on 2026-09-23 against the same `bash load/chaos.sh baseline` the earlier two single
+readings came from, three times with the index and three times with it dropped and
+recreated around the second set.
+
+| rep | with index, p99 | without index, p99 |
+|---|---|---|
+| 1 | 43.6 | 51.1 |
+| 2 | 41.3 | 42.8 |
+| 3 | 41.7 | 41.6 |
+
+**The index clears.** Both arms sit in the same 41–51ms band, overlapping on five of six
+readings, and the one outlier (51.1) is in the arm *without* the index — the opposite of
+what would indict it. Neither arm comes anywhere near 073's single reading of 76.8ms.
+Seats sold 500 of 500 and no oversell held in all six reps, with or without the index, as
+every other reading in this file's baseline table already implied but did not by itself
+prove.
+
+**This does not identify what 073's 76.8ms was.** It rules out the one named suspect. The
+other — 070's retention sweeper — is not tested by this experiment and is still standing;
+so, now more plausibly, is 073's own alternative explanation that one 60-second window is
+simply noisier than four 15-second ones, since six fresh reps clustering this tightly
+argues against the index while saying nothing about the sweeper. 068's index stays: it is
+what the expired-hold sweep's own query wanted, on its own merits, independent of this
+question.
+
+074's list is now fully worked. What remains is what 074 itself deferred: a chaos session
+against `redis` with `BacklogPolicy.FailFast` in place, run separately from the session
+that applied it.
+
+<!-- Next: a chaos session against `redis` to measure BacklogPolicy.FailFast. If the
+     contention p99 question is still worth an hour, 070's retention sweeper is the
+     remaining named suspect and would need the same three-and-three treatment this entry
+     gave the index. -->
