@@ -13,16 +13,15 @@ namespace Encore.Modules.Payments.Data;
 /// <remarks>
 /// The row is always written before the gateway is called. After a crash in between, the
 /// next attempt finds the row and asks again under the same idempotency key instead of
-/// minting a new one, which could authorise twice.
+/// minting a new one, which could authorise twice. Once that row is committed, the gateway
+/// call and the save of its answer ignore the caller's token: abandoning them halfway would
+/// leave the row behind a decision the gateway has already made.
 /// </remarks>
 internal sealed class InProcessOrderPayments(
     PaymentsDbContext payments,
     SimulatedPaymentGateway gateway,
     TimeProvider clock) : IOrderPayments
 {
-    /// <summary>The unique index that is the real guard against a double charge.</summary>
-    private const string LiveAttemptIndex = "ux_payments_order_live";
-
     private readonly PaymentsDbContext _payments = payments;
     private readonly SimulatedPaymentGateway _gateway = gateway;
     private readonly TimeProvider _clock = clock;
@@ -54,8 +53,11 @@ internal sealed class InProcessOrderPayments(
                 payment.Retry(utcNow);
                 break;
 
-            // Recorded then interrupted: ask again under the existing key.
+            // Recorded, not yet answered: ask again under the existing key. Always a write, even
+            // at the same instant, so xmin orders it against another confirm or the reconciler.
             case PaymentStatus.Pending:
+                payment.Resume(utcNow);
+                _payments.Entry(payment).Property(attempt => attempt.AttemptedAt).IsModified = true;
                 break;
 
             case null:
@@ -85,7 +87,7 @@ internal sealed class InProcessOrderPayments(
         }
 
         var (outcome, reference) = await _gateway
-            .AuthorizeAsync(payment.IdempotencyKey, payment.Amount, payment.Currency, cancellationToken)
+            .AuthorizeAsync(payment.IdempotencyKey, payment.Amount, payment.Currency, CancellationToken.None)
             .ConfigureAwait(false);
 
         // Read the clock again: the gateway is slow.
@@ -110,15 +112,41 @@ internal sealed class InProcessOrderPayments(
                     nameof(request), outcome, "Unmapped gateway outcome.");
         }
 
-        await _payments.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _payments.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Another confirm resumed this attempt while the gateway answered, and the same key
+            // got the same decision. Report the row as the winner left it.
+            await ReloadAsync(payment, CancellationToken.None).ConfigureAwait(false);
+
+            return AnswerFor(payment);
+        }
 
         return outcome switch
         {
             GatewayOutcome.Succeeded => AuthorizePaymentResponse.Authorized(payment.Id),
             GatewayOutcome.Declined => AuthorizePaymentResponse.Declined(payment.Id),
-            _ => AuthorizePaymentResponse.TimedOut(payment.Id)
+            GatewayOutcome.TimedOut => AuthorizePaymentResponse.TimedOut(payment.Id)
         };
     }
+
+    /// <summary>
+    /// What an authorisation reports when another request wrote the row last. Anything not yet
+    /// answered, or already settled by the reconciler, is left for the next confirm.
+    /// </summary>
+    private static AuthorizePaymentResponse AnswerFor(Payment payment) =>
+        payment.Status switch
+        {
+            PaymentStatus.Authorized => AuthorizePaymentResponse.Authorized(payment.Id),
+            PaymentStatus.Captured => AuthorizePaymentResponse.AlreadyCaptured(payment.Id),
+            PaymentStatus.Declined => AuthorizePaymentResponse.Declined(payment.Id),
+            PaymentStatus.TimedOut => AuthorizePaymentResponse.TimedOut(payment.Id),
+            PaymentStatus.Pending or PaymentStatus.Voided or PaymentStatus.Abandoned =>
+                AuthorizePaymentResponse.ConcurrentAttemptInFlight
+        };
 
     /// <inheritdoc />
     public async Task<CapturePaymentResponse> CaptureAsync(
@@ -142,8 +170,9 @@ internal sealed class InProcessOrderPayments(
             return CapturePaymentResponse.NoAuthorization;
         }
 
+        // From here the money moves, so the caller hanging up does not stop the recording.
         var outcome = await _gateway
-            .CaptureAsync(payment.GatewayReference!, cancellationToken)
+            .CaptureAsync(payment.GatewayReference!, CancellationToken.None)
             .ConfigureAwait(false);
 
         if (outcome is GatewayOutcome.TimedOut)
@@ -156,12 +185,12 @@ internal sealed class InProcessOrderPayments(
 
         try
         {
-            await _payments.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await _payments.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (DbUpdateConcurrencyException)
         {
             // A cancel got here first. Report what actually happened.
-            await ReloadAsync(payment, cancellationToken).ConfigureAwait(false);
+            await ReloadAsync(payment, CancellationToken.None).ConfigureAwait(false);
 
             return payment.Status is PaymentStatus.Captured
                 ? CapturePaymentResponse.Captured(payment.Id)
@@ -192,8 +221,9 @@ internal sealed class InProcessOrderPayments(
             return VoidPaymentResponse.NoAuthorization;
         }
 
+        // From here the money moves, so the caller hanging up does not stop the recording.
         var outcome = await _gateway
-            .VoidAsync(payment.GatewayReference!, cancellationToken)
+            .VoidAsync(payment.GatewayReference!, CancellationToken.None)
             .ConfigureAwait(false);
 
         if (outcome is GatewayOutcome.TimedOut)
@@ -206,12 +236,12 @@ internal sealed class InProcessOrderPayments(
 
         try
         {
-            await _payments.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await _payments.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (DbUpdateConcurrencyException)
         {
             // A confirm got here first; xmin stopped this writing Voided over captured money.
-            await ReloadAsync(payment, cancellationToken).ConfigureAwait(false);
+            await ReloadAsync(payment, CancellationToken.None).ConfigureAwait(false);
 
             return payment.Status is PaymentStatus.Captured
                 ? VoidPaymentResponse.AlreadyCaptured(payment.Id)
@@ -265,5 +295,5 @@ internal sealed class InProcessOrderPayments(
     /// </summary>
     private static bool IsDuplicateLiveAttempt(DbUpdateException exception) =>
         exception.InnerException is PostgresException { SqlState: "23505" } postgres
-        && postgres.ConstraintName == LiveAttemptIndex;
+        && postgres.ConstraintName == PaymentConfiguration.LiveAttemptIndex;
 }

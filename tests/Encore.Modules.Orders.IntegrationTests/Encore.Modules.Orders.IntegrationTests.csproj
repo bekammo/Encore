@@ -8,7 +8,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="Testcontainers.PostgreSql" Version="4.15.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
@@ -17,6 +16,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Encore.Modules.Orders\Encore.Modules.Orders.csproj" />
+  </ItemGroup>
+
+  <!-- For CheckoutCompositionTests only: the real modules on the far side of Orders' seams,
+       composed through their Add* methods as the host composes them (018). -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Encore.Modules.Inventory\Encore.Modules.Inventory.csproj" />
+    <ProjectReference Include="..\..\src\Encore.Modules.Payments\Encore.Modules.Payments.csproj" />
   </ItemGroup>
 
   <ItemGroup>

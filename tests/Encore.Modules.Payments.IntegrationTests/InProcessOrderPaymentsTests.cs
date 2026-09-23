@@ -124,6 +124,31 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
         Assert.Equal(1, await CountAsync(orderId));
     }
 
+    /// <summary>
+    /// A second confirm arrives while the first is still waiting on the gateway. Both ask under
+    /// the same key and get the same decision; whichever saves second reports the row as the
+    /// other left it instead of failing.
+    /// </summary>
+    [Fact]
+    public async Task Authorize_WhileAnotherConfirmIsAskingTheGateway_ShouldAnswerRatherThanFail()
+    {
+        var (orderId, clientId) = NewOrder();
+        var slow = TimeSpan.FromSeconds(1);
+
+        var first = Payments(latency: slow).AuthorizeAsync(Authorize(orderId, clientId));
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
+
+        var second = await Payments(latency: slow).AuthorizeAsync(Authorize(orderId, clientId));
+        var answers = new[] { (await first).Status, second.Status };
+
+        Assert.Contains(AuthorizePaymentStatus.Authorized, answers);
+        Assert.All(answers, answer => Assert.True(
+            answer is AuthorizePaymentStatus.Authorized or AuthorizePaymentStatus.ConcurrentAttemptInFlight,
+            $"Unexpected answer {answer}."));
+
+        Assert.Equal(PaymentStatus.Authorized, (await ReadAsync(orderId)).Status);
+    }
+
     /// <summary>Authorising again while authorised returns the existing hold.</summary>
     [Fact]
     public async Task Authorize_WhenAlreadyAuthorized_ShouldReturnTheSameAttempt()
@@ -313,7 +338,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
         new(orderId, clientId, Amount, Currency);
 
     /// <summary>A fresh adapter over a fresh context: each call stands for a separate request.</summary>
-    private IOrderPayments Payments(double declineRate = 0, double timeoutRate = 0) =>
+    private IOrderPayments Payments(double declineRate = 0, double timeoutRate = 0, TimeSpan? latency = null) =>
         new InProcessOrderPayments(
             new PaymentsDbContext(_options),
             new SimulatedPaymentGateway(
@@ -322,8 +347,8 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
                 {
                     DeclineRate = declineRate,
                     TimeoutRate = timeoutRate,
-                    MinLatency = TimeSpan.Zero,
-                    MaxLatency = TimeSpan.Zero
+                    MinLatency = latency ?? TimeSpan.Zero,
+                    MaxLatency = latency ?? TimeSpan.Zero
                 }),
                 TimeProvider.System),
             new FixedTimeProvider(T0));

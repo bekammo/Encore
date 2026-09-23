@@ -222,7 +222,90 @@ public sealed class SeatBatchTests : IAsyncLifetime
             await context.Seats.CountAsync(seat => seat.HeldByClientId == clientId && seat.Status == SeatStatus.Held));
     }
 
+    /// <summary>
+    /// Another writer moves a seat before each save, so both hold attempts lose. A later save
+    /// on the same context writes no hold and does not fail on the stale seats.
+    /// </summary>
+    [Fact]
+    public async Task Hold_WhenBothAttemptsLoseTheRace_ShouldLeaveNothingForALaterSaveToWrite()
+    {
+        var clientId = Guid.NewGuid();
+        var seatIds = await SeedAvailableAsync(count: 2);
+
+        await using (var context = new InventoryDbContext(_options))
+        {
+            var contested = new MovedBeforeEachSave(
+                new EfSeatRepository(context),
+                () => BumpAsync(seatIds[1]));
+
+            var results = await new HoldSeatCommandHandler(contested, new AlwaysGrantingLock(), new FixedTimeProvider(_now))
+                .HandleAsync(new HoldSeatsCommand(_eventId, seatIds, clientId));
+
+            Assert.All(results, result => Assert.Equal(HoldSeatOutcome.LostRace, result.Outcome));
+
+            await context.SaveChangesAsync();
+        }
+
+        Assert.All(await LoadAsync(seatIds), seat => Assert.Equal(SeatStatus.Available, seat.Status));
+        Assert.Equal(0, await CountEventsAsync(seatIds, InventoryEventTypes.SeatHeld));
+    }
+
+    /// <summary>
+    /// A hold reads the seats it asks for and the client's other live holds in one query. The
+    /// other holds are counted for the cap and nothing more: not tracked, so no save can write them.
+    /// </summary>
+    [Fact]
+    public async Task Hold_ShouldCountTheClientsOtherHoldsWithoutTakingThemIn()
+    {
+        var clientId = Guid.NewGuid();
+        var others = await SeedHeldAsync(clientId, _now, count: 2);
+        var lapsed = await SeedHeldAsync(clientId, _now - Seat.HoldDuration - TimeSpan.FromMinutes(1), count: 1);
+        var asked = await SeedAvailableAsync(count: 1);
+
+        await using var context = new InventoryDbContext(_options);
+        var repository = new EfSeatRepository(context);
+
+        var loaded = await repository.GetForHoldAsync(asked, clientId, _eventId, _now);
+
+        Assert.Equal(asked, loaded.Seats.Select(seat => seat.Id));
+        Assert.Equal(others.Order(), loaded.LiveHolds.Order());
+        Assert.DoesNotContain(lapsed[0], loaded.LiveHolds);
+
+        Assert.Equal(asked, context.ChangeTracker.Entries<Seat>().Select(entry => entry.Entity.Id));
+    }
+
     // -- Releasing ----------------------------------------------------------
+
+    /// <summary>
+    /// Both release attempts lose to another writer. A later save on the same context releases
+    /// nothing and does not fail on the stale seats.
+    /// </summary>
+    [Fact]
+    public async Task Release_WhenBothAttemptsLoseTheRace_ShouldLeaveNothingForALaterSaveToWrite()
+    {
+        var clientId = Guid.NewGuid();
+        var seatIds = await SeedHeldAsync(clientId, _now, count: 2);
+
+        await using (var context = new InventoryDbContext(_options))
+        {
+            var contested = new MovedBeforeEachSave(
+                new EfSeatRepository(context),
+                () => MoveAsync(seatIds[1], clientId));
+
+            var results = await new ReleaseSeatCommandHandler(contested, new FixedTimeProvider(_now))
+                .HandleAsync(new ReleaseSeatsCommand(_eventId, seatIds, clientId));
+
+            Assert.All(results, result => Assert.Equal(ReleaseSeatOutcome.LostRace, result));
+
+            await context.SaveChangesAsync();
+        }
+
+        Assert.All(await LoadAsync(seatIds), seat =>
+        {
+            Assert.Equal(SeatStatus.Held, seat.Status);
+            Assert.Equal(clientId, seat.HeldByClientId);
+        });
+    }
 
     [Fact]
     public async Task Release_ShouldGiveEverySeatBackInOneTransaction()
@@ -237,7 +320,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
                     new FixedTimeProvider(_now))
                 .HandleAsync(new ReleaseSeatsCommand(_eventId, seatIds, clientId));
 
-            Assert.All(results, result => Assert.Equal(ReleaseSeatOutcome.Released, result.Outcome));
+            Assert.All(results, result => Assert.Equal(ReleaseSeatOutcome.Released, result));
         }
 
         var seats = await LoadAsync(seatIds);
@@ -315,6 +398,28 @@ public sealed class SeatBatchTests : IAsyncLifetime
         await repository.SaveAsync(seat);
     }
 
+    /// <summary>
+    /// Moves an available seat's row version through another context and leaves it available:
+    /// a stranger holds it, then releases it. Its events are dropped, so only the handler's count.
+    /// </summary>
+    private async Task BumpAsync(Guid seatId)
+    {
+        var stranger = Guid.NewGuid();
+
+        await using var context = new InventoryDbContext(_options);
+        var repository = new EfSeatRepository(context);
+
+        var seat = await repository.GetByIdAsync(seatId);
+
+        seat!.Hold(stranger, _now);
+        seat.ClearDomainEvents();
+        await repository.SaveAsync(seat);
+
+        seat.Release(stranger, _now);
+        seat.ClearDomainEvents();
+        await repository.SaveAsync(seat);
+    }
+
     private async Task<List<Seat>> LoadAsync(IReadOnlyCollection<Guid> seatIds)
     {
         await using var context = new InventoryDbContext(_options);
@@ -388,12 +493,13 @@ public sealed class SeatBatchTests : IAsyncLifetime
             await inner.SaveAsync(seats, cancellationToken);
         }
 
-        public Task<IReadOnlyCollection<Guid>> FindLiveHoldsAsync(
+        public Task<SeatsForHold> GetForHoldAsync(
+            IReadOnlyCollection<Guid> seatIds,
             Guid clientId,
             Guid eventId,
             DateTime utcNow,
             CancellationToken cancellationToken = default) =>
-            inner.FindLiveHoldsAsync(clientId, eventId, utcNow, cancellationToken);
+            inner.GetForHoldAsync(seatIds, clientId, eventId, utcNow, cancellationToken);
 
         public Task<IReadOnlyList<Guid>> FindExpiredHoldsAsync(
             DateTime utcNow,

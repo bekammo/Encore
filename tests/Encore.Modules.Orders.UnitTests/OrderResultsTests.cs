@@ -106,6 +106,21 @@ public class OrderResultsTests
         Assert.NotEqual(StatusCodes.Status404NotFound, StatusOf(result));
     }
 
+    /// <summary>
+    /// An open checkout is named, so a client whose 201 was lost can still finish or cancel it.
+    /// </summary>
+    [Fact]
+    public void ForCheckout_WhenACheckoutIsAlreadyOpen_ShouldNameIt()
+    {
+        var result = OrderResults.ForCheckout(CheckoutResult.AlreadyOpen(OrderId), Path);
+
+        var problem = Assert.IsType<ProblemHttpResult>(result);
+        Assert.Equal(StatusCodes.Status409Conflict, StatusOf(result));
+        Assert.Equal("checkout_already_open", ReasonOf(result));
+        Assert.Equal(false, RetriableOf(result));
+        Assert.Equal(OrderId, problem.ProblemDetails.Extensions["orderId"]);
+    }
+
     /// <summary>Too many seats is a 400 that states the limit.</summary>
     [Fact]
     public void ForCheckout_WhenTooManySeats_ShouldReportTheLimit()
@@ -127,8 +142,8 @@ public class OrderResultsTests
         var result = OrderResults.ForCheckout(
             CheckoutResult.Unavailable(
             [
-                new SeatRefusal(SeatId, HoldSeatStatus.AlreadyHeld),
-                new SeatRefusal(OtherSeatId, HoldSeatStatus.AlreadySold)
+                new HoldSeatResponse(SeatId, HoldSeatStatus.AlreadyHeld),
+                new HoldSeatResponse(OtherSeatId, HoldSeatStatus.AlreadySold)
             ]),
             Path);
 
@@ -150,8 +165,8 @@ public class OrderResultsTests
         var result = OrderResults.ForCheckout(
             CheckoutResult.Unavailable(
             [
-                new SeatRefusal(SeatId, HoldSeatStatus.AlreadyHeld),
-                new SeatRefusal(OtherSeatId, HoldSeatStatus.LostRace)
+                new HoldSeatResponse(SeatId, HoldSeatStatus.AlreadyHeld),
+                new HoldSeatResponse(OtherSeatId, HoldSeatStatus.LostRace)
             ]),
             Path);
 
@@ -164,8 +179,8 @@ public class OrderResultsTests
         var result = OrderResults.ForCheckout(
             CheckoutResult.Unavailable(
             [
-                new SeatRefusal(SeatId, HoldSeatStatus.LostRace),
-                new SeatRefusal(OtherSeatId, HoldSeatStatus.AlreadySold)
+                new HoldSeatResponse(SeatId, HoldSeatStatus.LostRace),
+                new HoldSeatResponse(OtherSeatId, HoldSeatStatus.AlreadySold)
             ]),
             Path);
 
@@ -183,7 +198,7 @@ public class OrderResultsTests
     public void ForCheckout_EveryHoldRefusal_ShouldMap(HoldSeatStatus status)
     {
         var result = OrderResults.ForCheckout(
-            CheckoutResult.Unavailable([new SeatRefusal(SeatId, status)]), Path);
+            CheckoutResult.Unavailable([new HoldSeatResponse(SeatId, status)]), Path);
 
         Assert.Equal(StatusCodes.Status409Conflict, StatusOf(result));
     }

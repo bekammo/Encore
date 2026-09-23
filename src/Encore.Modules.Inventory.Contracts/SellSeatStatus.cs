@@ -1,15 +1,12 @@
 namespace Encore.Modules.Inventory.Contracts;
 
-/// <summary>Every way a sale attempt can end.</summary>
+/// <summary>
+/// Every way a sale can be refused. A sale that succeeds reports no refusal at all, which is
+/// also the answer when this client had already bought every seat, so a resubmitted checkout
+/// is not told its own completed purchase failed.
+/// </summary>
 public enum SellSeatStatus
 {
-    /// <summary>
-    /// The seat belongs to this client. Also reported when this client had
-    /// already bought it, so a resubmitted checkout is not told its own
-    /// completed purchase failed.
-    /// </summary>
-    Sold = 0,
-
     /// <summary>Somebody else bought it.</summary>
     AlreadySold = 1,
 

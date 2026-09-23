@@ -9,15 +9,15 @@ public sealed record CapturePaymentResponse(
     CapturePaymentStatus Status,
     Guid? PaymentId = null)
 {
-    /// <summary>The money has been taken.</summary>
+    /// <summary><see cref="CapturePaymentStatus.Captured"/>.</summary>
     public static CapturePaymentResponse Captured(Guid paymentId) =>
         new(CapturePaymentStatus.Captured, paymentId);
 
-    /// <summary>Nothing is held against this order.</summary>
+    /// <summary><see cref="CapturePaymentStatus.NoAuthorization"/>.</summary>
     public static CapturePaymentResponse NoAuthorization { get; } =
         new(CapturePaymentStatus.NoAuthorization);
 
-    /// <summary>No answer came back. The funds stay held and this can be retried.</summary>
+    /// <summary><see cref="CapturePaymentStatus.TimedOut"/>.</summary>
     public static CapturePaymentResponse TimedOut(Guid paymentId) =>
         new(CapturePaymentStatus.TimedOut, paymentId);
 }

@@ -13,6 +13,9 @@ namespace Encore.Modules.Notifications.Data;
 /// </remarks>
 public sealed class NotificationConfiguration : IEntityTypeConfiguration<Notification>
 {
+    /// <summary>The unique index that makes a redelivery a no-op. The handler matches on it.</summary>
+    internal const string MessageIdIndex = "ux_notifications_message_id";
+
     /// <inheritdoc />
     public void Configure(EntityTypeBuilder<Notification> builder)
     {
@@ -46,16 +49,10 @@ public sealed class NotificationConfiguration : IEntityTypeConfiguration<Notific
             .HasColumnType("timestamp with time zone")
             .IsRequired();
 
-        // One row per delivered event.
+        // One row per delivered event. Nothing reads by client yet, so nothing is indexed for it.
         builder
             .HasIndex(notification => notification.MessageId)
             .IsUnique()
-            .HasDatabaseName("ux_notifications_message_id");
-
-        // "What should this client be told", newest first.
-        builder
-            .HasIndex(notification => new { notification.ClientId, notification.OccurredAt })
-            .IsDescending(false, true)
-            .HasDatabaseName("ix_notifications_client_occurred");
+            .HasDatabaseName(MessageIdIndex);
     }
 }

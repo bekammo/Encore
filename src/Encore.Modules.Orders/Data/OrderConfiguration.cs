@@ -7,11 +7,14 @@ namespace Encore.Modules.Orders.Data;
 /// <summary>Maps <see cref="Order"/> to the <c>orders.orders</c> table.</summary>
 /// <remarks>
 /// The partial unique index allows one pending order per client per event; it is the real
-/// guard against a duplicate checkout. Its filter is a SQL literal that depends on
-/// <see cref="OrderStatus.Pending"/> being zero.
+/// guard against a duplicate checkout. Its filter is built from <see cref="OrderStatus.Pending"/>,
+/// so renumbering the enum is a model change a migration has to follow.
 /// </remarks>
 public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
 {
+    /// <summary>The one-open-checkout index. The checkout matches a refusal on it.</summary>
+    internal const string PendingCheckoutIndex = "ux_orders_client_event_pending";
+
     /// <inheritdoc />
     public void Configure(EntityTypeBuilder<Order> builder)
     {
@@ -41,6 +44,9 @@ public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         builder.Property(order => order.ClosedAt)
             .HasColumnType("timestamp with time zone");
 
+        builder.Property(order => order.SoldAt)
+            .HasColumnType("timestamp with time zone");
+
         builder.Property(order => order.Total)
             .HasColumnType("numeric(19,4)")
             .IsRequired();
@@ -65,7 +71,13 @@ public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         builder
             .HasIndex(order => new { order.ClientId, order.EventId })
             .IsUnique()
-            .HasFilter("\"Status\" = 0")
-            .HasDatabaseName("ux_orders_client_event_pending");
+            .HasFilter($"\"Status\" = {(int)OrderStatus.Pending}")
+            .HasDatabaseName(PendingCheckoutIndex);
+
+        // What the capture sweep reads: the few orders still owed their capture, oldest first.
+        builder
+            .HasIndex(order => order.SoldAt)
+            .HasFilter($"\"Status\" = {(int)OrderStatus.AwaitingCapture}")
+            .HasDatabaseName("ix_orders_awaiting_capture");
     }
 }

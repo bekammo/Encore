@@ -59,10 +59,8 @@ public sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outbox
             .HasFilter("\"ProcessedAt\" IS NULL")
             .HasDatabaseName("ix_outbox_messages_unprocessed");
 
-        // Not unique: that would cost a check on every insert on the hot path. The
-        // consumer's index is the one that must be unique.
-        builder
-            .HasIndex(message => message.MessageId)
-            .HasDatabaseName("ix_outbox_messages_message_id");
+        // MessageId is not indexed: nothing reads by it, and an index here would be one more
+        // write inside every seat transaction. The consumer's unique index is the one that
+        // deduplicates.
     }
 }

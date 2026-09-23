@@ -264,6 +264,23 @@ public class HoldSeatCommandHandlerTests
         Assert.Equal(HoldSeatOutcome.LostRace, result.Outcome);
     }
 
+    /// <summary>
+    /// After the second loss nothing else would reload the seats, so the handler does: a hold
+    /// that exists only in memory must not reach a later save (011).
+    /// </summary>
+    [Fact]
+    public async Task Handle_WhenBothAttemptsLoseRace_ShouldReloadWhatItChanged()
+    {
+        var seats = new FakeSeatRepository(AvailableSeat(), AvailableSeat(), AvailableSeat())
+            .WithSaveOutcomes(
+                new ConcurrentSeatModificationException(SeatId),
+                new ConcurrentSeatModificationException(SeatId));
+
+        await HandlerFor(seats).HandleAsync(Command);
+
+        Assert.Equal(3, seats.GetByIdCalls);
+    }
+
     /// <summary>The retry is bounded at one.</summary>
     [Fact]
     public async Task Handle_WhenContentionPersists_ShouldNotRetryMoreThanOnce()
@@ -283,7 +300,8 @@ public class HoldSeatCommandHandlerTests
     [Fact]
     public async Task Handle_WhenRetrying_ShouldDropEventsFromTheRejectedAttempt()
     {
-        // The same instance comes back from the reload, as with the EF adapter.
+        // The same instance comes back from the reload: the worst case for leftover events. The
+        // EF adapter's batch load returns fresh instances, so the handler must not rely on that.
         var seat = AvailableSeat();
         var seats = new FakeSeatRepository(seat, seat)
             .WithSaveOutcomes(new ConcurrentSeatModificationException(SeatId), null);
@@ -584,106 +602,6 @@ public class HoldSeatCommandHandlerTests
     }
 
     // -- Fakes ------------------------------------------------------------
-
-    /// <summary>Answers each load from a script: one entry per call, the last repeated.</summary>
-    private sealed class FakeSeatRepository : ISeatRepository
-    {
-        private readonly IReadOnlyList<IReadOnlyList<Seat>> _loads;
-        private readonly List<Exception?> _saveOutcomes = [];
-        private readonly List<Guid> _liveHolds = [];
-
-        public FakeSeatRepository(params Seat?[] loads) => _loads = ScriptOfSingles(loads);
-
-        private FakeSeatRepository(IReadOnlyList<IReadOnlyList<Seat>> loads, bool scripted) => _loads = loads;
-
-        public int GetByIdCalls { get; private set; }
-
-        public int SaveCalls { get; private set; }
-
-        /// <summary>The seats handed to the most recent save.</summary>
-        public IReadOnlyCollection<Seat> LastSaved { get; private set; } = [];
-
-        /// <summary>Every call returns these seats.</summary>
-        public static FakeSeatRepository Holding(params Seat[] seats) =>
-            new(new IReadOnlyList<Seat>[] { seats }, scripted: true);
-
-        /// <summary>One batch per call, the last repeated.</summary>
-        public static FakeSeatRepository Loading(params IReadOnlyList<Seat>[] loads) =>
-            new(loads, scripted: true);
-
-        /// <summary>One entry per expected save: an exception to throw, or null to succeed.</summary>
-        public FakeSeatRepository WithSaveOutcomes(params Exception?[] outcomes)
-        {
-            _saveOutcomes.AddRange(outcomes);
-            return this;
-        }
-
-        /// <summary>This client already holds this many other seats at the event.</summary>
-        public FakeSeatRepository WithLiveHolds(int count)
-        {
-            _liveHolds.AddRange(Enumerable.Range(0, count).Select(_ => Guid.NewGuid()));
-            return this;
-        }
-
-        /// <summary>This client is holding this particular seat live.</summary>
-        public FakeSeatRepository WithLiveHoldOn(Guid seatId)
-        {
-            _liveHolds.Add(seatId);
-            return this;
-        }
-
-        public Task<Seat?> GetByIdAsync(Guid seatId, CancellationToken cancellationToken = default) =>
-            throw new InvalidOperationException("The handlers load seats in batches.");
-
-        public Task<IReadOnlyList<Seat>> GetByIdsAsync(
-            IReadOnlyCollection<Guid> seatIds,
-            CancellationToken cancellationToken = default)
-        {
-            var load = _loads[Math.Min(GetByIdCalls, _loads.Count - 1)];
-            GetByIdCalls++;
-
-            return Task.FromResult<IReadOnlyList<Seat>>([.. load.Where(seat => seatIds.Contains(seat.Id))]);
-        }
-
-        public Task SaveAsync(Seat seat, CancellationToken cancellationToken = default) =>
-            SaveAsync([seat], cancellationToken);
-
-        public Task SaveAsync(IReadOnlyCollection<Seat> seats, CancellationToken cancellationToken = default)
-        {
-            var outcome = SaveCalls < _saveOutcomes.Count ? _saveOutcomes[SaveCalls] : null;
-            SaveCalls++;
-            LastSaved = seats;
-
-            return outcome is null ? Task.CompletedTask : Task.FromException(outcome);
-        }
-
-        public Task<IReadOnlyCollection<Guid>> FindLiveHoldsAsync(
-            Guid clientId,
-            Guid eventId,
-            DateTime utcNow,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyCollection<Guid>>(_liveHolds);
-
-        /// <summary>The sweep's query; no handler calls it, so it throws.</summary>
-        public Task<IReadOnlyList<Guid>> FindExpiredHoldsAsync(
-            DateTime utcNow,
-            int limit,
-            CancellationToken cancellationToken = default) =>
-            throw new InvalidOperationException("The request path does not sweep expired holds.");
-
-        /// <summary>Seats already exist on this path; creating them is a different use case.</summary>
-        public Task AddRangeAsync(
-            IReadOnlyCollection<Seat> seats,
-            CancellationToken cancellationToken = default) =>
-            throw new InvalidOperationException("Holding does not create seats.");
-
-        private static IReadOnlyList<IReadOnlyList<Seat>> ScriptOfSingles(Seat?[] loads)
-        {
-            var script = loads.Length == 0 ? new Seat?[] { null } : loads;
-
-            return [.. script.Select(seat => seat is null ? Array.Empty<Seat>() : new[] { seat })];
-        }
-    }
 
     /// <summary>A lock whose answer is the same for every resource.</summary>
     private sealed class FakeDistributedLock(LockOutcome outcome = LockOutcome.Acquired) : IDistributedLock

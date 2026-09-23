@@ -100,8 +100,12 @@ public class CooldownDistributedLockTests
         Assert.Equal(2, _inner.AcquireCalls);
     }
 
+    /// <summary>
+    /// A caller with a token took its lock before the window opened. Skipping its release would
+    /// strand the key until its TTL, and that client's next hold would be refused as in flight.
+    /// </summary>
     [Fact]
-    public async Task Release_WhileCoolingDown_ShouldNotAsk()
+    public async Task Release_WhileCoolingDown_ShouldStillAsk()
     {
         var coolingLock = Lock();
         _inner.Next = LockAcquisition.Unavailable;
@@ -109,8 +113,8 @@ public class CooldownDistributedLockTests
 
         var released = await coolingLock.ReleaseAsync("r", "token");
 
-        Assert.False(released);
-        Assert.Equal(0, _inner.ReleaseCalls);
+        Assert.True(released);
+        Assert.Equal(1, _inner.ReleaseCalls);
     }
 
     [Fact]

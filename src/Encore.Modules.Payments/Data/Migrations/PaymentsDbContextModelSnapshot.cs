@@ -77,6 +77,14 @@ namespace Encore.Modules.Payments.Data.Migrations
                         .HasDatabaseName("ux_payments_order_live")
                         .HasFilter("\"Status\" IN (0, 1, 2, 4)");
 
+                    b.HasIndex(new[] { "OrderId" }, "ix_payments_order");
+
+                    b.HasIndex(new[] { "AttemptedAt" }, "ix_payments_pending")
+                        .HasFilter("\"Status\" = 0");
+
+                    b.HasIndex(new[] { "ResolvedAt" }, "ix_payments_timed_out")
+                        .HasFilter("\"Status\" = 4");
+
                     b.ToTable("payments", "payments");
                 });
 

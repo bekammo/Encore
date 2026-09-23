@@ -20,7 +20,7 @@ public sealed class SellSeatCommandHandler(
     private readonly TimeProvider _timeProvider = timeProvider;
 
     /// <summary>Sells one seat. A batch of one.</summary>
-    public async Task<SellSeatResult> HandleAsync(
+    public async Task<SellSeatOutcome> HandleAsync(
         SellSeatCommand command,
         CancellationToken cancellationToken = default)
     {
@@ -29,7 +29,7 @@ public sealed class SellSeatCommandHandler(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return result.AllSold ? SellSeatResult.Sold : new SellSeatResult(result.Refusals[0].Outcome);
+        return result.AllSold ? SellSeatOutcome.Sold : result.Refusals[0].Outcome;
     }
 
     /// <summary>Sells every requested seat, or none.</summary>

@@ -10,8 +10,10 @@ namespace Encore.Modules.Inventory.Adapters.Caching;
 /// </summary>
 /// <remarks>
 /// Changes nothing a caller can rely on: "unavailable" already means "proceed without the
-/// lock". Several callers may probe at once when a window ends; with fail-fast connections a
-/// probe is cheap, so no one is elected.
+/// lock". Only acquiring is skipped. A release always goes through, because a caller holding
+/// a token took its lock before the window opened, and skipping the release would strand that
+/// key until its TTL. Several callers may probe at once when a window ends; with fail-fast
+/// connections a probe is cheap, so no one is elected.
 /// </remarks>
 internal sealed class CooldownDistributedLock(
     IDistributedLock inner,
@@ -50,19 +52,12 @@ internal sealed class CooldownDistributedLock(
     }
 
     /// <inheritdoc />
-    /// <remarks>Skipped while cooling down: the key has a TTL and frees itself.</remarks>
+    /// <remarks>Never skipped, cooling down or not: see the class remarks.</remarks>
     public async Task<bool> ReleaseAsync(
         string resource,
         string token,
         CancellationToken cancellationToken = default)
     {
-        if (CoolingDown())
-        {
-            InventoryTelemetry.RecordLock("release", CoolingDownOutcome);
-
-            return false;
-        }
-
         // A false release is not an outage: the key may simply have expired.
         var released = await _inner.ReleaseAsync(resource, token, cancellationToken).ConfigureAwait(false);
 

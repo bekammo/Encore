@@ -36,39 +36,16 @@ internal sealed class ExpiredHoldSweeper(
             _options.BatchSize,
             _options.PollInterval);
 
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            int visited;
-
-            try
-            {
-                visited = await SweepBatchAsync(stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Expired-hold sweep failed. Retrying after {PollInterval}.", _options.PollInterval);
-                visited = 0;
-            }
-
-            // Every visit settles its row, so a full batch loops straight away.
-            if (visited >= _options.BatchSize)
-            {
-                continue;
-            }
-
-            try
-            {
-                await Task.Delay(_options.PollInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
+        // Counts visits, not expiries: every visit settles its row, so a full batch of
+        // visits is safe to follow straight away.
+        await PollingLoop.RunAsync(
+            SweepBatchAsync,
+            _options.BatchSize,
+            _options.PollInterval,
+            _timeProvider,
+            _logger,
+            "Expired-hold sweep",
+            stoppingToken).ConfigureAwait(false);
 
         _logger.LogInformation("Inventory expired-hold sweep stopped.");
     }

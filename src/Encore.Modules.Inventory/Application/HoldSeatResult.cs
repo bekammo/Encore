@@ -4,7 +4,7 @@ namespace Encore.Modules.Inventory.Application;
 /// The result of a <see cref="HoldSeatCommand"/>: an <see cref="HoldSeatOutcome"/>,
 /// plus the expiry when — and only when — a hold was actually taken.
 /// </summary>
-/// <param name="Outcome">What happened.</param>
+/// <param name="Outcome">What happened; each case is described on <see cref="HoldSeatOutcome"/>.</param>
 /// <param name="HoldExpiresAt">
 /// When the new hold lapses. Non-null exactly when <paramref name="Outcome"/> is
 /// <see cref="HoldSeatOutcome.Held"/>.
@@ -15,25 +15,22 @@ public sealed record HoldSeatResult(HoldSeatOutcome Outcome, DateTime? HoldExpir
     public static HoldSeatResult Held(DateTime holdExpiresAt) =>
         new(HoldSeatOutcome.Held, holdExpiresAt);
 
-    /// <summary>Somebody else holds it, and their hold is still live.</summary>
+    /// <summary><see cref="HoldSeatOutcome.AlreadyHeld"/>.</summary>
     public static HoldSeatResult AlreadyHeld { get; } = new(HoldSeatOutcome.AlreadyHeld);
 
-    /// <summary>The seat is sold.</summary>
+    /// <summary><see cref="HoldSeatOutcome.AlreadySold"/>.</summary>
     public static HoldSeatResult AlreadySold { get; } = new(HoldSeatOutcome.AlreadySold);
 
-    /// <summary>No seat with that id exists.</summary>
+    /// <summary><see cref="HoldSeatOutcome.SeatNotFound"/>.</summary>
     public static HoldSeatResult SeatNotFound { get; } = new(HoldSeatOutcome.SeatNotFound);
 
-    /// <summary>Lost the race twice over. The caller should try again.</summary>
+    /// <summary><see cref="HoldSeatOutcome.LostRace"/>.</summary>
     public static HoldSeatResult LostRace { get; } = new(HoldSeatOutcome.LostRace);
 
-    /// <summary>The client is already at their hold cap for this event.</summary>
+    /// <summary><see cref="HoldSeatOutcome.HoldCapReached"/>.</summary>
     public static HoldSeatResult HoldCapReached { get; } = new(HoldSeatOutcome.HoldCapReached);
 
-    /// <summary>
-    /// This client has another hold request in flight for the same event. The
-    /// caller should try again shortly.
-    /// </summary>
+    /// <summary><see cref="HoldSeatOutcome.ConcurrentRequestInFlight"/>.</summary>
     public static HoldSeatResult ConcurrentRequestInFlight { get; } =
         new(HoldSeatOutcome.ConcurrentRequestInFlight);
 }

@@ -1,6 +1,8 @@
+using System.Linq.Expressions;
 using Encore.Modules.Payments.Models;
 using Encore.Modules.Payments.Simulation;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -14,10 +16,12 @@ namespace Encore.Modules.Payments.Data;
 /// </summary>
 /// <remarks>
 /// Without it a timed-out attempt holds the order's live slot, and possibly the customer's
-/// funds, indefinitely. It never authorises; its only outside write is releasing funds it
-/// finds held, since a timed-out attempt never has sold seats behind it. A Postgres advisory
-/// lock per sweep keeps two instances from duplicating work; <c>xmin</c> still guards each row.
-/// Nothing depends on it running.
+/// funds, indefinitely. An attempt left pending by a crash between the gateway call and its
+/// save is the same case, so it is claimed as timed out first. It never authorises; its only
+/// outside write is releasing funds it finds held. Each row stays locked from the lookup to
+/// the save, so a confirm that retries it meanwhile waits and then loses on <c>xmin</c>,
+/// instead of re-authorising funds this has just released. A Postgres advisory lock per sweep
+/// keeps two instances from duplicating work. Nothing depends on it running.
 /// </remarks>
 internal sealed class PaymentReconciler(
     IServiceScopeFactory scopeFactory,
@@ -104,7 +108,8 @@ internal sealed class PaymentReconciler(
             return 0;
         }
 
-        var candidates = await CandidatesAsync(cancellationToken).ConfigureAwait(false);
+        var cutoff = _timeProvider.GetUtcNow().UtcDateTime - _options.MinimumAge;
+        var candidates = await CandidatesAsync(cutoff, cancellationToken).ConfigureAwait(false);
 
         if (candidates.Count is 0)
         {
@@ -117,7 +122,7 @@ internal sealed class PaymentReconciler(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (await ReconcileAsync(id, cancellationToken).ConfigureAwait(false))
+            if (await ReconcileAsync(id, cutoff, cancellationToken).ConfigureAwait(false))
             {
                 settled++;
             }
@@ -127,20 +132,27 @@ internal sealed class PaymentReconciler(
     }
 
     /// <summary>
-    /// Timed-out attempts old enough to ask about, oldest first. Each is then settled in
-    /// its own scope, so one lost race does not affect the rest.
+    /// Attempts the gateway may have decided without this system hearing the answer: timed
+    /// out, or still pending since before <paramref name="cutoff"/>, which only a crash
+    /// between the gateway call and its save leaves behind. The readiness check counts these too.
     /// </summary>
-    private async Task<List<Guid>> CandidatesAsync(CancellationToken cancellationToken)
+    internal static Expression<Func<Payment, bool>> Overdue(DateTime cutoff) =>
+        payment => (payment.Status == PaymentStatus.TimedOut && payment.ResolvedAt <= cutoff)
+            || (payment.Status == PaymentStatus.Pending && payment.AttemptedAt <= cutoff);
+
+    /// <summary>
+    /// Overdue attempts, oldest first. Each is then settled in its own scope and
+    /// transaction, so one lost race does not affect the rest.
+    /// </summary>
+    private async Task<List<Guid>> CandidatesAsync(DateTime cutoff, CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<PaymentsDbContext>();
 
-        var cutoff = _timeProvider.GetUtcNow().UtcDateTime - _options.MinimumAge;
-
         return await context.Payments
             .AsNoTracking()
-            .Where(payment => payment.Status == PaymentStatus.TimedOut && payment.ResolvedAt <= cutoff)
-            .OrderBy(payment => payment.ResolvedAt)
+            .Where(Overdue(cutoff))
+            .OrderBy(payment => payment.Status == PaymentStatus.TimedOut ? payment.ResolvedAt : payment.AttemptedAt)
             .Take(_options.BatchSize)
             .Select(payment => payment.Id)
             .ToListAsync(cancellationToken)
@@ -149,16 +161,26 @@ internal sealed class PaymentReconciler(
 
     /// <summary>Asks the gateway about one attempt and records what it says.</summary>
     /// <returns>Whether the attempt was settled.</returns>
-    private async Task<bool> ReconcileAsync(Guid paymentId, CancellationToken cancellationToken)
+    private async Task<bool> ReconcileAsync(Guid paymentId, DateTime cutoff, CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<PaymentsDbContext>();
 
-        // Re-read with the status filter: a confirm may have retried this row since.
-        var payment = await context.Payments
-            .SingleOrDefaultAsync(
-                candidate => candidate.Id == paymentId && candidate.Status == PaymentStatus.TimedOut,
+        await using var transaction = await context.Database
+            .BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        // Held until the commit, across both gateway calls.
+        await context.Database
+            .ExecuteSqlAsync(
+                $"""SELECT 1 FROM payments.payments WHERE "Id" = {paymentId} FOR UPDATE""",
                 cancellationToken)
+            .ConfigureAwait(false);
+
+        // Re-read under the lock: a confirm may have retried or resumed this row since.
+        var payment = await context.Payments
+            .Where(Overdue(cutoff))
+            .SingleOrDefaultAsync(candidate => candidate.Id == paymentId, cancellationToken)
             .ConfigureAwait(false);
 
         if (payment is null)
@@ -166,20 +188,27 @@ internal sealed class PaymentReconciler(
             return false;
         }
 
+        // Stamped after the slow gateway calls.
+        DateTime Now() => _timeProvider.GetUtcNow().UtcDateTime;
+
+        // A pending row this old lost its answer to a crash: from here it is a timeout.
+        if (payment.Status is PaymentStatus.Pending)
+        {
+            payment.TimeOut(Now());
+        }
+
         var (record, reference) = await _gateway
             .LookUpAsync(payment.IdempotencyKey, cancellationToken)
             .ConfigureAwait(false);
 
-        // Stamped when resolved, after the slow gateway call.
-        DateTime Resolved() => _timeProvider.GetUtcNow().UtcDateTime;
-
         switch (record)
         {
-            // Still no answer: nothing learned, nothing written.
+            // Still no answer: nothing learned. A claimed pending row is still saved as timed out.
             case GatewayRecord.Unknown:
                 _logger.LogDebug(
                     "Payment {PaymentId} is still unresolved: the gateway did not answer the lookup.",
                     payment.Id);
+                await CommitAsync(context, transaction).ConfigureAwait(false);
                 return false;
 
             case GatewayRecord.Authorized:
@@ -187,23 +216,24 @@ internal sealed class PaymentReconciler(
                 if (await _gateway.VoidAsync(reference!, cancellationToken).ConfigureAwait(false)
                     is GatewayOutcome.TimedOut)
                 {
-                    // Write nothing: an Authorized row nobody captures would be a worse orphan.
+                    // Leave it timed out: an Authorized row nobody captures would be a worse orphan.
                     _logger.LogWarning(
                         "Payment {PaymentId} is holding funds under {GatewayReference}, but the void got no answer. Leaving it timed out.",
                         payment.Id,
                         reference);
+                    await CommitAsync(context, transaction).ConfigureAwait(false);
                     return false;
                 }
 
-                payment.ResolveAsVoided(reference!, Resolved());
+                payment.ResolveAsVoided(reference!, Now());
                 break;
 
             case GatewayRecord.Declined:
-                payment.ResolveAsDeclined(Resolved());
+                payment.ResolveAsDeclined(Now());
                 break;
 
             case GatewayRecord.NotFound:
-                payment.ResolveAsAbandoned(Resolved());
+                payment.ResolveAsAbandoned(Now());
                 break;
 
             default:
@@ -211,18 +241,7 @@ internal sealed class PaymentReconciler(
                     nameof(paymentId), record, "Unmapped gateway record.");
         }
 
-        try
-        {
-            await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            // A confirm retried this row meanwhile; it has a customer waiting, so it wins.
-            _logger.LogDebug(
-                "Payment {PaymentId} was resolved by something else while this sweep was asking.",
-                payment.Id);
-            return false;
-        }
+        await CommitAsync(context, transaction).ConfigureAwait(false);
 
         _logger.LogInformation(
             "Payment {PaymentId} reconciled: the gateway reported {Record}, so the attempt is now {Status}.",
@@ -231,5 +250,15 @@ internal sealed class PaymentReconciler(
             payment.Status);
 
         return true;
+    }
+
+    /// <summary>
+    /// Saves what the sweep decided and releases the row. Not cancellable: by now the gateway
+    /// may have acted on it.
+    /// </summary>
+    private static async Task CommitAsync(PaymentsDbContext context, IDbContextTransaction transaction)
+    {
+        await context.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
+        await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
     }
 }

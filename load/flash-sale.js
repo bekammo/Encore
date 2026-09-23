@@ -320,6 +320,10 @@ function thresholds() {
     // distinct seats sold. More than exist is an oversell, and it fails the run.
     seats_sold: ['count<=' + sellableSeats()],
 
+    // The same invariant for the flash sale's own pool. On a chaos run the overall bound
+    // includes the fault phases' pools, whose unsold seats would otherwise hide an oversell here.
+    'seats_sold{phase:sale}': ['count<=' + SALE_SEATS],
+
     // Anything the routes are not documented to return — a 500, a timeout, a 415 — is
     // a fault rather than a refusal.
     unexpected_responses: ['count==0'],
@@ -783,7 +787,9 @@ export async function orders(data) {
       tags: { name: 'checkout' },
     });
 
-  if (created.status === 409 || created.status === 400) {
+  // 409 only. The harness always sends one to four distinct seats and a client id, so a
+  // 400 (no_seats, duplicate_seat, too_many_seats) could only mean a regression.
+  if (created.status === 409) {
     checkoutRefused.add(1, { reason: reasonOf(created) });
     return;
   }
@@ -876,6 +882,7 @@ function invariants(data) {
   let out = '';
 
   out += line('  no oversell, overall', verdict(data, 'seats_sold'));
+  out += line('  no oversell, flash sale', verdict(data, 'seats_sold{phase:sale}'));
   out += line('  no unexpected responses', verdict(data, 'unexpected_responses'));
 
   if (running('redis')) {

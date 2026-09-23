@@ -54,6 +54,9 @@ namespace Encore.Modules.Orders.Data.Migrations
                         .HasColumnType("xid")
                         .HasColumnName("xmin");
 
+                    b.Property<DateTime?>("SoldAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<int>("Status")
                         .HasColumnType("integer");
 
@@ -61,6 +64,10 @@ namespace Encore.Modules.Orders.Data.Migrations
                         .HasColumnType("numeric(19,4)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("SoldAt")
+                        .HasDatabaseName("ix_orders_awaiting_capture")
+                        .HasFilter("\"Status\" = 5");
 
                     b.HasIndex("ClientId", "EventId")
                         .IsUnique()

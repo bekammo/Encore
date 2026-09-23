@@ -20,7 +20,7 @@ public enum OrderActionOutcome
     NotPending = 2,
 
     /// <summary>
-    /// Another writer reached the order row first. Retryable.
+    /// A concurrent confirm, cancel or payment attempt for this order got there first. Retryable.
     /// </summary>
     LostRace = 3,
 

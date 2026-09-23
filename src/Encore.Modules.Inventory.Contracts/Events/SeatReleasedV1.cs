@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Encore.Modules.Inventory.Contracts.Events;
 
 /// <summary>
@@ -6,11 +8,11 @@ namespace Encore.Modules.Inventory.Contracts.Events;
 /// </summary>
 /// <param name="Reason"><c>"cancelled"</c> or <c>"expired"</c>.</param>
 public sealed record SeatReleasedV1(
-    Guid SeatId,
-    Guid EventId,
-    Guid ClientId,
-    string Reason,
-    DateTime OccurredAt)
+    [property: JsonPropertyName("seatId")] Guid SeatId,
+    [property: JsonPropertyName("eventId")] Guid EventId,
+    [property: JsonPropertyName("clientId")] Guid ClientId,
+    [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonPropertyName("occurredAt")] DateTime OccurredAt)
 {
     public static readonly string Cancelled = "cancelled";
 

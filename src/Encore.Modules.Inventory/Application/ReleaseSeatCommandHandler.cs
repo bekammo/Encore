@@ -9,8 +9,8 @@ namespace Encore.Modules.Inventory.Application;
 /// releases are written in one transaction.
 /// </summary>
 /// <remarks>
-/// No lock: there is no cap to protect. Releasing a seat you are not holding succeeds,
-/// so a retry is not an error.
+/// No lock: there is no cap to protect. Releasing a seat that is already available, or
+/// whose hold lapsed, succeeds, so a retry is not an error.
 /// </remarks>
 public sealed class ReleaseSeatCommandHandler(
     ISeatRepository seats,
@@ -20,7 +20,7 @@ public sealed class ReleaseSeatCommandHandler(
     private readonly TimeProvider _timeProvider = timeProvider;
 
     /// <summary>Releases one seat. A batch of one.</summary>
-    public async Task<ReleaseSeatResult> HandleAsync(
+    public async Task<ReleaseSeatOutcome> HandleAsync(
         ReleaseSeatCommand command,
         CancellationToken cancellationToken = default)
     {
@@ -34,7 +34,7 @@ public sealed class ReleaseSeatCommandHandler(
 
     /// <summary>Releases every requested seat it can.</summary>
     /// <returns>One outcome per seat, in request order.</returns>
-    public async Task<IReadOnlyList<ReleaseSeatResult>> HandleAsync(
+    public async Task<IReadOnlyList<ReleaseSeatOutcome>> HandleAsync(
         ReleaseSeatsCommand command,
         CancellationToken cancellationToken = default)
     {
@@ -42,9 +42,21 @@ public sealed class ReleaseSeatCommandHandler(
 
         var attempt = await AttemptAsync(command, cancellationToken).ConfigureAwait(false);
 
-        return attempt.LostRace
-            ? (await AttemptAsync(command, cancellationToken).ConfigureAwait(false)).Results
-            : attempt.Results;
+        if (!attempt.LostRace)
+        {
+            return attempt.Results;
+        }
+
+        // The retry's load discards the first attempt's changes.
+        var retry = await AttemptAsync(command, cancellationToken).ConfigureAwait(false);
+
+        if (retry.LostRace)
+        {
+            // Nothing else will: reload so releases that exist only in memory cannot reach a later save (011).
+            await _seats.GetByIdsAsync(command.SeatIds, cancellationToken).ConfigureAwait(false);
+        }
+
+        return retry.Results;
     }
 
     private async Task<Attempt> AttemptAsync(
@@ -59,13 +71,13 @@ public sealed class ReleaseSeatCommandHandler(
             .Where(seat => seat.EventId == command.EventId)
             .ToDictionary(seat => seat.Id);
 
-        var results = new ReleaseSeatResult[command.SeatIds.Count];
+        var results = new ReleaseSeatOutcome[command.SeatIds.Count];
 
         for (var i = 0; i < command.SeatIds.Count; i++)
         {
             if (!seats.TryGetValue(command.SeatIds[i], out var seat))
             {
-                results[i] = ReleaseSeatResult.SeatNotFound;
+                results[i] = ReleaseSeatOutcome.SeatNotFound;
                 continue;
             }
 
@@ -95,33 +107,33 @@ public sealed class ReleaseSeatCommandHandler(
 
             return new Attempt(
                 [.. command.SeatIds.Select((seatId, i) =>
-                    moved.Contains(seatId) ? ReleaseSeatResult.LostRace : results[i])],
+                    moved.Contains(seatId) ? ReleaseSeatOutcome.LostRace : results[i])],
                 LostRace: true);
         }
     }
 
-    private static ReleaseSeatResult TryRelease(Seat seat, Guid clientId, DateTime utcNow)
+    private static ReleaseSeatOutcome TryRelease(Seat seat, Guid clientId, DateTime utcNow)
     {
         try
         {
             seat.Release(clientId, utcNow);
 
-            return ReleaseSeatResult.Released;
+            return ReleaseSeatOutcome.Released;
         }
         catch (SeatTransitionException ex) when (ex.Reason is SeatTransitionReason.SeatAlreadySold)
         {
             // Sold to this client means a confirm of the same order won; a cancel uses this to back off.
             return seat.HeldByClientId == clientId
-                ? ReleaseSeatResult.SoldToYou
-                : ReleaseSeatResult.AlreadySold;
+                ? ReleaseSeatOutcome.SoldToYou
+                : ReleaseSeatOutcome.AlreadySold;
         }
         catch (SeatTransitionException ex) when (ex.Reason is SeatTransitionReason.NotTheHolder)
         {
-            return ReleaseSeatResult.NotTheHolder;
+            return ReleaseSeatOutcome.NotTheHolder;
         }
 
         // Any other reason propagates: it would mean the aggregate's contract changed.
     }
 
-    private sealed record Attempt(IReadOnlyList<ReleaseSeatResult> Results, bool LostRace);
+    private sealed record Attempt(IReadOnlyList<ReleaseSeatOutcome> Results, bool LostRace);
 }

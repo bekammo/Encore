@@ -66,7 +66,7 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.Sold, result.Outcome);
+        Assert.Equal(SellSeatOutcome.Sold, result);
     }
 
     [Fact]
@@ -104,7 +104,7 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.Sold, result.Outcome);
+        Assert.Equal(SellSeatOutcome.Sold, result);
     }
 
     [Fact]
@@ -136,7 +136,7 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.AlreadySold, result.Outcome);
+        Assert.Equal(SellSeatOutcome.AlreadySold, result);
     }
 
     // -- Refusals ---------------------------------------------------------
@@ -148,7 +148,7 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.NotTheHolder, result.Outcome);
+        Assert.Equal(SellSeatOutcome.NotTheHolder, result);
     }
 
     [Fact]
@@ -158,7 +158,7 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats, now: T0.AddMinutes(6)).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.HoldExpired, result.Outcome);
+        Assert.Equal(SellSeatOutcome.HoldExpired, result);
     }
 
     [Fact]
@@ -168,7 +168,7 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.NoActiveHold, result.Outcome);
+        Assert.Equal(SellSeatOutcome.NoActiveHold, result);
     }
 
     [Fact]
@@ -188,7 +188,7 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.SeatNotFound, result.Outcome);
+        Assert.Equal(SellSeatOutcome.SeatNotFound, result);
     }
 
     /// <summary>A seat under another event is reported as not found.</summary>
@@ -200,7 +200,7 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(wrongEvent);
 
-        Assert.Equal(SellSeatOutcome.SeatNotFound, result.Outcome);
+        Assert.Equal(SellSeatOutcome.SeatNotFound, result);
         Assert.Equal(0, seats.SaveCalls);
     }
 
@@ -214,7 +214,7 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.Sold, result.Outcome);
+        Assert.Equal(SellSeatOutcome.Sold, result);
         Assert.Equal(2, seats.GetByIdCalls);
     }
 
@@ -227,7 +227,7 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.Sold, result.Outcome);
+        Assert.Equal(SellSeatOutcome.Sold, result);
     }
 
     [Fact]
@@ -238,7 +238,7 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.AlreadySold, result.Outcome);
+        Assert.Equal(SellSeatOutcome.AlreadySold, result);
     }
 
     [Fact]
@@ -251,7 +251,7 @@ public class SellSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(SellSeatOutcome.LostRace, result.Outcome);
+        Assert.Equal(SellSeatOutcome.LostRace, result);
     }
 
     [Fact]
@@ -427,92 +427,6 @@ public class SellSeatCommandHandlerTests
     }
 
     // -- Fakes ------------------------------------------------------------
-
-    /// <summary>Answers each load from a script: one entry per call, the last repeated.</summary>
-    private sealed class FakeSeatRepository : ISeatRepository
-    {
-        private readonly IReadOnlyList<IReadOnlyList<Seat>> _loads;
-        private readonly List<Exception?> _saveOutcomes = [];
-
-        public FakeSeatRepository(params Seat?[] loads) => _loads = ScriptOfSingles(loads);
-
-        private FakeSeatRepository(IReadOnlyList<IReadOnlyList<Seat>> loads, bool scripted) => _loads = loads;
-
-        public int GetByIdCalls { get; private set; }
-
-        public int SaveCalls { get; private set; }
-
-        /// <summary>The seats handed to the most recent save.</summary>
-        public IReadOnlyCollection<Seat> LastSaved { get; private set; } = [];
-
-        /// <summary>Every call returns these seats.</summary>
-        public static FakeSeatRepository Holding(params Seat[] seats) =>
-            new(new IReadOnlyList<Seat>[] { seats }, scripted: true);
-
-        /// <summary>One batch per call, the last repeated.</summary>
-        public static FakeSeatRepository Loading(params IReadOnlyList<Seat>[] loads) =>
-            new(loads, scripted: true);
-
-        /// <summary>One entry per expected save: an exception to throw, or null to succeed.</summary>
-        public FakeSeatRepository WithSaveOutcomes(params Exception?[] outcomes)
-        {
-            _saveOutcomes.AddRange(outcomes);
-            return this;
-        }
-
-        public Task<Seat?> GetByIdAsync(Guid seatId, CancellationToken cancellationToken = default) =>
-            throw new InvalidOperationException("The handlers load seats in batches.");
-
-        public Task<IReadOnlyList<Seat>> GetByIdsAsync(
-            IReadOnlyCollection<Guid> seatIds,
-            CancellationToken cancellationToken = default)
-        {
-            var load = _loads[Math.Min(GetByIdCalls, _loads.Count - 1)];
-            GetByIdCalls++;
-
-            return Task.FromResult<IReadOnlyList<Seat>>([.. load.Where(seat => seatIds.Contains(seat.Id))]);
-        }
-
-        public Task SaveAsync(Seat seat, CancellationToken cancellationToken = default) =>
-            SaveAsync([seat], cancellationToken);
-
-        public Task SaveAsync(IReadOnlyCollection<Seat> seats, CancellationToken cancellationToken = default)
-        {
-            var outcome = SaveCalls < _saveOutcomes.Count ? _saveOutcomes[SaveCalls] : null;
-            SaveCalls++;
-            LastSaved = seats;
-
-            return outcome is null ? Task.CompletedTask : Task.FromException(outcome);
-        }
-
-        /// <summary>Selling never consults the hold cap, so this throws.</summary>
-        public Task<IReadOnlyCollection<Guid>> FindLiveHoldsAsync(
-            Guid clientId,
-            Guid eventId,
-            DateTime utcNow,
-            CancellationToken cancellationToken = default) =>
-            throw new InvalidOperationException("Selling does not consult the hold cap.");
-
-        /// <summary>The sweep's query; no handler calls it, so it throws.</summary>
-        public Task<IReadOnlyList<Guid>> FindExpiredHoldsAsync(
-            DateTime utcNow,
-            int limit,
-            CancellationToken cancellationToken = default) =>
-            throw new InvalidOperationException("The request path does not sweep expired holds.");
-
-        /// <summary>Seats already exist on this path; creating them is a different use case.</summary>
-        public Task AddRangeAsync(
-            IReadOnlyCollection<Seat> seats,
-            CancellationToken cancellationToken = default) =>
-            throw new InvalidOperationException("This use case does not create seats.");
-
-        private static IReadOnlyList<IReadOnlyList<Seat>> ScriptOfSingles(Seat?[] loads)
-        {
-            var script = loads.Length == 0 ? new Seat?[] { null } : loads;
-
-            return [.. script.Select(seat => seat is null ? Array.Empty<Seat>() : new[] { seat })];
-        }
-    }
 
     private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
     {

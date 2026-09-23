@@ -2,8 +2,11 @@ using Encore.Modules.Inventory.Ports;
 
 namespace Encore.Modules.Inventory.Application;
 
-/// <summary>Lock naming, lifetime and release, kept in one place.</summary>
-internal static class SeatLocks
+/// <summary>
+/// The lock that serialises one client's hold-cap check at one event (005): its name,
+/// lifetime and release. It is the only lock Inventory takes; seats have none (004).
+/// </summary>
+internal static class ClientHoldLock
 {
     /// <summary>
     /// How long a lock survives if never released. Sized to one write attempt, not to
@@ -11,8 +14,8 @@ internal static class SeatLocks
     /// </summary>
     public static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5);
 
-    /// <summary>The lock that serialises one client's hold-cap check at one event.</summary>
-    public static string ForClient(Guid clientId, Guid eventId) =>
+    /// <summary>The lock's resource name for one client at one event.</summary>
+    public static string Resource(Guid clientId, Guid eventId) =>
         $"client:{clientId}:event:{eventId}";
 
     /// <summary>

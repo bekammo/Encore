@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Encore.Modules.Inventory.Adapters.Persistence;
+using Encore.Modules.Inventory.Adapters.Scheduling;
 using Encore.Modules.Inventory.Adapters.Telemetry;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,9 +15,9 @@ namespace Encore.Modules.Inventory.Adapters.Messaging;
 /// with exponential backoff and a dead letter after <see cref="OutboxOptions.MaxAttempts"/>.
 /// </summary>
 /// <remarks>
-/// At-least-once, and no seat invariant depends on it running. Events from one
-/// transaction arrive in order; across transactions there is no ordering promise, and
-/// a failing message is overtaken rather than blocking the queue.
+/// At-least-once, in no order a consumer may rely on: a failing message is overtaken rather
+/// than blocking the queue, even by a row from its own transaction, and several dispatchers
+/// share the table (024). No seat invariant depends on it running.
 /// </remarks>
 internal sealed class OutboxDispatcher(
     IServiceScopeFactory scopeFactory,
@@ -28,14 +29,17 @@ internal sealed class OutboxDispatcher(
     /// <summary>
     /// Raw SQL because EF Core cannot express a locking clause. <c>SKIP LOCKED</c> lets
     /// several dispatchers share the table; claiming on <c>ProcessedAt IS NULL</c> rather
-    /// than a last-seen id means a late-committing row is never skipped.
+    /// than a last-seen id means a late-committing row is never skipped. Ordered as
+    /// <c>ix_outbox_messages_unprocessed</c> is, so the index supplies the order and the
+    /// <c>LIMIT</c> ends the scan. Ordering by <c>Id</c> alone made every tick read the whole
+    /// due backlog.
     /// </summary>
     private const string ClaimSql = $$"""
         SELECT * FROM "{{InventoryPersistence.Schema}}"."outbox_messages"
         WHERE "ProcessedAt" IS NULL
           AND "NextAttemptAt" <= {0}
           AND "Attempts" < {1}
-        ORDER BY "Id"
+        ORDER BY "NextAttemptAt", "Id"
         LIMIT {2}
         FOR UPDATE SKIP LOCKED
         """;
@@ -55,40 +59,14 @@ internal sealed class OutboxDispatcher(
             _options.PollInterval,
             _options.MaxAttempts);
 
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            int claimed;
-
-            try
-            {
-                claimed = await DispatchBatchAsync(stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                // An exception escaping ExecuteAsync would stop delivery for the life of the process.
-                _logger.LogError(ex, "Outbox tick failed. Retrying after {PollInterval}.", _options.PollInterval);
-                claimed = 0;
-            }
-
-            // A full batch means more is probably waiting, so loop straight away.
-            if (claimed >= _options.BatchSize)
-            {
-                continue;
-            }
-
-            try
-            {
-                await Task.Delay(_options.PollInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
+        await PollingLoop.RunAsync(
+            DispatchBatchAsync,
+            _options.BatchSize,
+            _options.PollInterval,
+            _timeProvider,
+            _logger,
+            "Outbox tick",
+            stoppingToken).ConfigureAwait(false);
 
         _logger.LogInformation("Inventory outbox dispatcher stopped.");
     }
@@ -136,7 +114,7 @@ internal sealed class OutboxDispatcher(
                 break;
             }
 
-            await DeliverAsync(scope.ServiceProvider, message, cancellationToken).ConfigureAwait(false);
+            await DeliverAsync(message, cancellationToken).ConfigureAwait(false);
             delivered++;
         }
 
@@ -150,10 +128,11 @@ internal sealed class OutboxDispatcher(
     /// Hands one message to its handler under <see cref="OutboxOptions.DeliveryTimeout"/>.
     /// A handler that overruns fails like any other.
     /// </summary>
-    private async Task DeliverAsync(
-        IServiceProvider provider,
-        OutboxMessage message,
-        CancellationToken cancellationToken)
+    /// <remarks>
+    /// Each message gets its own scope. A shared one would carry a failed handler's state, such
+    /// as an insert still tracked by its context, into the next message's delivery.
+    /// </remarks>
+    private async Task DeliverAsync(OutboxMessage message, CancellationToken cancellationToken)
     {
         var utcNow = _timeProvider.GetUtcNow().UtcDateTime;
 
@@ -162,9 +141,11 @@ internal sealed class OutboxDispatcher(
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(_options.DeliveryTimeout);
 
+        await using var scope = _scopeFactory.CreateAsyncScope();
+
         try
         {
-            await _catalog.DispatchAsync(provider, message, deadline.Token).ConfigureAwait(false);
+            await _catalog.DispatchAsync(scope.ServiceProvider, message, deadline.Token).ConfigureAwait(false);
             message.MarkProcessed(utcNow);
 
             RecordDelivery(message, "Delivered");

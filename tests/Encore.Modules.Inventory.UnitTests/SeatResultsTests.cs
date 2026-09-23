@@ -87,7 +87,7 @@ public class SeatResultsTests
     [Fact]
     public void ForSell_WhenSold_ShouldBe200()
     {
-        var result = SeatResults.ForSell(SeatId, SellSeatResult.Sold, Path);
+        var result = SeatResults.ForSell(SeatId, SellSeatOutcome.Sold, Path);
 
         var ok = Assert.IsType<Ok<SeatActionResponse>>(result);
         Assert.Equal(StatusCodes.Status200OK, StatusOf(result));
@@ -106,7 +106,7 @@ public class SeatResultsTests
         int expectedStatus,
         string expectedReason)
     {
-        var result = SeatResults.ForSell(SeatId, new SellSeatResult(outcome), Path);
+        var result = SeatResults.ForSell(SeatId, outcome, Path);
 
         Assert.Equal(expectedStatus, StatusOf(result));
         Assert.Equal(expectedReason, ReasonOf(result));
@@ -117,7 +117,7 @@ public class SeatResultsTests
     [Fact]
     public void ForRelease_WhenReleased_ShouldBe200AndReportAvailable()
     {
-        var result = SeatResults.ForRelease(SeatId, ReleaseSeatResult.Released, Path);
+        var result = SeatResults.ForRelease(SeatId, ReleaseSeatOutcome.Released, Path);
 
         var ok = Assert.IsType<Ok<SeatActionResponse>>(result);
         Assert.Equal(StatusCodes.Status200OK, StatusOf(result));
@@ -135,7 +135,7 @@ public class SeatResultsTests
         int expectedStatus,
         string expectedReason)
     {
-        var result = SeatResults.ForRelease(SeatId, new ReleaseSeatResult(outcome), Path);
+        var result = SeatResults.ForRelease(SeatId, outcome, Path);
 
         Assert.Equal(expectedStatus, StatusOf(result));
         Assert.Equal(expectedReason, ReasonOf(result));
@@ -158,12 +158,12 @@ public class SeatResultsTests
 
         foreach (var outcome in Enum.GetValues<SellSeatOutcome>())
         {
-            Assert.InRange(StatusOf(SeatResults.ForSell(SeatId, new SellSeatResult(outcome), Path)), 200, 499);
+            Assert.InRange(StatusOf(SeatResults.ForSell(SeatId, outcome, Path)), 200, 499);
         }
 
         foreach (var outcome in Enum.GetValues<ReleaseSeatOutcome>())
         {
-            Assert.InRange(StatusOf(SeatResults.ForRelease(SeatId, new ReleaseSeatResult(outcome), Path)), 200, 499);
+            Assert.InRange(StatusOf(SeatResults.ForRelease(SeatId, outcome, Path)), 200, 499);
         }
     }
 }

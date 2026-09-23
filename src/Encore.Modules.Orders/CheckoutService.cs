@@ -23,9 +23,6 @@ public sealed class CheckoutService(
     IOrderPayments payments,
     TimeProvider clock)
 {
-    /// <summary>The unique index that is the real guard against a duplicate checkout.</summary>
-    private const string PendingCheckoutIndex = "ux_orders_client_event_pending";
-
     private readonly OrdersDbContext _orders = orders;
     private readonly IEventPricing _pricing = pricing;
     private readonly ISeatReservations _seats = seats;
@@ -82,18 +79,10 @@ public sealed class CheckoutService(
         }
 
         // A courtesy read; the partial unique index is the real guard.
-        var alreadyOpen = await _orders.Orders
-            .AsNoTracking()
-            .AnyAsync(
-                order => order.ClientId == clientId
-                    && order.EventId == eventId
-                    && order.Status == OrderStatus.Pending,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        if (alreadyOpen)
+        if (await OpenCheckoutAsync(clientId, eventId, cancellationToken).ConfigureAwait(false)
+            is { } openOrderId)
         {
-            return CheckoutResult.Refused(CheckoutOutcome.CheckoutAlreadyOpen);
+            return CheckoutResult.AlreadyOpen(openOrderId);
         }
 
         // Every seat is answered, so the client learns about all unavailable seats at once.
@@ -103,7 +92,6 @@ public sealed class CheckoutService(
 
         var refusals = holds.Seats
             .Where(seat => seat.Status is not HoldSeatStatus.Held)
-            .Select(seat => new SeatRefusal(seat.SeatId, seat.Status))
             .ToList();
 
         if (refusals.Count > 0)
@@ -149,11 +137,22 @@ public sealed class CheckoutService(
         catch (DbUpdateException ex) when (IsDuplicatePendingCheckout(ex))
         {
             // A concurrent checkout by the same client won; the index refused this one.
-            return CheckoutResult.Refused(CheckoutOutcome.CheckoutAlreadyOpen);
+            return CheckoutResult.AlreadyOpen(
+                await OpenCheckoutAsync(clientId, eventId, cancellationToken).ConfigureAwait(false));
         }
 
         return CheckoutResult.Created(order);
     }
+
+    /// <summary>The client's open checkout for this event, if there is one.</summary>
+    private Task<Guid?> OpenCheckoutAsync(Guid clientId, Guid eventId, CancellationToken cancellationToken) =>
+        _orders.Orders
+            .AsNoTracking()
+            .Where(order => order.ClientId == clientId
+                && order.EventId == eventId
+                && order.Status == OrderStatus.Pending)
+            .Select(order => (Guid?)order.Id)
+            .SingleOrDefaultAsync(cancellationToken);
 
     /// <summary>
     /// Authorises the total, sells the seats, then captures.
@@ -161,9 +160,14 @@ public sealed class CheckoutService(
     /// <remarks>
     /// All seats sold and captured is <see cref="OrderStatus.Confirmed"/>; sold but the
     /// capture unanswered is <see cref="OrderStatus.AwaitingCapture"/>, which the next
-    /// confirm resolves. Nothing sold ends <see cref="OrderStatus.Expired"/> or
-    /// <see cref="OrderStatus.Failed"/> and voids the authorisation. A decline or payment
-    /// timeout leaves the order <see cref="OrderStatus.Pending"/> with its holds intact.
+    /// confirm or the capture sweep resolves. The sale is recorded as awaiting capture before
+    /// the capture is asked for, so a confirm that dies there leaves a findable order. Nothing
+    /// sold ends <see cref="OrderStatus.Expired"/> or <see cref="OrderStatus.Failed"/> and
+    /// voids the authorisation. A decline or payment timeout leaves the order
+    /// <see cref="OrderStatus.Pending"/> with its holds intact.
+    /// Only the load honours <paramref name="cancellationToken"/>: every later step is
+    /// irreversible or undoes one, and a client hanging up between an authorisation and its
+    /// void would leave funds held that nothing releases.
     /// </remarks>
     public async Task<OrderActionResult> ConfirmAsync(
         Guid clientId,
@@ -186,7 +190,7 @@ public sealed class CheckoutService(
         // Seats already sold: only the capture is retried.
         if (order.Status is OrderStatus.AwaitingCapture)
         {
-            return await CaptureAsync(order, clientId, cancellationToken).ConfigureAwait(false);
+            return await CaptureAsync(order, clientId).ConfigureAwait(false);
         }
 
         if (order.Status is not OrderStatus.Pending)
@@ -197,44 +201,50 @@ public sealed class CheckoutService(
         var authorized = await _payments
             .AuthorizeAsync(
                 new AuthorizePaymentRequest(order.Id, clientId, order.Total, order.Currency),
-                cancellationToken)
+                CancellationToken.None)
             .ConfigureAwait(false);
 
-        switch (authorized.Status)
+        OrderActionOutcome? refusal = authorized.Status switch
         {
             // Funds held, now or by an earlier attempt.
-            case AuthorizePaymentStatus.Authorized:
-                break;
+            AuthorizePaymentStatus.Authorized => null,
 
             // An earlier confirm captured but did not record the order; carrying on heals it.
-            case AuthorizePaymentStatus.AlreadyCaptured:
-                break;
+            AuthorizePaymentStatus.AlreadyCaptured => null,
 
             // The order and its holds stay as they are, so the customer can try again.
-            case AuthorizePaymentStatus.Declined:
-                return new OrderActionResult(OrderActionOutcome.PaymentDeclined, order);
+            AuthorizePaymentStatus.Declined => OrderActionOutcome.PaymentDeclined,
+            AuthorizePaymentStatus.TimedOut => OrderActionOutcome.PaymentTimedOut,
+            AuthorizePaymentStatus.ConcurrentAttemptInFlight => OrderActionOutcome.LostRace
+        };
 
-            case AuthorizePaymentStatus.TimedOut:
-                return new OrderActionResult(OrderActionOutcome.PaymentTimedOut, order);
-
-            case AuthorizePaymentStatus.ConcurrentAttemptInFlight:
-                return new OrderActionResult(OrderActionOutcome.LostRace, order);
-
-            default:
-                throw new ArgumentOutOfRangeException(
-                    nameof(order), authorized.Status, "Unmapped authorize status.");
+        if (refusal is { } outcome)
+        {
+            return new OrderActionResult(outcome, order);
         }
 
         // Every seat or none, in one transaction.
         var sale = await _seats
             .SellAsync(
                 new SellSeatsRequest(order.EventId, [.. order.Lines.Select(line => line.SeatId)], clientId),
-                cancellationToken)
+                CancellationToken.None)
             .ConfigureAwait(false);
 
         if (sale.AllSold)
         {
-            return await CaptureAsync(order, clientId, cancellationToken).ConfigureAwait(false);
+            // Recorded before the capture is asked for: a confirm that dies now leaves an order
+            // anyone can see is owed its money, and the capture sweep finishes it (025).
+            order.Status = OrderStatus.AwaitingCapture;
+            order.HoldsExpireAt = null;
+            order.SoldAt = _clock.GetUtcNow().UtcDateTime;
+
+            if (!await TrySaveAsync().ConfigureAwait(false))
+            {
+                // A second confirm of this order recorded the sale first, and owns the capture.
+                return new OrderActionResult(OrderActionOutcome.LostRace, order);
+            }
+
+            return await CaptureAsync(order, clientId).ConfigureAwait(false);
         }
 
         // Nothing sold. Holds that are still live stay the client's and lapse on their own.
@@ -244,22 +254,20 @@ public sealed class CheckoutService(
 
         // Release the authorisation. Any answer is acceptable: an unanswered one lapses at the gateway.
         await _payments
-            .VoidAsync(new VoidPaymentRequest(order.Id, clientId), cancellationToken)
+            .VoidAsync(new VoidPaymentRequest(order.Id, clientId), CancellationToken.None)
             .ConfigureAwait(false);
 
-        return await CloseAsync(order, cancellationToken).ConfigureAwait(false);
+        return await CloseAsync(order).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Captures the money for an order whose seats are sold and records the ending.
+    /// Captures the money for an order whose seats are sold and records the ending. Not
+    /// cancellable: the seats are already sold.
     /// </summary>
-    private async Task<OrderActionResult> CaptureAsync(
-        Order order,
-        Guid clientId,
-        CancellationToken cancellationToken)
+    private async Task<OrderActionResult> CaptureAsync(Order order, Guid clientId)
     {
         var captured = await _payments
-            .CaptureAsync(new CapturePaymentRequest(order.Id, clientId), cancellationToken)
+            .CaptureAsync(new CapturePaymentRequest(order.Id, clientId), CancellationToken.None)
             .ConfigureAwait(false);
 
         order.Status = captured.Status switch
@@ -270,13 +278,10 @@ public sealed class CheckoutService(
             CapturePaymentStatus.TimedOut => OrderStatus.AwaitingCapture,
 
             // The authorisation vanished under this confirm; someone has to look.
-            CapturePaymentStatus.NoAuthorization => OrderStatus.Failed,
-
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(order), captured.Status, "Unmapped capture status.")
+            CapturePaymentStatus.NoAuthorization => OrderStatus.Failed
         };
 
-        return await CloseAsync(order, cancellationToken).ConfigureAwait(false);
+        return await CloseAsync(order).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -285,7 +290,9 @@ public sealed class CheckoutService(
     /// <remarks>
     /// Seats first: if any answers <see cref="ReleaseSeatStatus.SoldToYou"/>, a confirm of
     /// this order has already sold them and the money must stay, so this backs off. Only
-    /// when no sale can follow is the authorisation voided.
+    /// when no sale can follow is the authorisation voided. As with a confirm, only the load
+    /// honours <paramref name="cancellationToken"/>: released seats with the money still held
+    /// is the state a cancel exists to prevent.
     /// </remarks>
     public async Task<OrderActionResult> CancelAsync(
         Guid clientId,
@@ -312,17 +319,18 @@ public sealed class CheckoutService(
         var seats = await _seats
             .ReleaseAsync(
                 new ReleaseSeatsRequest(order.EventId, [.. order.Lines.Select(line => line.SeatId)], clientId),
-                cancellationToken)
+                CancellationToken.None)
             .ConfigureAwait(false);
 
         if (seats.Seats.Any(seat => seat.Status is ReleaseSeatStatus.SoldToYou))
         {
-            // This order's confirm has sold the seats. Report a lost race; a retry sees the result.
+            // A confirm of this order sold the seats and has not recorded it yet. Report a lost
+            // race: a retry finds the order awaiting capture or confirmed.
             return new OrderActionResult(OrderActionOutcome.LostRace, order);
         }
 
         var released = await _payments
-            .VoidAsync(new VoidPaymentRequest(order.Id, clientId), cancellationToken)
+            .VoidAsync(new VoidPaymentRequest(order.Id, clientId), CancellationToken.None)
             .ConfigureAwait(false);
 
         if (released.Status is VoidPaymentStatus.AlreadyCaptured)
@@ -333,7 +341,7 @@ public sealed class CheckoutService(
 
         order.Status = OrderStatus.Cancelled;
 
-        return await CloseAsync(order, cancellationToken).ConfigureAwait(false);
+        return await CloseAsync(order).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -350,7 +358,7 @@ public sealed class CheckoutService(
     /// Saves a decided order. Clears <see cref="Order.HoldsExpireAt"/>, and stamps
     /// <see cref="Order.ClosedAt"/> only for a real ending (not AwaitingCapture).
     /// </summary>
-    private async Task<OrderActionResult> CloseAsync(Order order, CancellationToken cancellationToken)
+    private async Task<OrderActionResult> CloseAsync(Order order)
     {
         if (order.Status is not OrderStatus.AwaitingCapture)
         {
@@ -359,17 +367,24 @@ public sealed class CheckoutService(
 
         order.HoldsExpireAt = null;
 
+        // False when a confirm and a cancel, or two confirms, raced on this row.
+        return await TrySaveAsync().ConfigureAwait(false)
+            ? new OrderActionResult(OrderActionOutcome.Completed, order)
+            : new OrderActionResult(OrderActionOutcome.LostRace, order);
+    }
+
+    /// <summary>Saves the order, or reports that another writer changed the row first.</summary>
+    private async Task<bool> TrySaveAsync()
+    {
         try
         {
-            await _orders.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await _orders.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
+            return true;
         }
         catch (DbUpdateConcurrencyException)
         {
-            // Confirm and cancel raced on this row.
-            return new OrderActionResult(OrderActionOutcome.LostRace, order);
+            return false;
         }
-
-        return new OrderActionResult(OrderActionOutcome.Completed, order);
     }
 
     /// <summary>
@@ -377,5 +392,5 @@ public sealed class CheckoutService(
     /// </summary>
     private static bool IsDuplicatePendingCheckout(DbUpdateException exception) =>
         exception.InnerException is PostgresException { SqlState: "23505" } postgres
-        && postgres.ConstraintName == PendingCheckoutIndex;
+        && postgres.ConstraintName == OrderConfiguration.PendingCheckoutIndex;
 }

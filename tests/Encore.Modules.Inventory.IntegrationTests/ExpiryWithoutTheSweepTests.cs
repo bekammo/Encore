@@ -74,7 +74,7 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
 
         var result = await SellAsync(seatId, _clientA);
 
-        Assert.Equal(SellSeatOutcome.HoldExpired, result.Outcome);
+        Assert.Equal(SellSeatOutcome.HoldExpired, result);
         Assert.Equal(SeatStatus.Held, (await LoadAsync(seatId)).Status);
     }
 
@@ -89,7 +89,7 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
 
         var result = await SellAsync(seatId, _clientB);
 
-        Assert.Equal(SellSeatOutcome.NotTheHolder, result.Outcome);
+        Assert.Equal(SellSeatOutcome.NotTheHolder, result);
         Assert.NotEqual(SeatStatus.Sold, (await LoadAsync(seatId)).Status);
     }
 
@@ -199,7 +199,7 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
         return await handler.HandleAsync(new HoldSeatCommand(_eventId, seatId, clientId));
     }
 
-    private async Task<SellSeatResult> SellAsync(Guid seatId, Guid clientId)
+    private async Task<SellSeatOutcome> SellAsync(Guid seatId, Guid clientId)
     {
         await using var context = new InventoryDbContext(_options);
 

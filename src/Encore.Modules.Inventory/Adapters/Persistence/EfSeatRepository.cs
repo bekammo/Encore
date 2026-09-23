@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Domain.Exceptions;
 using Encore.Modules.Inventory.Ports;
@@ -15,26 +16,9 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
     private readonly InventoryDbContext _context = context;
 
     /// <inheritdoc />
-    public async Task<Seat?> GetByIdAsync(Guid seatId, CancellationToken cancellationToken = default)
-    {
-        // Reload a tracked seat instead of returning EF's cached instance, or a retry
-        // after a lost race would re-attempt with the stale token.
-        var tracked = _context.ChangeTracker
-            .Entries<Seat>()
-            .FirstOrDefault(entry => entry.Entity.Id == seatId);
-
-        if (tracked is null)
-        {
-            return await _context.Seats
-                .SingleOrDefaultAsync(seat => seat.Id == seatId, cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        await tracked.ReloadAsync(cancellationToken).ConfigureAwait(false);
-
-        // Reload detaches the entry if the row is gone.
-        return tracked.State is EntityState.Detached ? null : tracked.Entity;
-    }
+    /// <remarks>A batch of one, so a stale seat is discarded exactly as a batch discards it.</remarks>
+    public async Task<Seat?> GetByIdAsync(Guid seatId, CancellationToken cancellationToken = default) =>
+        (await GetByIdsAsync([seatId], cancellationToken).ConfigureAwait(false)).SingleOrDefault();
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<Seat>> GetByIdsAsync(
@@ -42,20 +26,52 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
         CancellationToken cancellationToken = default)
     {
         // Detach and re-read in one query, discarding whatever a failed attempt changed.
-        var tracked = _context.ChangeTracker
-            .Entries<Seat>()
-            .Where(entry => seatIds.Contains(entry.Entity.Id))
-            .ToList();
-
-        foreach (var entry in tracked)
-        {
-            entry.State = EntityState.Detached;
-        }
+        Detach(seatIds);
 
         return await _context.Seats
             .Where(seat => seatIds.Contains(seat.Id))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<SeatsForHold> GetForHoldAsync(
+        IReadOnlyCollection<Guid> seatIds,
+        Guid clientId,
+        Guid eventId,
+        DateTime utcNow,
+        CancellationToken cancellationToken = default)
+    {
+        Detach(seatIds);
+
+        // Whatever this scope already tracks stays as it was; only what this read adds is let go.
+        var alreadyTracked = _context.ChangeTracker
+            .Entries<Seat>()
+            .Select(entry => entry.Entity.Id)
+            .ToHashSet();
+
+        var liveHold = LiveHoldOf(clientId, eventId, utcNow);
+
+        // One round trip, a UNION ALL: the requested seats by primary key, and the client's
+        // live holds by ix_seats_event_client_status. A seat can come back from both halves.
+        var rows = (await _context.Seats
+                .Where(seat => seatIds.Contains(seat.Id))
+                .Concat(_context.Seats.Where(liveHold))
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false))
+            .DistinctBy(seat => seat.Id)
+            .ToList();
+
+        var isLiveHold = liveHold.Compile();
+        var liveHolds = rows.Where(isLiveHold).Select(seat => seat.Id).ToList();
+
+        // The cap's other seats are only counted. Untracked, so no later save can write them.
+        foreach (var counted in rows.Where(seat => !seatIds.Contains(seat.Id) && !alreadyTracked.Contains(seat.Id)))
+        {
+            _context.Entry(counted).State = EntityState.Detached;
+        }
+
+        return new SeatsForHold([.. rows.Where(seat => seatIds.Contains(seat.Id))], liveHolds);
     }
 
     /// <inheritdoc />
@@ -89,23 +105,29 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
         }
     }
 
-    /// <inheritdoc />
-    public async Task<IReadOnlyCollection<Guid>> FindLiveHoldsAsync(
-        Guid clientId,
-        Guid eventId,
-        DateTime utcNow,
-        CancellationToken cancellationToken = default)
-        // Expiry is in the predicate, so a lapsed hold never counts. Uses ix_seats_event_client_status.
-        => await _context.Seats
-            .AsNoTracking()
-            .Where(seat =>
-                seat.EventId == eventId
-                && seat.HeldByClientId == clientId
-                && seat.Status == SeatStatus.Held
-                && seat.HoldExpiresAt > utcNow)
-            .Select(seat => seat.Id)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+    /// <summary>
+    /// A live hold by this client at this event, as the cap counts it. Expiry is in the
+    /// predicate, so a lapsed hold never counts. One definition, for the query and for memory.
+    /// </summary>
+    private static Expression<Func<Seat, bool>> LiveHoldOf(Guid clientId, Guid eventId, DateTime utcNow) =>
+        seat => seat.EventId == eventId
+            && seat.HeldByClientId == clientId
+            && seat.Status == SeatStatus.Held
+            && seat.HoldExpiresAt > utcNow;
+
+    /// <summary>Stops tracking these seats, so the next read gets them as the database has them.</summary>
+    private void Detach(IReadOnlyCollection<Guid> seatIds)
+    {
+        var tracked = _context.ChangeTracker
+            .Entries<Seat>()
+            .Where(entry => seatIds.Contains(entry.Entity.Id))
+            .ToList();
+
+        foreach (var entry in tracked)
+        {
+            entry.State = EntityState.Detached;
+        }
+    }
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<Guid>> FindExpiredHoldsAsync(

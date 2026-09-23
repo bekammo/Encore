@@ -33,8 +33,33 @@ public static class OrdersModule
         }
 
         AddPaymentsClient(services, configuration);
+        AddCaptureSweep(services, configuration);
 
         return services;
+    }
+
+    /// <summary>
+    /// Registers the sweep that finishes orders still owed their capture (025).
+    /// </summary>
+    private static void AddCaptureSweep(IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(CaptureSweepOptions.SectionName);
+
+        services.AddOptions<CaptureSweepOptions>()
+            .Bind(section)
+            .Validate(
+                sweep => sweep.BatchSize > 0
+                    && sweep.PollInterval > TimeSpan.Zero
+                    && sweep.MinimumAge >= TimeSpan.Zero,
+                $"{CaptureSweepOptions.SectionName}: BatchSize and PollInterval must be positive, and MinimumAge not negative.")
+            .ValidateOnStart();
+
+        var options = section.Get<CaptureSweepOptions>() ?? new CaptureSweepOptions();
+
+        if (options.Enabled)
+        {
+            services.AddHostedService<CaptureSweeper>();
+        }
     }
 
     /// <summary>
@@ -60,16 +85,22 @@ public static class OrdersModule
         var timeout = configuration.GetValue<TimeSpan?>("Orders:Payments:Timeout")
             ?? TimeSpan.FromSeconds(10);
 
-        services.AddHttpClient<HttpOrderPayments>(client =>
-        {
-            // Trailing slash, or relative paths would drop the last segment.
-            client.BaseAddress = new Uri(
-                baseAddress.EndsWith('/') ? baseAddress : baseAddress + "/",
-                UriKind.Absolute);
+        // A request that never connected never reached the gateway, so waiting out the whole
+        // timeout for it tells nothing more. With the service down, every confirm did.
+        var connectTimeout = configuration.GetValue<TimeSpan?>("Orders:Payments:ConnectTimeout")
+            ?? TimeSpan.FromSeconds(1);
 
-            client.DefaultRequestHeaders.Add(PaymentsServiceApi.ServiceTokenHeader, token);
-            client.Timeout = timeout;
-        });
+        services.AddHttpClient<HttpOrderPayments>(client =>
+            {
+                // Trailing slash, or relative paths would drop the last segment.
+                client.BaseAddress = new Uri(
+                    baseAddress.EndsWith('/') ? baseAddress : baseAddress + "/",
+                    UriKind.Absolute);
+
+                client.DefaultRequestHeaders.Add(PaymentsServiceApi.ServiceTokenHeader, token);
+                client.Timeout = timeout;
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { ConnectTimeout = connectTimeout });
 
         services.Replace(
             ServiceDescriptor.Scoped<IOrderPayments>(provider =>

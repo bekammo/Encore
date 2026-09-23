@@ -3,7 +3,7 @@
   "info": {
     "title": "Encore",
     "version": "0.1.0",
-    "description": "Event ticketing, as a modular monolith. Five modules, and since the Payments extraction two hosts: Encore.Api serves everything here except the three /internal/payments routes, which only Encore.Payments.Api maps. Paths that carry their own `servers` entry are the ones the host serving this page does not answer.\n\n**Actions, not resources.** The seat routes are `/hold`, `/release` and `/purchase` rather than a `/holds` collection: a hold is not an entity, it is two fields on the seat row, so it gets no URI of its own. All three are idempotent, which is what makes retrying a POST safe.\n\n**Branch on `reason`, not on status.** Every refusal about the state of the world is `409` with a machine-readable `reason` and a `retriable` flag. Only an addressed thing that is not there is `404`. A request that is wrong on its own terms is `400`. The statuses carry the class of failure; `reason` carries which one.\n\n**`X-Client-Id` is a claimed identity, not authentication.** Anyone can change it and reset their own hold cap. It stands in for the Identity module, which does not exist yet, which is also why no route returns 401 or 403.\n\nThis document is hand-maintained and was verified against a running instance. `Encore.Api` holds zero NuGet packages by design, so nothing generates this from endpoint metadata; a test fails when it and the mapped routes disagree."
+    "description": "Event ticketing, as a modular monolith. Five modules, and since the Payments extraction two hosts: Encore.Api serves everything here except the three /internal/payments routes, which only Encore.Payments.Api maps. Paths that carry their own `servers` entry are the ones the host serving this page does not answer.\n\n**Actions, not resources.** The seat routes are `/hold`, `/release` and `/purchase` rather than a `/holds` collection: a hold is not an entity, it is two fields on the seat row, so it gets no URI of its own. All three are idempotent, which is what makes retrying a POST safe.\n\n**Branch on `reason`, not on status.** Every refusal about the state of the world is `409` with a machine-readable `reason` and a `retriable` flag. Only an addressed thing that is not there is `404`. A request that is wrong on its own terms is `400`. The statuses carry the class of failure; `reason` carries which one.\n\n**`X-Client-Id` is a claimed identity, not authentication.** Anyone can change it and reset their own hold cap. It stands in for the Identity module, which does not exist yet, which is also why no customer route returns 401 or 403. Only the three /internal/payments routes answer 401, when the service token is wrong.\n\nThis document is hand-maintained. `Encore.Api` holds zero NuGet packages by design, so nothing generates this from endpoint metadata. Tests fail when it and the mapped routes disagree, and when a documented status enum and the enum behind it disagree."
   },
   "servers": [
     { "url": "/", "description": "Whichever instance served this page — 5107 from dotnet run, 8080 from the container." }
@@ -61,8 +61,22 @@
           "detail": { "type": "string" },
           "instance": { "type": "string" },
           "reason": { "type": "string", "description": "Machine-readable refusal code. Branch on this." },
-          "retriable": { "type": "boolean", "description": "Whether the identical request could plausibly succeed later." },
+          "retriable": { "type": "boolean", "description": "Whether trying again could succeed: later, or after a new hold or a different card." },
           "limit": { "type": "integer", "description": "Present on hold_cap_reached and too_many_seats." },
+          "orderId": { "type": ["string", "null"], "format": "uuid", "description": "Present on checkout_already_open: the open checkout, so a client whose 201 was lost can confirm or cancel it. Null only if it closed in between." },
+          "seats": {
+            "type": "array",
+            "description": "Present on seats_unavailable: every seat that could not be held.",
+            "items": {
+              "type": "object",
+              "required": ["seatId", "reason", "retriable"],
+              "properties": {
+                "seatId": { "type": "string", "format": "uuid" },
+                "reason": { "type": "string", "description": "already_held, already_sold, seat_not_found, hold_cap_reached, concurrent_request_in_flight or lost_race." },
+                "retriable": { "type": "boolean" }
+              }
+            }
+          },
           "traceId": { "type": "string" }
         },
         "required": ["type", "title", "status"]
@@ -93,7 +107,7 @@
           "name": { "type": "string", "maxLength": 200 },
           "startsAt": { "type": "string", "format": "date-time", "description": "Must carry a timezone. Stored and returned as UTC." },
           "onSaleAt": { "type": ["string", "null"], "format": "date-time", "description": "When tickets become orderable. Null means immediately. Must carry a timezone when supplied." },
-          "price": { "type": "number", "description": "What one seat costs." },
+          "price": { "type": "number", "minimum": 0, "exclusiveMaximum": 1000000000000000, "description": "What one seat costs. At most 4 decimal places; more is refused, not rounded." },
           "currency": { "type": "string", "description": "ISO 4217 code.", "example": "GBP" }
         }
       },
@@ -158,7 +172,7 @@
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "eventId": { "type": "string", "format": "uuid" },
-          "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled", "expired", "failed", "awaiting_capture"], "description": "awaiting_capture is non-terminal and is resolved by the next confirm rather than by a background job." },
+          "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled", "expired", "failed", "awaiting_capture"], "description": "awaiting_capture is non-terminal: every seat is sold and the capture is owed. The next confirm resolves it, and so does the capture sweep, within a minute or two." },
           "placedAt": { "type": "string", "format": "date-time" },
           "holdsExpireAt": { "type": ["string", "null"], "format": "date-time", "description": "Null once the order closes." },
           "closedAt": { "type": ["string", "null"], "format": "date-time" },
@@ -172,7 +186,7 @@
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "orderId": { "type": "string", "format": "uuid" },
-          "status": { "type": "string", "enum": ["pending", "authorized", "captured", "declined", "timed_out", "voided"] },
+          "status": { "type": "string", "enum": ["pending", "authorized", "captured", "declined", "timed_out", "voided", "abandoned"], "description": "abandoned: the reconciler found no record at the gateway, so the attempt never arrived and the order may be paid for again." },
           "amount": { "type": "number" },
           "currency": { "type": "string" },
           "gatewayReference": { "type": ["string", "null"] },
@@ -355,7 +369,7 @@
       "post": {
         "tags": ["inventory"],
         "summary": "Creates an event's seats and returns their ids.",
-        "description": "Operator-facing, and the only seat route with no client identity: creating a seat map is not something a customer does. Returns 201 with no Location header, because there is no GET for a seat map and a Location pointing at nothing is worse than none.",
+        "description": "Operator-facing, and the only seat route with no client identity: creating a seat map is not something a customer does. Returns 201 with no Location header, because there is no GET for a seat map and a Location pointing at nothing is worse than none. Not safe to retry, unlike the seat actions: each call adds a fresh set of seats.",
         "parameters": [{ "$ref": "#/components/parameters/EventId" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateSeatMapRequest" } } } },
         "responses": {
@@ -423,7 +437,7 @@
           "201": { "description": "Order opened, every seat held.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderResponse" } } } },
           "400": { "description": "Missing or malformed X-Client-Id, or reason: no_seats, too_many_seats (carries `limit`), duplicate_seat.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
           "409": {
-            "description": "reason: event_not_found, not_on_sale, checkout_already_open, seats_unavailable (carries `seats`), already_held, already_sold, hold_cap_reached, concurrent_request_in_flight, lost_race.",
+            "description": "reason: event_not_found, not_on_sale, checkout_already_open (carries `orderId`), seats_unavailable (carries `seats`, each with its own reason: already_held, already_sold, seat_not_found, hold_cap_reached, concurrent_request_in_flight or lost_race).",
             "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
           }
         }
@@ -447,7 +461,7 @@
       "post": {
         "tags": ["orders"],
         "summary": "Authorises the total, sells the seats, then captures.",
-        "description": "In that order, because a sold seat is terminal and money is the one of the two that can be given back. Any path that does not end in every seat sold voids the authorisation, so a customer is never charged for an order they did not get. A gateway timeout leaves the order awaiting_capture, which the next confirm resolves.",
+        "description": "In that order, because a sold seat is terminal and money is the one of the two that can be given back. Any path that does not end in every seat sold voids the authorisation, so a customer is never charged for an order they did not get. The sale is recorded as awaiting_capture before the capture is asked for; a capture that gets no answer leaves it there, and the next confirm or the capture sweep resolves it.",
         "security": [{ "ClientId": [] }],
         "parameters": [{ "$ref": "#/components/parameters/OrderId" }],
         "responses": {
@@ -455,7 +469,7 @@
           "400": { "$ref": "#/components/responses/BadClientId" },
           "404": { "description": "reason: order_not_found.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
           "409": {
-            "description": "reason: order_not_pending, holds_expired, payment_declined, payment_timed_out, seats_unavailable, order_failed, lost_race (retriable).",
+            "description": "reason: order_not_pending, holds_expired, payment_declined (retriable), payment_timed_out (retriable), order_failed, lost_race (retriable).",
             "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
           }
         }
@@ -465,7 +479,7 @@
       "post": {
         "tags": ["orders"],
         "summary": "Ends the order because the customer said so, releasing the seats.",
-        "description": "The seats go back first and the money second. If a confirm of the same order has already sold the seats, nothing is voided and the answer is lost_race: the retry finds the order confirmed.",
+        "description": "The seats go back first and the money second. If a confirm of the same order has already sold the seats, nothing is released or voided: the answer is order_not_pending once that confirm has recorded the sale, or lost_race in the moment before it does, and the retry finds the order awaiting capture or confirmed.",
         "security": [{ "ClientId": [] }],
         "parameters": [{ "$ref": "#/components/parameters/OrderId" }],
         "responses": {

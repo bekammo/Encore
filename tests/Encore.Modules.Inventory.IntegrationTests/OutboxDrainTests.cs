@@ -79,9 +79,6 @@ public sealed class OutboxDrainTests : IAsyncLifetime
         Assert.Equal(utcNow + Seat.HoldDuration, payload.HoldExpiresAt);
     }
 
-    /// <summary>
-    /// A reclaim writes SeatReleased before SeatHeld, with adjacent ids from one save.
-    /// </summary>
     /// <summary>A save inside a traced operation records that trace, so delivery can link back to it.</summary>
     [Fact]
     public async Task Hold_InsideATracedOperation_ShouldRecordItsTraceParent()
@@ -108,6 +105,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
         Assert.Null(Assert.Single(await MessagesForAsync(seatId)).TraceParent);
     }
 
+    /// <summary>A reclaim writes SeatReleased before SeatHeld, with adjacent ids from one save.</summary>
     [Fact]
     public async Task Hold_WhenReclaimingALapsedHold_ShouldWriteReleasedBeforeHeld()
     {
@@ -250,9 +248,8 @@ public sealed class OutboxDrainTests : IAsyncLifetime
         stale!.Hold(clientId, utcNow);
         await Assert.ThrowsAsync<ConcurrentSeatModificationException>(() => seats.SaveAsync(stale));
 
-        // The retry, as a handler performs it: reload, scrub, try again.
-        var reloaded = await seats.GetByIdAsync(seatId);
-        reloaded!.ClearDomainEvents();
+        // The retry, as a handler performs it: a batch load discards the stale seat and its events.
+        var reloaded = Assert.Single(await seats.GetByIdsAsync([seatId]));
         reloaded.Hold(clientId, utcNow);
         await seats.SaveAsync(reloaded);
 

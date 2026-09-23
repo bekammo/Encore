@@ -1,4 +1,6 @@
+using Encore.Modules.Payments.Data;
 using Encore.Modules.Payments.Models;
+using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Payments.UnitTests;
 
@@ -280,6 +282,46 @@ public class PaymentTests
         Assert.Equal(PaymentTransitionReason.NotTimedOut, ex.Reason);
     }
 
+    // -- Resume -----------------------------------------------------------
+
+    /// <summary>
+    /// An attempt recorded but never answered is asked about again under the same key, and
+    /// restamped, so the reconciler does not mistake it for one abandoned by a crash.
+    /// </summary>
+    [Fact]
+    public void Resume_WhenPending_ShouldRestampTheAttemptAndKeepTheKey()
+    {
+        var payment = Pending();
+
+        payment.Resume(Later);
+
+        Assert.Equal(PaymentStatus.Pending, payment.Status);
+        Assert.Equal(Later, payment.AttemptedAt);
+        Assert.Equal(Key, payment.IdempotencyKey);
+        Assert.Null(payment.ResolvedAt);
+    }
+
+    [Theory]
+    [InlineData(PaymentStatus.Authorized)]
+    [InlineData(PaymentStatus.Captured)]
+    [InlineData(PaymentStatus.Declined)]
+    [InlineData(PaymentStatus.TimedOut)]
+    [InlineData(PaymentStatus.Voided)]
+    [InlineData(PaymentStatus.Abandoned)]
+    public void Resume_WhenNotPending_ShouldRefuse(PaymentStatus status)
+    {
+        var payment = InStatus(status);
+
+        var ex = Assert.Throws<PaymentTransitionException>(() => payment.Resume(Later));
+
+        Assert.Equal(PaymentTransitionReason.NotPending, ex.Reason);
+    }
+
+    [Fact]
+    public void Resume_WhenTimeIsNotUtc_ShouldThrow() =>
+        Assert.Throws<ArgumentException>(
+            () => Pending().Resume(DateTime.SpecifyKind(Later, DateTimeKind.Local)));
+
     // -- Reconciliation ---------------------------------------------------
 
     /// <summary>
@@ -505,7 +547,7 @@ public class PaymentTests
 
     // -- Liveness ---------------------------------------------------------
 
-    /// <summary>The live statuses match the SQL filter of the partial unique index.</summary>
+    /// <summary>Live means "might hold or have taken money": a timeout counts, a refusal does not.</summary>
     [Theory]
     [InlineData(PaymentStatus.Pending, true)]
     [InlineData(PaymentStatus.Authorized, true)]
@@ -514,8 +556,30 @@ public class PaymentTests
     [InlineData(PaymentStatus.Declined, false)]
     [InlineData(PaymentStatus.Voided, false)]
     [InlineData(PaymentStatus.Abandoned, false)]
-    public void IsLive_ShouldMatchTheIndexFilter(PaymentStatus status, bool expected) =>
+    public void IsLive_ShouldHoldForEveryStatusThatMightHoldMoney(PaymentStatus status, bool expected) =>
         Assert.Equal(expected, InStatus(status).IsLive);
+
+    /// <summary>
+    /// The unique index, not the read before it, is the guard against a double charge, so its
+    /// filter must name exactly the statuses <see cref="Payment.IsLive"/> counts. This reads the
+    /// filter from the model; <c>MigrateAsync</c> then refuses a model the migrations disagree with.
+    /// </summary>
+    [Fact]
+    public void TheLiveAttemptIndex_ShouldFilterOnExactlyTheLiveStatuses()
+    {
+        using var context = new PaymentsDbContext(
+            new DbContextOptionsBuilder<PaymentsDbContext>().UsePaymentsNpgsql("Host=unused").Options);
+
+        var index = context.Model.FindEntityType(typeof(Payment))!
+            .GetIndexes()
+            .Single(candidate => candidate.GetDatabaseName() == "ux_payments_order_live");
+
+        var live = Enum.GetValues<PaymentStatus>()
+            .Where(status => InStatus(status).IsLive)
+            .Select(status => (int)status);
+
+        Assert.Equal($"\"Status\" IN ({string.Join(", ", live)})", index.GetFilter());
+    }
 
     // -- Identity ---------------------------------------------------------
 

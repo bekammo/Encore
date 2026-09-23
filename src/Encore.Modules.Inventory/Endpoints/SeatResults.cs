@@ -40,14 +40,12 @@ internal static class SeatResults
                 path,
                 "concurrent_request_in_flight",
                 "Another hold request from you for this event is still in flight.",
-                retriable: true),
-
-            _ => throw new ArgumentOutOfRangeException(nameof(result), result.Outcome, "Unmapped hold outcome.")
+                retriable: true)
         };
 
     /// <summary>Maps the outcome of a sale.</summary>
-    public static IResult ForSell(Guid seatId, SellSeatResult result, PathString path) =>
-        result.Outcome switch
+    public static IResult ForSell(Guid seatId, SellSeatOutcome outcome, PathString path) =>
+        outcome switch
         {
             SellSeatOutcome.Sold => TypedResults.Ok(new SeatActionResponse(seatId, "sold")),
 
@@ -66,14 +64,12 @@ internal static class SeatResults
                 path, "no_active_hold", "This seat is not held. Hold it before buying it.", retriable: true),
 
             SellSeatOutcome.LostRace => Conflict(
-                path, "lost_race", "The seat changed while your request was in flight.", retriable: true),
-
-            _ => throw new ArgumentOutOfRangeException(nameof(result), result.Outcome, "Unmapped sell outcome.")
+                path, "lost_race", "The seat changed while your request was in flight.", retriable: true)
         };
 
     /// <summary>Maps the outcome of a release.</summary>
-    public static IResult ForRelease(Guid seatId, ReleaseSeatResult result, PathString path) =>
-        result.Outcome switch
+    public static IResult ForRelease(Guid seatId, ReleaseSeatOutcome outcome, PathString path) =>
+        outcome switch
         {
             ReleaseSeatOutcome.Released => TypedResults.Ok(new SeatActionResponse(seatId, "available")),
 
@@ -89,9 +85,7 @@ internal static class SeatResults
                 path, "not_the_holder", "You are not holding this seat.", retriable: false),
 
             ReleaseSeatOutcome.LostRace => Conflict(
-                path, "lost_race", "The seat changed while your request was in flight.", retriable: true),
-
-            _ => throw new ArgumentOutOfRangeException(nameof(result), result.Outcome, "Unmapped release outcome.")
+                path, "lost_race", "The seat changed while your request was in flight.", retriable: true)
         };
 
     /// <summary>
@@ -116,7 +110,7 @@ internal static class SeatResults
         {
             ["reason"] = reason,
 
-            // Whether repeating the identical request could succeed.
+            // Whether trying again could succeed: later, or after a new hold or a different card.
             ["retriable"] = retriable
         };
 

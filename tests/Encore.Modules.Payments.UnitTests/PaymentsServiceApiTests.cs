@@ -3,18 +3,13 @@ using Encore.Modules.Payments.Contracts;
 namespace Encore.Modules.Payments.UnitTests;
 
 /// <summary>
-/// The strings client and server must spell identically. The server's route prefix is a
-/// literal (so the OpenAPI drift test can read it), so this ties it to the client's constant.
+/// The service token's header name. Client and filter share the constant, so this is not about
+/// them agreeing: the hand-written OpenAPI document spells the name again, and a Payments
+/// service deployed on its own reads what is on the wire.
 /// </summary>
 public class PaymentsServiceApiTests
 {
-    /// <summary>The mounted prefix matches the constant, or every service call 404s.</summary>
     [Fact]
-    public void ThePrefixShouldBeWhatTheEndpointsMountOn() =>
-        Assert.Equal("/internal/payments", PaymentsServiceApi.Prefix);
-
-    /// <summary>The header name matches, or every call is a confusing 401.</summary>
-    [Fact]
-    public void TheServiceTokenHeaderShouldBeWhatTheFilterReads() =>
+    public void TheServiceTokenHeaderShouldKeepItsWireName() =>
         Assert.Equal("X-Service-Token", PaymentsServiceApi.ServiceTokenHeader);
 }

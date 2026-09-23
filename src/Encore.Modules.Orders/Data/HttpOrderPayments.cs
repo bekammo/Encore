@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Encore.Modules.Payments.Contracts;
+using Outcomes = Encore.Modules.Payments.Contracts.PaymentsServiceApi.Outcomes;
 
 namespace Encore.Modules.Orders.Data;
 
@@ -21,24 +22,15 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var outcome = await SendAsync(
-            "authorize",
-            new
-            {
-                orderId = request.OrderId,
-                clientId = request.ClientId,
-                amount = request.Amount,
-                currency = request.Currency
-            },
-            cancellationToken).ConfigureAwait(false);
+        var outcome = await SendAsync("authorize", request, cancellationToken).ConfigureAwait(false);
 
         return outcome.Reason switch
         {
-            "authorized" => AuthorizePaymentResponse.Authorized(outcome.RequirePaymentId()),
-            "already_captured" => AuthorizePaymentResponse.AlreadyCaptured(outcome.RequirePaymentId()),
-            "declined" => AuthorizePaymentResponse.Declined(outcome.RequirePaymentId()),
-            "timed_out" => AuthorizePaymentResponse.TimedOut(outcome.RequirePaymentId()),
-            "concurrent_attempt_in_flight" => AuthorizePaymentResponse.ConcurrentAttemptInFlight,
+            Outcomes.Authorized => AuthorizePaymentResponse.Authorized(outcome.RequirePaymentId()),
+            Outcomes.AlreadyCaptured => AuthorizePaymentResponse.AlreadyCaptured(outcome.RequirePaymentId()),
+            Outcomes.Declined => AuthorizePaymentResponse.Declined(outcome.RequirePaymentId()),
+            Outcomes.TimedOut => AuthorizePaymentResponse.TimedOut(outcome.RequirePaymentId()),
+            Outcomes.ConcurrentAttemptInFlight => AuthorizePaymentResponse.ConcurrentAttemptInFlight,
 
             // Unreadable or missing: a timeout is the one status already handled safely
             // for "the money may or may not be held". The id is unknown, hence Guid.Empty.
@@ -53,15 +45,12 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var outcome = await SendAsync(
-            "capture",
-            new { orderId = request.OrderId, clientId = request.ClientId },
-            cancellationToken).ConfigureAwait(false);
+        var outcome = await SendAsync("capture", request, cancellationToken).ConfigureAwait(false);
 
         return outcome.Reason switch
         {
-            "captured" => CapturePaymentResponse.Captured(outcome.RequirePaymentId()),
-            "no_authorization" => CapturePaymentResponse.NoAuthorization,
+            Outcomes.Captured => CapturePaymentResponse.Captured(outcome.RequirePaymentId()),
+            Outcomes.NoAuthorization => CapturePaymentResponse.NoAuthorization,
 
             // Unknown is a timeout: the order becomes AwaitingCapture and the next confirm resolves it.
             _ => CapturePaymentResponse.TimedOut(outcome.PaymentId ?? Guid.Empty)
@@ -75,16 +64,13 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var outcome = await SendAsync(
-            "void",
-            new { orderId = request.OrderId, clientId = request.ClientId },
-            cancellationToken).ConfigureAwait(false);
+        var outcome = await SendAsync("void", request, cancellationToken).ConfigureAwait(false);
 
         return outcome.Reason switch
         {
-            "voided" => VoidPaymentResponse.Voided(outcome.RequirePaymentId()),
-            "no_authorization" => VoidPaymentResponse.NoAuthorization,
-            "already_captured" => VoidPaymentResponse.AlreadyCaptured(outcome.RequirePaymentId()),
+            Outcomes.Voided => VoidPaymentResponse.Voided(outcome.RequirePaymentId()),
+            Outcomes.NoAuthorization => VoidPaymentResponse.NoAuthorization,
+            Outcomes.AlreadyCaptured => VoidPaymentResponse.AlreadyCaptured(outcome.RequirePaymentId()),
             _ => VoidPaymentResponse.TimedOut(outcome.PaymentId ?? Guid.Empty)
         };
     }
@@ -93,9 +79,9 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
     /// One round trip, reduced to the outcome and the attempt id. Network faults become
     /// "no answer" instead of a 500; cancellation by the caller is not swallowed.
     /// </summary>
-    private async Task<Outcome> SendAsync(
+    private async Task<Outcome> SendAsync<TRequest>(
         string operation,
-        object body,
+        TRequest body,
         CancellationToken cancellationToken)
     {
         try
@@ -131,7 +117,6 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
         }
     }
 
-    /// <summary>
     /// <summary>The outcome or refusal reason, and the attempt it is about.</summary>
     private readonly record struct Outcome(string? Reason, Guid? PaymentId)
     {

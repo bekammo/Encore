@@ -292,9 +292,140 @@ public sealed class PaymentReconcilerTests : IAsyncLifetime
         Assert.Equal(PaymentStatus.Abandoned, (await ReadAsync(orderId)).Status);
     }
 
+    /// <summary>
+    /// A confirm that retries the attempt while the sweep is between its lookup and its void
+    /// waits for the row, then loses. It never revives an authorisation the sweep is
+    /// releasing, and the next confirm pays under a fresh key.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_WhenAConfirmRetriesMidSweep_ShouldHoldItOffUntilTheFundsAreReleased()
+    {
+        var (orderId, clientId) = NewOrder();
+        var gateway = Gateway(lostRequestRate: 0);
+
+        await AuthorizeAsync(gateway, orderId, clientId);
+
+        // Slow enough that the retry below lands inside the sweep's lookup.
+        gateway.Options.TimeoutRate = 0;
+        gateway.Options.MinLatency = gateway.Options.MaxLatency = TimeSpan.FromSeconds(1);
+        await using var host = Host(gateway);
+
+        var sweep = host.Reconciler.ReconcileBatchAsync(CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
+
+        var retried = await AuthorizeAsync(gateway, orderId, clientId);
+
+        Assert.Equal(1, await sweep);
+        Assert.Equal(AuthorizePaymentStatus.ConcurrentAttemptInFlight, retried.Status);
+        Assert.Equal(PaymentStatus.Voided, (await ReadAsync(orderId)).Status);
+
+        gateway.Options.MinLatency = gateway.Options.MaxLatency = TimeSpan.Zero;
+        var fresh = await AuthorizeAsync(gateway, orderId, clientId);
+
+        Assert.Equal(AuthorizePaymentStatus.Authorized, fresh.Status);
+        Assert.Equal(2, (await ReadAllAsync(orderId)).Select(attempt => attempt.IdempotencyKey).Distinct().Count());
+    }
+
+    /// <summary>
+    /// A crash between the gateway call and its save leaves the attempt pending. If the
+    /// gateway did decide it, the funds are found and released like any timed-out attempt.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_WhenACrashLeftAnAttemptPending_ShouldReleaseWhatTheGatewayHeld()
+    {
+        var (orderId, clientId) = NewOrder();
+        var gateway = Gateway(lostRequestRate: 0);
+
+        await CrashedAttemptAsync(gateway, orderId, clientId, landed: true);
+
+        gateway.Options.TimeoutRate = 0;
+        await using var host = Host(gateway);
+
+        Assert.Equal(1, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+
+        var payment = await ReadAsync(orderId);
+        Assert.Equal(PaymentStatus.Voided, payment.Status);
+        Assert.NotNull(payment.GatewayReference);
+        Assert.False(payment.IsLive);
+    }
+
+    /// <summary>A crashed attempt the gateway never saw frees the order's live slot.</summary>
+    [Fact]
+    public async Task Reconcile_WhenACrashLeftAnAttemptPendingThatNeverArrived_ShouldAbandonIt()
+    {
+        var (orderId, clientId) = NewOrder();
+        var gateway = Gateway();
+
+        await CrashedAttemptAsync(gateway, orderId, clientId, landed: false);
+
+        gateway.Options.TimeoutRate = 0;
+        await using var host = Host(gateway);
+
+        Assert.Equal(1, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(PaymentStatus.Abandoned, (await ReadAsync(orderId)).Status);
+    }
+
+    /// <summary>
+    /// A crashed attempt whose lookup gets no answer is still claimed as timed out, so it is
+    /// counted and asked about again.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_WhenACrashedAttemptsLookupGetsNoAnswer_ShouldRecordItAsTimedOut()
+    {
+        var (orderId, clientId) = NewOrder();
+        var gateway = Gateway();
+
+        await CrashedAttemptAsync(gateway, orderId, clientId, landed: false);
+
+        await using var host = Host(gateway);
+
+        Assert.Equal(0, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+
+        var payment = await ReadAsync(orderId);
+        Assert.Equal(PaymentStatus.TimedOut, payment.Status);
+        Assert.Equal(Afterwards, payment.ResolvedAt);
+    }
+
+    /// <summary>A pending attempt younger than MinimumAge may still be in flight, so it is left alone.</summary>
+    [Fact]
+    public async Task Reconcile_WhenAPendingAttemptIsRecent_ShouldLeaveItToItsConfirm()
+    {
+        var (orderId, clientId) = NewOrder();
+        var gateway = Gateway();
+
+        await CrashedAttemptAsync(gateway, orderId, clientId, landed: false);
+
+        gateway.Options.TimeoutRate = 0;
+        await using var host = Host(gateway, at: T0.AddMinutes(1));
+
+        Assert.Equal(0, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(PaymentStatus.Pending, (await ReadAsync(orderId)).Status);
+    }
+
     // -- Scaffolding ------------------------------------------------------
 
     private static (Guid OrderId, Guid ClientId) NewOrder() => (Guid.NewGuid(), Guid.NewGuid());
+
+    /// <summary>
+    /// An attempt as a crash leaves it: recorded pending at <see cref="T0"/> and never answered.
+    /// When <paramref name="landed"/>, the gateway did receive it and decided.
+    /// </summary>
+    private async Task CrashedAttemptAsync(TestGateway gateway, Guid orderId, Guid clientId, bool landed)
+    {
+        var paymentId = Guid.NewGuid();
+        var key = $"order-{orderId:N}-{paymentId:N}";
+
+        await using (var context = new PaymentsDbContext(_options))
+        {
+            context.Payments.Add(Payment.Create(paymentId, orderId, clientId, Amount, Currency, key, T0));
+            await context.SaveChangesAsync();
+        }
+
+        if (landed)
+        {
+            await gateway.Gateway.AuthorizeAsync(key, Amount, Currency);
+        }
+    }
 
     /// <summary>A gateway that hangs up on every call, with its options so a test can change that.</summary>
     private TestGateway Gateway(double declineRate = 0, double lostRequestRate = 0.5)

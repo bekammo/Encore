@@ -1,4 +1,3 @@
-using Encore.Modules.Payments.Models;
 using Encore.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -6,7 +5,7 @@ using Microsoft.Extensions.Options;
 namespace Encore.Modules.Payments.Data;
 
 /// <summary>
-/// Payments' readiness: can it reach its database, and how many timed-out attempts are
+/// Payments' readiness: can it reach its database, and how many unanswered attempts are
 /// older than the reconciler's minimum age. That count is reported, not failed on.
 /// </summary>
 internal sealed class PaymentsReadinessCheck(
@@ -29,12 +28,12 @@ internal sealed class PaymentsReadinessCheck(
         try
         {
             var overdue = await _context.Payments
-                .Where(payment => payment.Status == PaymentStatus.TimedOut && payment.ResolvedAt <= cutoff)
+                .Where(PaymentReconciler.Overdue(cutoff))
                 .CountAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             return ReadinessResult.Ok(
-                $"reconciliation: {overdue} timed-out attempts older than {_reconciliation.MinimumAge}");
+                $"reconciliation: {overdue} unanswered attempts older than {_reconciliation.MinimumAge}");
         }
         catch (Exception ex)
         {

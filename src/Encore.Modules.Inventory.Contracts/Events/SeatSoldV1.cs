@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Encore.Modules.Inventory.Contracts.Events;
 
 /// <summary>
@@ -9,7 +11,7 @@ namespace Encore.Modules.Inventory.Contracts.Events;
 /// <param name="ClientId">Who bought it.</param>
 /// <param name="OccurredAt">When the sale was confirmed. UTC.</param>
 public sealed record SeatSoldV1(
-    Guid SeatId,
-    Guid EventId,
-    Guid ClientId,
-    DateTime OccurredAt);
+    [property: JsonPropertyName("seatId")] Guid SeatId,
+    [property: JsonPropertyName("eventId")] Guid EventId,
+    [property: JsonPropertyName("clientId")] Guid ClientId,
+    [property: JsonPropertyName("occurredAt")] DateTime OccurredAt);

@@ -12,23 +12,23 @@ public sealed record AuthorizePaymentResponse(
     AuthorizePaymentStatus Status,
     Guid? PaymentId = null)
 {
-    /// <summary>The funds are held.</summary>
+    /// <summary><see cref="AuthorizePaymentStatus.Authorized"/>.</summary>
     public static AuthorizePaymentResponse Authorized(Guid paymentId) =>
         new(AuthorizePaymentStatus.Authorized, paymentId);
 
-    /// <summary>The gateway refused. Nothing was held.</summary>
+    /// <summary><see cref="AuthorizePaymentStatus.Declined"/>.</summary>
     public static AuthorizePaymentResponse Declined(Guid paymentId) =>
         new(AuthorizePaymentStatus.Declined, paymentId);
 
-    /// <summary>No answer came back, so the outcome at the gateway is unknown.</summary>
+    /// <summary><see cref="AuthorizePaymentStatus.TimedOut"/>.</summary>
     public static AuthorizePaymentResponse TimedOut(Guid paymentId) =>
         new(AuthorizePaymentStatus.TimedOut, paymentId);
 
-    /// <summary>This order has already been paid for.</summary>
+    /// <summary><see cref="AuthorizePaymentStatus.AlreadyCaptured"/>.</summary>
     public static AuthorizePaymentResponse AlreadyCaptured(Guid paymentId) =>
         new(AuthorizePaymentStatus.AlreadyCaptured, paymentId);
 
-    /// <summary>Another attempt got there first and has not finished.</summary>
+    /// <summary><see cref="AuthorizePaymentStatus.ConcurrentAttemptInFlight"/>.</summary>
     public static AuthorizePaymentResponse ConcurrentAttemptInFlight { get; } =
         new(AuthorizePaymentStatus.ConcurrentAttemptInFlight);
 }

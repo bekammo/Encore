@@ -41,16 +41,9 @@ internal static class OrderResults
             CheckoutOutcome.NotOnSale => Conflict(
                 path, "not_on_sale", "Tickets for this event are not on sale yet.", retriable: true),
 
-            CheckoutOutcome.CheckoutAlreadyOpen => Conflict(
-                path,
-                "checkout_already_open",
-                "You already have an open checkout for this event. Complete or cancel it first.",
-                retriable: false),
+            CheckoutOutcome.CheckoutAlreadyOpen => AlreadyOpen(result.OpenOrderId, path),
 
-            CheckoutOutcome.SeatsUnavailable => SeatsUnavailable(result.Refusals!, path),
-
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(result), result.Outcome, "Unmapped checkout outcome.")
+            CheckoutOutcome.SeatsUnavailable => SeatsUnavailable(result.Refusals!, path)
         };
 
     /// <summary>Maps the outcome of a confirm.</summary>
@@ -107,10 +100,7 @@ internal static class OrderResults
 
             // Confirm never leaves an order Pending or Cancelled; this would be a bug.
             OrderStatus.Pending or OrderStatus.Cancelled => throw new ArgumentOutOfRangeException(
-                nameof(order), order.Status, "A completed action left the order in a non-terminal status."),
-
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(order), order.Status, "Unmapped order status.")
+                nameof(order), order.Status, "A completed action left the order in a non-terminal status.")
         };
 
     /// <summary>The shared refusals of confirm and cancel.</summary>
@@ -129,7 +119,7 @@ internal static class OrderResults
             OrderActionOutcome.LostRace => Conflict(
                 path,
                 "lost_race",
-                "The order changed while your request was in flight.",
+                "Another request for this order got there first. Try again to see how it ended.",
                 retriable: true),
 
             // Retriable with a different card: the order and its holds are untouched.
@@ -147,17 +137,14 @@ internal static class OrderResults
                 retriable: true),
 
             OrderActionOutcome.Completed => throw new ArgumentOutOfRangeException(
-                nameof(result), result.Outcome, "Completed is not a failed action."),
-
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(result), result.Outcome, "Unmapped order action outcome.")
+                nameof(result), result.Outcome, "Completed is not a failed action.")
         };
 
     /// <summary>
     /// One or more seats could not be held, so nothing was written. The top-level
     /// <c>retriable</c> is true only if every per-seat refusal is.
     /// </summary>
-    private static IResult SeatsUnavailable(IReadOnlyList<SeatRefusal> refusals, PathString path)
+    private static IResult SeatsUnavailable(IReadOnlyList<HoldSeatResponse> refusals, PathString path)
     {
         var seats = refusals
             .Select(refusal => new
@@ -196,9 +183,7 @@ internal static class OrderResults
             HoldSeatStatus.ConcurrentRequestInFlight => "concurrent_request_in_flight",
 
             HoldSeatStatus.Held => throw new ArgumentOutOfRangeException(
-                nameof(status), status, "A held seat is not a refusal."),
-
-            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped hold status.")
+                nameof(status), status, "A held seat is not a refusal.")
         };
 
     private static bool IsRetriable(HoldSeatStatus status) =>
@@ -215,10 +200,25 @@ internal static class OrderResults
             HoldSeatStatus.SeatNotFound => false,
 
             HoldSeatStatus.Held => throw new ArgumentOutOfRangeException(
-                nameof(status), status, "A held seat is not a refusal."),
-
-            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped hold status.")
+                nameof(status), status, "A held seat is not a refusal.")
         };
+
+    /// <summary>
+    /// Names the open checkout in <c>orderId</c>: nothing else lists a client's orders, so a
+    /// client whose 201 was lost could otherwise never confirm or cancel it.
+    /// </summary>
+    private static IResult AlreadyOpen(Guid? openOrderId, PathString path) =>
+        TypedResults.Problem(
+            detail: "You already have an open checkout for this event. Confirm or cancel it first.",
+            statusCode: StatusCodes.Status409Conflict,
+            title: "Request cannot be satisfied",
+            instance: path,
+            extensions: new Dictionary<string, object?>
+            {
+                ["reason"] = "checkout_already_open",
+                ["retriable"] = false,
+                ["orderId"] = openOrderId
+            });
 
     private static IResult Conflict(PathString path, string reason, string detail, bool retriable) =>
         TypedResults.Problem(

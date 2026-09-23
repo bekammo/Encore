@@ -65,9 +65,6 @@ namespace Encore.Modules.Inventory.Adapters.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("MessageId")
-                        .HasDatabaseName("ix_outbox_messages_message_id");
-
                     b.HasIndex("NextAttemptAt", "Id")
                         .HasDatabaseName("ix_outbox_messages_unprocessed")
                         .HasFilter("\"ProcessedAt\" IS NULL");
