@@ -11,8 +11,10 @@
 #   bash load/chaos.sh                 every run below, in order
 #   bash load/chaos.sh redis stall     only those
 #   bash load/chaos.sh baseline        the third load configuration on its own
+#   bash load/chaos.sh orders          multi-seat orders, confirm racing cancel (080)
 #
-# Five runs, one fault each, rather than one long run carrying all four. A fault's
+# Six runs, one fault each, rather than one long run carrying all of them (the
+# sixth, orders, arrived in 080 and injects nothing: its fault is the customer). A fault's
 # aftermath is half of what it is about — a backlog, a set of unresolved payment
 # rows, a drained seat map — and a single run would feed each aftermath into the
 # next fault's measurement. Separate runs also mean a k6 threshold failing on one
@@ -79,7 +81,7 @@ psql_q() {
 # 3,500 lines of it around 200 lines of results. Only the digest and the banner
 # are worth keeping.
 k6_digest() {
-  grep -vE '^running \(|^ *(contention|flash_sale|redis_[a-z_]+|payments_[a-z_]+|stall_sale|reconciler_checkout|Run) +(•|✓|↓|\[)| Container |^ *$' "$1"
+  grep -vE '^running \(|^ *(contention|flash_sale|redis_[a-z_]+|payments_[a-z_]+|stall_sale|reconciler_checkout|orders_mixed|Run) +(•|✓|↓|\[)| Container |^ *$' "$1"
 }
 
 # A container's whole log, captured once into a file the greps then share.
@@ -596,6 +598,112 @@ run_reconcilers() {
   report '```'
 }
 
+# Multi-seat orders, confirmed, cancelled, and both at once. DECISIONS 080.
+#
+# No fault is injected: the customer is the fault. 076 made an order's sale all or
+# none and 077 made a cancel give the seats back before the money, and until this
+# run every checkout the rig made was one seat and nothing ever cancelled, so
+# neither had been under load. The gateway answers everything here (no timeout
+# rate), so every order has an ending that can be read back and checked.
+run_orders() {
+  say 'orders — multi-seat checkouts, confirm racing cancel'
+  reset_data
+
+  export PAYMENTS_TIMEOUT_RATE=0
+  export RECONCILER_EVERYWHERE=false
+  export ENCORE_LOG_LEVEL=Information
+  bring_up 'orders'
+  reset_data
+
+  $COMPOSE run --rm \
+    -e RUN_LABEL=orders \
+    -e CHAOS_PHASES=orders \
+    -e CONTENTION_SECONDS=$CONTROL_CONTENTION_SECONDS \
+    -e SALE_SECONDS=$CONTROL_SALE_SECONDS \
+    load-strangled > "$REPORT.tmp" 2>&1
+
+  local k6status=$?
+
+  report '## Orders — multi-seat checkouts, and a confirm racing a cancel'
+  report ''
+  report 'One to four seats per order, then a confirm, a cancel, or both sent at once.'
+  report 'k6 can only see answers. What has to hold is about rows: no order partly sold'
+  report '(076), no order whose seats sold without the money being taken or held, and no'
+  report 'money taken for seats that did not sell (077). Those are read below.'
+  report ''
+  report "k6 exit status: ${k6status} (0 means every invariant it asserts held)"
+  report ''
+  report '```'
+  report "$(k6_digest "$REPORT.tmp")"
+  report '```'
+  rm -f "$REPORT.tmp"
+
+  money_evidence
+  order_evidence
+}
+
+# The orders phase's invariants, one row per order. A seat counts as this order's
+# sale when it is sold to the order's client: every iteration uses a fresh client
+# id, so a client's sold seats can only have come from its one order.
+order_evidence() {
+  local q
+  q=$(cat <<'SQL'
+WITH per_order AS (
+  SELECT o."Id" AS order_id,
+         o."Status" AS status,
+         count(*) AS seats,
+         count(*) FILTER (WHERE s."Status" = 2 AND s."HeldByClientId" = o."ClientId") AS sold
+  FROM orders.orders o
+  JOIN orders.order_lines l ON l."OrderId" = o."Id"
+  JOIN inventory.seats s ON s."Id" = l."SeatId"
+  GROUP BY o."Id", o."Status"
+),
+money AS (
+  SELECT "OrderId",
+         bool_or("Status" = 2) AS captured,
+         bool_or("Status" = 1) AS authorized
+  FROM payments.payments
+  GROUP BY "OrderId"
+),
+checked AS (
+  SELECT per_order.*,
+         coalesce(money.captured, false) AS captured,
+         coalesce(money.authorized, false) AS authorized
+  FROM per_order
+  LEFT JOIN money ON money."OrderId" = per_order.order_id
+)
+SELECT v.label, v.value
+FROM (
+  SELECT
+    count(*) AS orders,
+    count(*) FILTER (WHERE seats > 1) AS multi_seat,
+    count(*) FILTER (WHERE sold > 0 AND sold < seats) AS partly_sold,
+    count(*) FILTER (WHERE sold > 0 AND status NOT IN (1, 5)) AS sold_not_confirmed,
+    count(*) FILTER (WHERE sold > 0 AND NOT captured AND NOT authorized) AS sold_no_money,
+    count(*) FILTER (WHERE captured AND sold < seats) AS paid_not_sold,
+    count(*) FILTER (WHERE status = 1 AND NOT captured) AS confirmed_not_captured
+  FROM checked
+) AS c
+CROSS JOIN LATERAL (VALUES
+  (1, 'orders', c.orders),
+  (2, 'of them multi-seat', c.multi_seat),
+  (3, 'partly sold (must be 0)', c.partly_sold),
+  (4, 'seats sold, order not confirmed (must be 0)', c.sold_not_confirmed),
+  (5, 'seats sold, no money taken or held (must be 0)', c.sold_no_money),
+  (6, 'money taken, seats not all sold (must be 0)', c.paid_not_sold),
+  (7, 'confirmed, money not taken (must be 0)', c.confirmed_not_captured)
+) AS v(n, label, value)
+ORDER BY v.n;
+SQL
+)
+
+  report ''
+  report '```'
+  report 'order invariants, read from Postgres'
+  report "$(psql_q "$q")"
+  report '```'
+}
+
 # Sleeps until `offset` seconds after `t0`, and not at all if that is already past.
 sleep_until() {
   local offset="$1"
@@ -614,7 +722,7 @@ sleep_until() {
 
 RUNS=("$@")
 if [ ${#RUNS[@]} -eq 0 ]; then
-  RUNS=(baseline redis stall payments reconcilers)
+  RUNS=(baseline redis stall payments reconcilers orders)
 fi
 
 report "# Encore chaos session — ${STAMP}"
@@ -634,6 +742,7 @@ for run in "${RUNS[@]}"; do
     payments) run_payments ;;
     stall) run_stall ;;
     reconcilers) run_reconcilers ;;
+    orders) run_orders ;;
     *) echo "chaos: unknown run '${run}'" >&2 ;;
   esac
 done

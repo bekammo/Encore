@@ -45,11 +45,16 @@
 //               rather than measured here, because this side cannot see it.
 //   reconciler  checkouts against a gateway that loses answers, run while two
 //               reconcilers sweep one table. 061's debt, deliberately incurred.
+//   orders      multi-seat checkouts, some confirmed, some cancelled, and some
+//               confirmed and cancelled at the same instant. Nothing is injected;
+//               the fault is the customer. 076's atomic sale and 077's race
+//               under load rather than in a test with hooks. DECISIONS 080.
 //
 // This script does not inject anything. It cannot: k6 has no access to the Docker
 // daemon and should not. load/chaos.sh owns the timeline and does the injecting,
 // and the windows below are separated by gaps so that a second or two of skew
 // between the two clocks cannot land a fault in the wrong window.
+import { sleep } from 'k6';
 import http from 'k6/http';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
@@ -121,6 +126,35 @@ const STALL_SEATS = Number(__ENV.STALL_SEATS || 6500);
 const RECONCILER_VUS = Number(__ENV.RECONCILER_VUS || 8);
 const RECONCILER_SECONDS = Number(__ENV.RECONCILER_SECONDS || 45);
 
+// -- Multi-seat orders and the confirm/cancel race ---------------------------
+// Every other checkout in this file is one seat and is only ever confirmed, so
+// neither 076's all-or-none sale nor 077's cancel-during-confirm had been under
+// load. Each iteration here opens an order for one to four seats and then does
+// one of three things with it. RACE_SHARE of them send a confirm, and while it is
+// in flight send a cancel for the same order: the same customer pressing both
+// buttons.
+//
+// The cancel leaves after a random delay rather than at the same instant, and
+// that is what makes this reach 077's interleaving at all. The first run of this
+// phase sent both together, and since a cancel takes ~11ms and a confirm ~320ms
+// (the simulated gateway's authorisation is the slow part), every one of 438
+// races was settled before the confirm got as far as selling. 077's case is a
+// cancel landing between the sale and the capture, near the end of the confirm,
+// so the delay is spread across the confirm's whole duration.
+const ORDERS_VUS = Number(__ENV.ORDERS_VUS || 10);
+const ORDERS_SECONDS = Number(__ENV.ORDERS_SECONDS || 30);
+const ORDERS_SEATS = Number(__ENV.ORDERS_SEATS || 6000);
+const RACE_SHARE = Number(__ENV.RACE_SHARE || 0.4);
+const CANCEL_SHARE = Number(__ENV.CANCEL_SHARE || 0.2);
+const RACE_DELAY_MAX_MS = Number(__ENV.RACE_DELAY_MAX_MS || 700);
+
+// Every answer a confirm or a cancel is documented to give. Declared up front
+// because k6 reports a tagged submetric only when a threshold names it, and the
+// race's outcome pairs are the thing the digest exists to show.
+const CONFIRM_ANSWERS = ['confirmed', 'awaiting_capture', 'order_failed', 'holds_expired', 'lost_race',
+  'order_not_pending', 'payment_declined', 'payment_timed_out'];
+const CANCEL_ANSWERS = ['cancelled', 'lost_race', 'order_not_pending'];
+
 // When set, setup() creates a venue with this name as its very last act. It is
 // the starting gun: chaos.sh polls Postgres for the row and starts its clock the
 // moment it appears, so the injection timeline is pinned to the end of setup
@@ -147,6 +181,14 @@ const ordersAwaitingCapture = new Counter('orders_awaiting_capture');
 const checkoutRefused = new Counter('checkout_refused');
 const confirmRefused = new Counter('confirm_refused');
 const confirmTimedOut = new Counter('confirm_timed_out');
+
+// The orders phase. Answers are tagged rather than split across counters, so one
+// declaration per answer is all the digest needs.
+const orderSeats = new Counter('order_seats');
+const confirmAnswered = new Counter('confirm_answered');
+const cancelAnswered = new Counter('cancel_answered');
+const raceAnswered = new Counter('race_answered');
+const cancelLatency = new Trend('cancel_latency', true);
 
 // How long after the sale opened each seat went. The interesting number from the
 // sale scenario is not its latency — it is how long the inventory lasted, because
@@ -283,6 +325,18 @@ function scenarios() {
     };
   }
 
+  if (running('orders')) {
+    all.orders_mixed = {
+      executor: 'constant-vus',
+      vus: ORDERS_VUS,
+      duration: ORDERS_SECONDS + 's',
+      startTime: after + 's',
+      exec: 'orders',
+      tags: { phase: 'orders' },
+      gracefulStop: '15s',
+    };
+  }
+
   if (running('reconciler')) {
     all.reconciler_checkout = {
       executor: 'constant-vus',
@@ -387,6 +441,28 @@ function thresholds() {
     t['hold_latency{phase:stall}'] = ['p(99)>=0'];
   }
 
+  if (running('orders')) {
+    // The assertion k6 can make. The ones that matter here — no order partly
+    // sold, none sold and unpaid, none paid and unsold — are about rows, and
+    // chaos.sh reads them out of Postgres afterwards.
+    t['unexpected_responses{phase:orders}'] = ['count==0'];
+    t['orders_created{phase:orders}'] = ['count>0'];
+    t['confirm_latency{phase:orders}'] = ['p(99)>=0'];
+    t['cancel_latency{phase:orders}'] = ['p(99)>=0'];
+
+    for (const answer of CONFIRM_ANSWERS) {
+      t['confirm_answered{answer:' + answer + '}'] = ['count>=0'];
+
+      for (const cancelAnswer of CANCEL_ANSWERS) {
+        t['race_answered{pair:' + answer + '__' + cancelAnswer + '}'] = ['count>=0'];
+      }
+    }
+
+    for (const answer of CANCEL_ANSWERS) {
+      t['cancel_answered{answer:' + answer + '}'] = ['count>=0'];
+    }
+  }
+
   if (running('reconciler')) {
     t['unexpected_responses{phase:reconciler}'] = ['count==0'];
     t['confirm_latency{phase:reconciler}'] = ['p(99)>=0'];
@@ -460,6 +536,7 @@ export function setup() {
     { name: 'redisDown', count: running('redis') ? REDIS_HALF : 0 },
     { name: 'checkout', count: running('payments') || running('reconciler') ? CHECKOUT_SEATS : 0 },
     { name: 'stall', count: running('stall') ? STALL_SEATS : 0 },
+    { name: 'orders', count: running('orders') ? ORDERS_SEATS : 0 },
   ];
 
   let total = 0;
@@ -689,6 +766,127 @@ export function checkoutReconciler(data) {
   checkout(data);
 }
 
+// -- The orders phase ---------------------------------------------------------
+
+function pickDistinct(seats, count) {
+  const chosen = [];
+
+  while (chosen.length < count) {
+    const seatId = pick(seats);
+    if (chosen.indexOf(seatId) === -1) {
+      chosen.push(seatId);
+    }
+  }
+
+  return chosen;
+}
+
+function orderUrl(orderId, action) {
+  return BASE_URL + '/orders/' + orderId + '/' + action;
+}
+
+function orderParams(clientId, action) {
+  return { headers: { 'X-Client-Id': clientId }, tags: { name: action } };
+}
+
+// What a confirm said, as one word: the order's status on a 200, the reason on a
+// 409, and null for anything the route is not documented to return.
+function confirmAnswer(res) {
+  if (res.status === 200) {
+    return res.json('status');
+  }
+
+  return res.status === 409 ? reasonOf(res) : null;
+}
+
+function cancelAnswer(res) {
+  if (res.status === 200) {
+    return 'cancelled';
+  }
+
+  return res.status === 409 ? reasonOf(res) : null;
+}
+
+function recordConfirm(res) {
+  confirmLatency.add(res.timings.duration);
+  const answer = confirmAnswer(res);
+
+  if (answer === null) {
+    unexpected.add(1, { route: 'confirm', status: String(res.status) });
+  } else {
+    confirmAnswered.add(1, { answer: answer });
+  }
+
+  return answer;
+}
+
+function recordCancel(res) {
+  cancelLatency.add(res.timings.duration);
+  const answer = cancelAnswer(res);
+
+  if (answer === null) {
+    unexpected.add(1, { route: 'cancel', status: String(res.status) });
+  } else {
+    cancelAnswered.add(1, { answer: answer });
+  }
+
+  return answer;
+}
+
+// One customer, one order of one to four seats, and then one of three endings.
+// Nothing is retried, for the reason the checkout above gives: the ambiguous
+// answer is the thing being observed, and chaos.sh reads what actually happened
+// out of Postgres.
+export async function orders(data) {
+  const clientId = uuid();
+  const seatIds = pickDistinct(data.orders, 1 + Math.floor(Math.random() * 4));
+
+  const created = http.post(
+    BASE_URL + '/orders',
+    JSON.stringify({ eventId: data.eventId, seatIds: seatIds }),
+    {
+      headers: { 'Content-Type': 'application/json', 'X-Client-Id': clientId },
+      tags: { name: 'checkout' },
+    });
+
+  if (created.status === 409 || created.status === 400) {
+    checkoutRefused.add(1, { reason: reasonOf(created) });
+    return;
+  }
+
+  if (created.status !== 201) {
+    unexpected.add(1, { route: 'checkout', status: String(created.status) });
+    return;
+  }
+
+  ordersCreated.add(1);
+  orderSeats.add(seatIds.length);
+
+  const orderId = created.json('id');
+  const roll = Math.random();
+
+  if (roll < RACE_SHARE) {
+    // The confirm goes out without waiting for it; the cancel follows somewhere
+    // inside the confirm's lifetime, then both answers are collected.
+    const confirming = http.asyncRequest('POST', orderUrl(orderId, 'confirm'), null,
+      orderParams(clientId, 'confirm'));
+
+    sleep(Math.random() * RACE_DELAY_MAX_MS / 1000);
+
+    const cancelled = recordCancel(
+      http.post(orderUrl(orderId, 'cancel'), null, orderParams(clientId, 'cancel')));
+    const confirmed = recordConfirm(await confirming);
+
+    if (confirmed !== null && cancelled !== null) {
+      raceAnswered.add(1, { pair: confirmed + '__' + cancelled });
+    }
+  } else if (roll < RACE_SHARE + CANCEL_SHARE) {
+    recordCancel(http.post(orderUrl(orderId, 'cancel'), null, orderParams(clientId, 'cancel')));
+  } else {
+    recordConfirm(http.post(orderUrl(orderId, 'confirm'), null, orderParams(clientId, 'confirm')));
+  }
+}
+
 function stat(metrics, name, key, digits) {
   const metric = metrics[name];
   if (!metric || !metric.values || metric.values[key] === undefined) {
@@ -766,6 +964,12 @@ function invariants(data) {
     out += '\n  dispatcher stall\n';
     out += line('  no oversell', verdict(data, 'seats_sold{phase:stall}'));
     out += line('  no faults while stalled', verdict(data, 'unexpected_responses{phase:stall}'));
+  }
+
+  if (running('orders')) {
+    out += '\n  orders\n';
+    out += line('  no faults', verdict(data, 'unexpected_responses{phase:orders}'));
+    out += line('  orders were placed', verdict(data, 'orders_created{phase:orders}'));
   }
 
   if (running('reconciler')) {
@@ -848,6 +1052,49 @@ export function handleSummary(data) {
     out += latencyLine(m, 'purchase ms', 'purchase_latency{phase:stall}');
     out += line('seats sold', total(m, 'seats_sold{phase:stall}') + ' of ' + STALL_SEATS);
     out += line('faults', String(total(m, 'unexpected_responses{phase:stall}')));
+  }
+
+  if (running('orders')) {
+    const created = total(m, 'orders_created{phase:orders}');
+    out += '\nOrders — multi-seat, and confirm racing cancel; the invariants are in Postgres\n\n';
+    out += line('orders created', String(created));
+    out += line('seats per order', created > 0 ? (total(m, 'order_seats') / created).toFixed(2) : 'n/a');
+    out += line('checkout refused', String(total(m, 'checkout_refused')));
+    out += latencyLine(m, 'confirm ms', 'confirm_latency{phase:orders}');
+    out += latencyLine(m, 'cancel ms', 'cancel_latency{phase:orders}');
+
+    out += '\n  confirm answered\n';
+    for (const answer of CONFIRM_ANSWERS) {
+      const count = total(m, 'confirm_answered{answer:' + answer + '}');
+      if (count > 0) {
+        out += line('    ' + answer, String(count));
+      }
+    }
+
+    out += '\n  cancel answered\n';
+    for (const answer of CANCEL_ANSWERS) {
+      const count = total(m, 'cancel_answered{answer:' + answer + '}');
+      if (count > 0) {
+        out += line('    ' + answer, String(count));
+      }
+    }
+
+    // Both halves of each race, paired. The pairs that should never appear are
+    // the ones where both sides report an ending — confirmed and cancelled —
+    // because one of the two saves has to lose on the order row's xmin.
+    out += '\n  raced, confirm + cancel\n';
+    for (const answer of CONFIRM_ANSWERS) {
+      for (const cancelled of CANCEL_ANSWERS) {
+        const count = total(m, 'race_answered{pair:' + answer + '__' + cancelled + '}');
+        if (count > 0) {
+          // Wider than line() allows: the longest pair is 35 characters.
+          out += '      ' + (answer + ' + ' + cancelled + '                                        ').slice(0, 40)
+            + count + '\n';
+        }
+      }
+    }
+
+    out += line('faults', String(total(m, 'unexpected_responses{phase:orders}')));
   }
 
   if (running('reconciler')) {

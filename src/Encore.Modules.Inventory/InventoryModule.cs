@@ -70,12 +70,11 @@ public static class InventoryModule
             // behaviour is to queue a command in a backlog and wait for a
             // reconnect, which is what a ~1,000ms cost independent of
             // ConnectTimeout looks like. FailFast refuses immediately instead.
-            // Applied here, in the session after the one that ruled out
-            // ConnectTimeout, on the same rule that section followed: change and
-            // measurement do not share a session. This session's redis fault run
-            // is 1,000/3,000 ConnectTimeout with the default backlog policy, so
-            // this line is untested by anything in 074 — the next chaos session
-            // against `redis` measures it. See DECISIONS.md 074.
+            // Applied in 074 and measured in 079, a separate session, on 073's
+            // rule that change and measurement do not share one. It took: a hold
+            // with Redis gone went from ~2,000ms to 58.8ms at the median, and every
+            // refusal was the immediate "no connection is active/available", which
+            // names the backlog as the source of 073's missing second.
             options.BacklogPolicy = BacklogPolicy.FailFast;
 
             // The command timeouts, and they are set here for a reason 064 had to
@@ -91,7 +90,7 @@ public static class InventoryModule
             // lock that gives up on an ordinary GC pause would report contention
             // that is not there. 067 predicted this would bring a missing Redis
             // down to half a second across both locks; 073 measured about a second
-            // per lock instead, which is what FailFast above is for. Since 076 a
+            // per lock instead, which FailFast above removed (079). Since 076 a
             // hold takes one lock and a purchase none.
             //
             // This does not change what the lock means. Unavailable is still "I
