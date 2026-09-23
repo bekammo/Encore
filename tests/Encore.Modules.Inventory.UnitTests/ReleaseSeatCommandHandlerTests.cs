@@ -46,11 +46,19 @@ public class ReleaseSeatCommandHandlerTests
         return seat;
     }
 
-    private static ReleaseSeatCommandHandler HandlerFor(
-        FakeSeatRepository seats,
-        FakeDistributedLock? distributedLock = null,
-        DateTime? now = null) =>
-        new(seats, distributedLock ?? new FakeDistributedLock(), new FixedTimeProvider(now ?? WithinHold));
+    private static Seat AnotherSeatHeldBy(Guid clientId)
+    {
+        var seat = Seat.Create(Guid.NewGuid(), EventId);
+        seat.Hold(clientId, T0);
+        seat.ClearDomainEvents();
+        return seat;
+    }
+
+    private static ReleaseSeatsCommand BatchOf(params Seat[] seats) =>
+        new(EventId, [.. seats.Select(seat => seat.Id)], ClientA);
+
+    private static ReleaseSeatCommandHandler HandlerFor(FakeSeatRepository seats, DateTime? now = null) =>
+        new(seats, new FixedTimeProvider(now ?? WithinHold));
 
     // -- Happy path -------------------------------------------------------
 
@@ -175,48 +183,6 @@ public class ReleaseSeatCommandHandlerTests
         Assert.Equal(0, seats.SaveCalls);
     }
 
-    // -- Locking behaves as it does on the other write paths ---------------
-
-    [Fact]
-    public async Task Handle_WhenLockServiceUnavailable_ShouldStillRelease()
-    {
-        var seats = new FakeSeatRepository(SeatHeldBy(ClientA));
-
-        var result = await HandlerFor(seats, new FakeDistributedLock(LockOutcome.Unavailable))
-            .HandleAsync(Command);
-
-        Assert.Equal(ReleaseSeatOutcome.Released, result.Outcome);
-        Assert.Equal(1, seats.SaveCalls);
-    }
-
-    /// <summary>
-    /// Unlike holding, contention here is not refused: there is no cap for a
-    /// missed lock to undermine, and the row's concurrency token settles the
-    /// race on its own.
-    /// </summary>
-    [Fact]
-    public async Task Handle_WhenSeatLockHeldByAnother_ShouldStillRelease()
-    {
-        var seats = new FakeSeatRepository(SeatHeldBy(ClientA));
-
-        var result = await HandlerFor(seats, new FakeDistributedLock(LockOutcome.HeldByAnother))
-            .HandleAsync(Command);
-
-        Assert.Equal(ReleaseSeatOutcome.Released, result.Outcome);
-    }
-
-    [Fact]
-    public async Task Handle_ShouldLockOnTheSeat()
-    {
-        var seats = new FakeSeatRepository(SeatHeldBy(ClientA));
-        var distributedLock = new FakeDistributedLock();
-
-        await HandlerFor(seats, distributedLock).HandleAsync(Command);
-
-        Assert.Equal($"seat:{SeatId}", distributedLock.LastResource);
-        Assert.Equal(1, distributedLock.ReleaseCalls);
-    }
-
     // -- A lost race is retried exactly once ------------------------------
 
     [Fact]
@@ -245,16 +211,65 @@ public class ReleaseSeatCommandHandlerTests
         Assert.Equal(2, seats.SaveCalls);
     }
 
+    // -- Batches (DECISIONS 076) -------------------------------------------
+
+    /// <summary>
+    /// Cancelling an order gives every seat back in one write, and a seat that
+    /// cannot be released does not keep the others held (034).
+    /// </summary>
+    [Fact]
+    public async Task HandleBatch_WhenOneSeatIsNotTheirs_ShouldStillReleaseTheOthersInOneSave()
+    {
+        var first = AnotherSeatHeldBy(ClientA);
+        var theirs = AnotherSeatHeldBy(ClientB);
+        var last = AnotherSeatHeldBy(ClientA);
+        var seats = FakeSeatRepository.Holding(first, theirs, last);
+
+        var results = await HandlerFor(seats).HandleAsync(BatchOf(first, theirs, last));
+
+        Assert.Equal(
+            [ReleaseSeatOutcome.Released, ReleaseSeatOutcome.NotTheHolder, ReleaseSeatOutcome.Released],
+            results.Select(result => result.Outcome));
+        Assert.Equal(1, seats.SaveCalls);
+        Assert.Equal(SeatStatus.Available, first.Status);
+        Assert.Equal(SeatStatus.Available, last.Status);
+    }
+
+    [Fact]
+    public async Task HandleBatch_WhenNothingIsHeld_ShouldSucceedWithoutWriting()
+    {
+        var batch = new[] { Seat.Create(Guid.NewGuid(), EventId), Seat.Create(Guid.NewGuid(), EventId) };
+        var seats = FakeSeatRepository.Holding(batch);
+
+        var results = await HandlerFor(seats).HandleAsync(BatchOf(batch));
+
+        Assert.All(results, result => Assert.Equal(ReleaseSeatOutcome.Released, result.Outcome));
+        Assert.Equal(0, seats.SaveCalls);
+    }
+
     // -- Fakes ------------------------------------------------------------
 
-    private sealed class FakeSeatRepository(params Seat?[] loads) : ISeatRepository
+    /// <summary>
+    /// Answers each load from a script: one entry per call, the last repeated.
+    /// The params constructor scripts one seat per call, which is every
+    /// single-seat test; <see cref="Holding"/> scripts a whole batch.
+    /// </summary>
+    private sealed class FakeSeatRepository : ISeatRepository
     {
-        private readonly Seat?[] _loads = loads.Length == 0 ? [null] : loads;
+        private readonly IReadOnlyList<IReadOnlyList<Seat>> _loads;
         private readonly List<Exception?> _saveOutcomes = [];
+
+        public FakeSeatRepository(params Seat?[] loads) => _loads = ScriptOfSingles(loads);
+
+        private FakeSeatRepository(IReadOnlyList<IReadOnlyList<Seat>> loads, bool scripted) => _loads = loads;
 
         public int GetByIdCalls { get; private set; }
 
         public int SaveCalls { get; private set; }
+
+        /// <summary>Every call returns these seats.</summary>
+        public static FakeSeatRepository Holding(params Seat[] seats) =>
+            new(new IReadOnlyList<Seat>[] { seats }, scripted: true);
 
         /// <summary>One entry per expected save: an exception to throw, or null to succeed.</summary>
         public FakeSeatRepository WithSaveOutcomes(params Exception?[] outcomes)
@@ -263,14 +278,23 @@ public class ReleaseSeatCommandHandlerTests
             return this;
         }
 
-        public Task<Seat?> GetByIdAsync(Guid seatId, CancellationToken cancellationToken = default)
+        public Task<Seat?> GetByIdAsync(Guid seatId, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("The handlers load seats in batches.");
+
+        public Task<IReadOnlyList<Seat>> GetByIdsAsync(
+            IReadOnlyCollection<Guid> seatIds,
+            CancellationToken cancellationToken = default)
         {
-            var seat = _loads[Math.Min(GetByIdCalls, _loads.Length - 1)];
+            var load = _loads[Math.Min(GetByIdCalls, _loads.Count - 1)];
             GetByIdCalls++;
-            return Task.FromResult(seat);
+
+            return Task.FromResult<IReadOnlyList<Seat>>([.. load.Where(seat => seatIds.Contains(seat.Id))]);
         }
 
-        public Task SaveAsync(Seat seat, CancellationToken cancellationToken = default)
+        public Task SaveAsync(Seat seat, CancellationToken cancellationToken = default) =>
+            SaveAsync([seat], cancellationToken);
+
+        public Task SaveAsync(IReadOnlyCollection<Seat> seats, CancellationToken cancellationToken = default)
         {
             var outcome = SaveCalls < _saveOutcomes.Count ? _saveOutcomes[SaveCalls] : null;
             SaveCalls++;
@@ -283,10 +307,9 @@ public class ReleaseSeatCommandHandlerTests
         /// consuming it, so the cap has nothing to say. Throwing keeps that a
         /// fact the tests would notice changing.
         /// </summary>
-        public Task<int> CountLiveHoldsAsync(
+        public Task<IReadOnlyCollection<Guid>> FindLiveHoldsAsync(
             Guid clientId,
             Guid eventId,
-            Guid excludingSeatId,
             DateTime utcNow,
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Releasing does not consult the hold cap.");
@@ -307,36 +330,12 @@ public class ReleaseSeatCommandHandlerTests
             IReadOnlyCollection<Seat> seats,
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("This use case does not create seats.");
-    }
 
-    private sealed class FakeDistributedLock(LockOutcome outcome = LockOutcome.Acquired) : IDistributedLock
-    {
-        public int ReleaseCalls { get; private set; }
-
-        public string? LastResource { get; private set; }
-
-        public Task<LockAcquisition> TryAcquireAsync(
-            string resource,
-            TimeSpan ttl,
-            CancellationToken cancellationToken = default)
+        private static IReadOnlyList<IReadOnlyList<Seat>> ScriptOfSingles(Seat?[] loads)
         {
-            LastResource = resource;
+            var script = loads.Length == 0 ? new Seat?[] { null } : loads;
 
-            return Task.FromResult(outcome switch
-            {
-                LockOutcome.Acquired => LockAcquisition.Acquired("token"),
-                LockOutcome.HeldByAnother => LockAcquisition.HeldByAnother,
-                _ => LockAcquisition.Unavailable
-            });
-        }
-
-        public Task<bool> ReleaseAsync(
-            string resource,
-            string token,
-            CancellationToken cancellationToken = default)
-        {
-            ReleaseCalls++;
-            return Task.FromResult(true);
+            return [.. script.Select(seat => seat is null ? Array.Empty<Seat>() : new[] { seat })];
         }
     }
 

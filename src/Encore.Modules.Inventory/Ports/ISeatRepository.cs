@@ -9,7 +9,7 @@ namespace Encore.Modules.Inventory.Ports;
 /// others answer questions about seats that no single aggregate can.
 /// </summary>
 /// <remarks>
-/// <see cref="CountLiveHoldsAsync"/> and <see cref="FindExpiredHoldsAsync"/> are
+/// <see cref="FindLiveHoldsAsync"/> and <see cref="FindExpiredHoldsAsync"/> are
 /// not aggregate access and sit slightly awkwardly next to the rest. They live
 /// here anyway rather than behind ports of their own: a one-method interface with
 /// one implementation, never substituted, is the ceremony <c>DECISIONS.md</c> 001
@@ -24,6 +24,21 @@ public interface ISeatRepository
     Task<Seat?> GetByIdAsync(Guid seatId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Loads several seats in one read, as the database has them now. Seats that
+    /// do not exist are simply absent from the result, which is in no particular
+    /// order.
+    /// </summary>
+    /// <remarks>
+    /// Any unsaved change to one of these seats is discarded, for the reason
+    /// <see cref="GetByIdAsync"/> defeats the identity map (009): a caller
+    /// reloading after a lost race or a refused batch must see the row, not the
+    /// attempt that failed.
+    /// </remarks>
+    Task<IReadOnlyList<Seat>> GetByIdsAsync(
+        IReadOnlyCollection<Guid> seatIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Persists a seat's current state as a single conditional write guarded by
     /// its concurrency token.
     /// </summary>
@@ -36,8 +51,22 @@ public interface ISeatRepository
     Task SaveAsync(Seat seat, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Counts the seats at one event that a client is holding live as of
-    /// <paramref name="utcNow"/>, ignoring one seat.
+    /// Persists several seats in one transaction: every conditional write lands,
+    /// or none does.
+    /// </summary>
+    /// <remarks>
+    /// This is what lets a confirm sell an order's seats together (076). Each
+    /// seat still enforces its own rules; the transaction adds atomicity across
+    /// them and no rule of its own.
+    /// </remarks>
+    /// <exception cref="ConcurrentSeatModificationException">
+    /// One of the seats changed underneath this instance, so nothing was written.
+    /// </exception>
+    Task SaveAsync(IReadOnlyCollection<Seat> seats, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The seats at one event that a client is holding live as of
+    /// <paramref name="utcNow"/>.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -45,28 +74,25 @@ public interface ISeatRepository
     /// several rows and so cannot live in <see cref="Seat"/>.
     /// </para>
     /// <para>
+    /// Ids rather than a count, because a batch has to tell a seat the client
+    /// already holds — re-holding it is free and must not be refused at the cap —
+    /// from a seat that would be a new hold. A count that left the requested seats
+    /// out could not say which of them were already this client's (076).
+    /// </para>
+    /// <para>
     /// "Live" applies the same lazy-expiry rule the aggregate does: a row still
     /// reading <c>Held</c> whose hold has lapsed does not count, because it is
-    /// logically available whatever the column says. Counting in Postgres rather
-    /// than tracking a tally elsewhere is what makes that automatic — there is no
+    /// logically available whatever the column says. Asking Postgres rather than
+    /// tracking a tally elsewhere is what makes that automatic — there is no
     /// second copy of the expiry rule to drift, and no bookkeeping to get wrong.
     /// </para>
     /// </remarks>
-    /// <param name="clientId">The client whose holds are counted.</param>
-    /// <param name="eventId">The event to count within. The cap is per event.</param>
-    /// <param name="excludingSeatId">
-    /// The seat being requested, which is left out of the count. Without this, a
-    /// client at the cap could not re-send a request for a seat they already
-    /// hold — the count would include it and refuse them their own seat, on
-    /// exactly the duplicate-request path the idempotent re-hold exists to
-    /// protect. The question is therefore "how many *other* seats", not "how
-    /// many seats".
-    /// </param>
+    /// <param name="clientId">The client whose holds are wanted.</param>
+    /// <param name="eventId">The event to look within. The cap is per event.</param>
     /// <param name="utcNow">The instant to judge expiry against.</param>
-    Task<int> CountLiveHoldsAsync(
+    Task<IReadOnlyCollection<Guid>> FindLiveHoldsAsync(
         Guid clientId,
         Guid eventId,
-        Guid excludingSeatId,
         DateTime utcNow,
         CancellationToken cancellationToken = default);
 
@@ -77,7 +103,7 @@ public interface ISeatRepository
     /// <remarks>
     /// <para>
     /// Backs the expired-hold sweep (<c>DECISIONS.md</c> 062), and like
-    /// <see cref="CountLiveHoldsAsync"/> it is a question about seats that no
+    /// <see cref="FindLiveHoldsAsync"/> it is a question about seats that no
     /// single <see cref="Seat"/> can answer.
     /// </para>
     /// <para>

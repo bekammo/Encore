@@ -4,18 +4,19 @@ namespace Encore.Modules.Inventory.Application;
 
 /// <summary>
 /// The parts of seat locking that are the same wherever it happens: how long a
-/// lock lives, what the resources are called, and how one is given back.
+/// lock lives, what the resource is called, and how one is given back.
 /// </summary>
 /// <remarks>
 /// <para>
 /// <b>One copy because a second copy is a second thing to keep correct.</b> That
 /// is 017's criterion, and by its own terms this is the case that qualifies while
 /// the migrators do not: a migrator is inert, so a bug in one copy cannot be a
-/// bug in another. These are not inert. <see cref="ForSeat"/> in particular is
-/// the one where drift is a correctness bug rather than untidiness — two handlers
-/// spelling the same seat's resource differently would take different locks and
-/// believe they held the same one, which is mutual exclusion silently not
-/// happening at the exact moment it is wanted. See <c>DECISIONS.md</c> 046.
+/// bug in another. These are not inert. See <c>DECISIONS.md</c> 046.
+/// </para>
+/// <para>
+/// <b>There is no seat lock any more.</b> Every handler proceeded whatever the
+/// seat lock answered (010), so it excluded nobody and cost two round trips a
+/// write. <c>xmin</c> was always what settled a race for a seat. See 076.
 /// </para>
 /// <para>
 /// <b>Here rather than beside the port.</b> <c>Ports/</c> states a contract that
@@ -38,9 +39,6 @@ internal static class SeatLocks
     /// domain's, this is the infrastructure's.
     /// </remarks>
     public static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5);
-
-    /// <summary>Names the lock that serialises writes to one seat.</summary>
-    public static string ForSeat(Guid seatId) => $"seat:{seatId}";
 
     /// <summary>
     /// Names the lock that serialises one client against themselves across the

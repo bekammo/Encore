@@ -1,20 +1,23 @@
+using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Domain.Exceptions;
 using Encore.Modules.Inventory.Ports;
 
 namespace Encore.Modules.Inventory.Application;
 
 /// <summary>
-/// The "I don't want this seat after all" use case: hand a held seat back to the
-/// pool. Sequences the ports the same way the other seat writes do — lock, load,
-/// let the domain decide, persist.
+/// The "I don't want these seats after all" use case: hand held seats back to the
+/// pool. Sequences the ports the same way the other seat writes do — load, let
+/// each aggregate decide, persist them together.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>One lock, and only as an optimisation.</b> Releasing touches a single row,
-/// so the concurrency token settles any race and a contended or unreachable lock
-/// changes nothing but throughput. There is no cap to protect here: releasing
-/// gives capacity back rather than consuming it, so unlike holding there is
-/// nothing a missed lock could let a client cheat.
+/// <b>Each seat is answered on its own.</b> A seat that cannot be released does
+/// not keep the others held, which is how cancelling behaved when the seats went
+/// back one at a time (034). The batch only makes it one round trip (076).
+/// </para>
+/// <para>
+/// <b>No lock.</b> Releasing touches rows whose tokens settle any race, and there
+/// is no cap to protect: releasing gives capacity back rather than consuming it.
 /// </para>
 /// <para>
 /// <b>Releasing a seat you are not holding is a success.</b> The caller wanted
@@ -27,11 +30,9 @@ namespace Encore.Modules.Inventory.Application;
 /// </remarks>
 public sealed class ReleaseSeatCommandHandler(
     ISeatRepository seats,
-    IDistributedLock distributedLock,
     TimeProvider timeProvider)
 {
     private readonly ISeatRepository _seats = seats;
-    private readonly IDistributedLock _distributedLock = distributedLock;
     private readonly TimeProvider _timeProvider = timeProvider;
 
     /// <summary>
@@ -43,47 +44,93 @@ public sealed class ReleaseSeatCommandHandler(
         ReleaseSeatCommand command,
         CancellationToken cancellationToken = default)
     {
-        var resource = SeatLocks.ForSeat(command.SeatId);
-
-        var seatLock = await _distributedLock
-            .TryAcquireAsync(resource, SeatLocks.Ttl, cancellationToken)
+        var results = await HandleAsync(
+                new ReleaseSeatsCommand(command.EventId, [command.SeatId], command.ClientId),
+                cancellationToken)
             .ConfigureAwait(false);
 
-        try
-        {
-            var result = await AttemptAsync(command, cancellationToken).ConfigureAwait(false);
-
-            return result.Outcome is ReleaseSeatOutcome.LostRace
-                ? await AttemptAsync(command, cancellationToken).ConfigureAwait(false)
-                : result;
-        }
-        finally
-        {
-            await _distributedLock.ReleaseIfHeldAsync(resource, seatLock).ConfigureAwait(false);
-        }
+        return results[0];
     }
 
-    private async Task<ReleaseSeatResult> AttemptAsync(
-        ReleaseSeatCommand command,
+    /// <summary>
+    /// Attempts to release every seat in <see cref="ReleaseSeatsCommand.SeatIds"/>
+    /// on behalf of <see cref="ReleaseSeatsCommand.ClientId"/>.
+    /// </summary>
+    /// <returns>One outcome per seat, in the order the seats were asked for.</returns>
+    public async Task<IReadOnlyList<ReleaseSeatResult>> HandleAsync(
+        ReleaseSeatsCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        SeatBatch.EnsureValid(command.SeatIds);
+
+        var attempt = await AttemptAsync(command, cancellationToken).ConfigureAwait(false);
+
+        return attempt.LostRace
+            ? (await AttemptAsync(command, cancellationToken).ConfigureAwait(false)).Results
+            : attempt.Results;
+    }
+
+    private async Task<Attempt> AttemptAsync(
+        ReleaseSeatsCommand command,
         CancellationToken cancellationToken)
     {
         var utcNow = _timeProvider.GetUtcNow().UtcDateTime;
 
-        var seat = await _seats.GetByIdAsync(command.SeatId, cancellationToken).ConfigureAwait(false);
+        var loaded = await _seats.GetByIdsAsync(command.SeatIds, cancellationToken).ConfigureAwait(false);
 
-        if (seat is null || seat.EventId != command.EventId)
+        var seats = loaded
+            .Where(seat => seat.EventId == command.EventId)
+            .ToDictionary(seat => seat.Id);
+
+        var results = new ReleaseSeatResult[command.SeatIds.Count];
+
+        for (var i = 0; i < command.SeatIds.Count; i++)
         {
-            return ReleaseSeatResult.SeatNotFound;
+            if (!seats.TryGetValue(command.SeatIds[i], out var seat))
+            {
+                results[i] = ReleaseSeatResult.SeatNotFound;
+                continue;
+            }
+
+            // A rejected attempt may have left events on this instance describing a
+            // release that never happened.
+            seat.ClearDomainEvents();
+
+            results[i] = TryRelease(seat, command.ClientId, utcNow);
         }
 
-        // A rejected attempt may have left events on this instance describing a
-        // release that never happened.
-        seat.ClearDomainEvents();
+        // Every state change a seat makes raises an event, so these are the seats
+        // this attempt actually moved.
+        var changed = seats.Values.Where(seat => seat.DomainEvents.Count > 0).ToList();
+
+        if (changed.Count is 0)
+        {
+            return new Attempt(results, LostRace: false);
+        }
 
         try
         {
-            seat.Release(command.ClientId, utcNow);
-            await _seats.SaveAsync(seat, cancellationToken).ConfigureAwait(false);
+            await _seats.SaveAsync(changed, cancellationToken).ConfigureAwait(false);
+
+            return new Attempt(results, LostRace: false);
+        }
+        catch (ConcurrentSeatModificationException)
+        {
+            // Nothing was written, so every seat this attempt moved is still held.
+            var moved = changed.Select(seat => seat.Id).ToHashSet();
+
+            return new Attempt(
+                [.. command.SeatIds.Select((seatId, i) =>
+                    moved.Contains(seatId) ? ReleaseSeatResult.LostRace : results[i])],
+                LostRace: true);
+        }
+    }
+
+    private static ReleaseSeatResult TryRelease(Seat seat, Guid clientId, DateTime utcNow)
+    {
+        try
+        {
+            seat.Release(clientId, utcNow);
 
             return ReleaseSeatResult.Released;
         }
@@ -95,14 +142,11 @@ public sealed class ReleaseSeatCommandHandler(
         {
             return ReleaseSeatResult.NotTheHolder;
         }
-        catch (ConcurrentSeatModificationException)
-        {
-            return ReleaseSeatResult.LostRace;
-        }
 
         // Release() refuses for exactly the two reasons handled above. A third
         // would mean the aggregate's contract moved without this handler being
         // told, and it is left to propagate rather than be swallowed.
     }
 
+    private sealed record Attempt(IReadOnlyList<ReleaseSeatResult> Results, bool LostRace);
 }

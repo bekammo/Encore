@@ -81,6 +81,7 @@ a superseding entry gets added instead.
 - [073](#073--the-audit-measured-and-a-timeout-that-only-half-took) — The audit, measured, and a timeout that only half took
 - [074](#074--the-discriminating-experiment-a-fixed-cost-that-is-not-connecttimeout-and-two-fixes-measured-by-the-run-that-motivated-them) — The discriminating experiment, a fixed cost that is not ConnectTimeout, and two fixes measured by the run that motivated them
 - [075](#075--three-and-three-and-068s-index-clears) — Three and three, and 068's index clears
+- [076](#076--a-confirm-sells-every-seat-or-none-and-the-seat-lock-goes) — A confirm sells every seat or none, and the seat lock goes
 
 ---
 
@@ -4340,3 +4341,77 @@ that applied it.
      contention p99 question is still worth an hour, 070's retention sweeper is the
      remaining named suspect and would need the same three-and-three treatment this entry
      gave the index. -->
+
+---
+
+## 076 — A confirm sells every seat or none, and the seat lock goes
+
+028 put the unrecoverable step between two reversible ones — authorise, sell, capture — and
+then admitted the case it could not close: an order whose seats sell one at a time can sell
+some and not the rest. Those seats are `Sold`, which is terminal, the order is `Failed`, the
+authorisation is voided, and "a person has to look". Nobody paid for seats that nobody else
+can now buy. During a flash sale that is inventory destroyed at exactly the moment it is
+scarcest.
+
+It is not a theoretical case. 023 lets a client come back after a partial checkout with the
+seats it kept plus a replacement, and re-holding a seat does not move its expiry, so one
+order's seats can carry expiries minutes apart. A confirm between the first lapse and the
+last sold the late seats and refused the early one.
+
+**The decision: an order's seats are sold in one transaction, all of them or none.**
+`SellSeatCommandHandler` loads every seat in one query, asks each `Seat` to sell, and writes
+only if none refused — one `SaveChanges`, so every conditional `UPDATE` and every outbox row
+land together or not at all. A refusal names every seat that refused and why, and nothing is
+written. The order then ends `Expired` if every refusal was an expiry and `Failed`
+otherwise, and `Failed` no longer means "partly sold", because nothing is.
+
+**Holds and releases are batched too, and keep their per-seat answers.** 023 stands: a
+refused seat does not cost the client the seats that could be held. What changes is only
+that the holds that succeed are written in one transaction instead of one each. The same for
+cancelling: 034's releases are still answered seat by seat, and a seat that cannot be
+released does not keep the others held. `ISeatReservations` takes an order's seats in one
+call for all three, and the single-seat HTTP routes are a batch of one — one code path per
+operation, not two.
+
+**"One aggregate per transaction" was considered and deliberately not followed.** The rule
+exists because aggregates may live in different stores or partitions, and because a
+transaction spanning many of them holds many locks for long. Neither applies. An order's
+seats are at most four rows of one table in one Postgres, written in one batched round trip.
+And the transaction enforces nothing: each `Seat` still decides its own transition and
+carries its own `xmin`, and no rule spans the rows. The transaction adds atomicity, not an
+invariant. 012 drew the same line for creating a seat map — the aggregate is per seat, the
+use case is bulk.
+
+**The holds a refused sale leaves behind stay the client's.** Releasing them would be tidier
+and would repeat the choice 023 rejected: the client can open a new checkout with the seats
+it still holds and one replacement, and whatever it abandons lapses in five minutes by
+itself.
+
+**A refused sale reads its seats again before returning.** By the time the lapsed seat
+refuses, the others already read `Sold` in memory. Left that way, the next `SaveChanges` on
+the same unit of work — for any reason — would sell them. That is the one hazard a batch
+introduces, and `SeatBatchTests` pins it by saving the context after a refusal and checking
+that nothing sold.
+
+**The hold cap's port returns ids, not a count.** A batch has to tell a seat the client
+already holds — re-holding it is free and must not be refused at the cap — from a seat that
+would be a new hold. A count that left every requested seat out could not say which of them
+were already the client's, and would either refuse the re-hold or let a fifth seat past.
+`FindLiveHoldsAsync` returns the live holds and the handler applies the cap in request
+order, which reproduces what separate calls used to do.
+
+**The seat lock is removed, because it did nothing.** Every handler took it and then
+proceeded whatever it answered — 010's table says "proceed" in both of the seat lock's cells —
+so it excluded nobody, and cost two Redis round trips per hold, sale and release. Taking one
+per seat of a batch would have spent eight round trips to gain nothing. 001 describes the
+lock as keeping "the losers off the database"; that has not been true of the seat lock since
+010, and `xmin` was always what settled a race for a seat. The client lock is unchanged here
+— it is the one lock with a job no row's token can do — and 077 is where it is measured
+against Postgres.
+
+**What is measured, and what is not.** The k6 baseline holds and purchases single seats
+through the HTTP routes, so it sees the seat lock's removal and not the batching. The confirm
+path's saving — one round trip per order instead of one per seat — is in no scenario yet.
+
+What this does not change: the money steps and their order (028), the confirm being two
+modules' transactions rather than one, and every seat invariant resting on `xmin`.
