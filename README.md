@@ -384,9 +384,11 @@ run for the first time:
 - **Control window:** clean. It had zero unexpected responses, where 064 had 114.
 - **Two reconcilers:** checked row by row against the gateway's ledger, no attempt was
   settled `Abandoned` while the gateway held funds.
-- **Redis stopped:** a hold now costs 22× rather than 85×. The remaining second per lock
-  attempt is not `ConnectTimeout`, and tripling that setting moved nothing.
-  `BacklogPolicy.FailFast` is the candidate fix. It is applied and not yet measured.
+- **Redis stopped:** a hold cost 22× rather than 85×. The remaining second per lock
+  attempt turned out not to be `ConnectTimeout`: tripling that setting moved nothing.
+  `BacklogPolicy.FailFast` removed it. Measured in a later session (`DECISIONS.md` 079),
+  losing Redis costs a hold **6% at the median**, and the sale drained all 500 seats with
+  the lock gone.
 - **Lease:** the reconciler now takes an advisory lock for each sweep, and with the lease
   in place two reconcilers lost zero races between them.
 

@@ -84,6 +84,7 @@ a superseding entry gets added instead.
 - [076](#076--a-confirm-sells-every-seat-or-none-and-the-seat-lock-goes) — A confirm sells every seat or none, and the seat lock goes
 - [077](#077--a-cancel-gives-the-seats-back-before-the-money) — A cancel gives the seats back before the money
 - [078](#078--a-second-audit-and-the-documents-that-stopped-at-073) — A second audit, and the documents that stopped at 073
+- [079](#079--failfast-measured-and-what-letting-the-seat-lock-go-cost) — FailFast, measured, and what letting the seat lock go cost
 
 ---
 
@@ -4574,3 +4575,101 @@ One question this entry deliberately does not answer is which phase the project 
 `CLAUDE.md` and `README.md` both still say Soundcheck is in progress. Its Payments
 extraction and outbox are done, and every entry since 064 has been Showtime's work. Closing
 a phase is a call like 043's, and it belongs to the owner rather than to a sweep.
+
+---
+
+## 079 — FailFast, measured, and what letting the seat lock go cost
+
+078 ranked a chaos session first on what was still open, and this is that session:
+`bash load/chaos.sh baseline baseline baseline redis`, on 2026-09-23, against `main` at the
+merge of 077 and 078. It measures two changes that had never been run: 074's
+`BacklogPolicy.FailFast`, and 076's removal of the seat lock. It keeps 073's rule, because
+neither change was made in the session that measures it. Every run exited 0.
+
+### Fault 3: FailFast took, and the second is gone
+
+| | 074, `ConnectTimeout` 1,000 | 074, `ConnectTimeout` 3,000 | **079** |
+|---|---|---|---|
+| hold ms, lock up (med / p99) | 74.6 / 162.7 | 68.6 / 151.6 | **55.4 / 131.4** |
+| hold ms, lock gone (med / p99) | 1,997.5 / 2,045.5 | 1,996.5 / 2,057.9 | **58.8 / 191.9** |
+| buy ms, lock up (med / p99) | 62.9 / 111.9 | 60.0 / 112.6 | 33.3 / 66.3 |
+| buy ms, lock gone (med / p99) | 979.8 / 1,069.2 | 990.6 / 1,056.8 | 66.5 / 105.5 |
+| holds won, lock gone | 433 | 429 | **1,868** |
+| sold, lock gone | 353 of 500 | 349 of 500 | **500 of 500** |
+| oversold | no | no | no |
+
+**Losing Redis now costs a hold 6% at the median**, where it cost 85× in 064, 22× in
+073 and 27× in 074. The sale drained completely with the lock gone, which no earlier
+session managed.
+
+**Two changes moved between 074 and this run, and the hold latency still separates
+them**, as 078 said it would. 076 alone halves the number of lock attempts a hold makes,
+which predicts about 1,000 ms per hold with the lock gone. The measured 58.8 ms leaves no
+room for a second-long wait, so FailFast removed that wait, not 076. On the purchase side
+076 alone predicts no lock cost at all, and that prediction is the next section's
+subject.
+
+**This also names the mechanism 074 could only narrow.** All 95,244 lock failures logged
+in the run were `RedisConnectionException` with the message `No connection is
+active/available to service this operation`. That is StackExchange.Redis refusing a command
+against a disconnected multiplexer immediately, instead of queueing it. 074 saw the same
+exception type after a second's wait, and the only difference now is that the backlog is
+skipped. So 073's ~1,000 ms was the backlog waiting for a reconnect, confirmed by removing
+it. The logged catch that 073 asked for is what made this readable from the log.
+
+### What losing Redis still costs, and where it comes from
+
+Purchases take no lock since 076, yet their median doubled with Redis gone (33.3 →
+66.5 ms), and hold p99 rose 46%. This entry cannot attribute either. The strongest
+suspect is the evidence itself. Every refused lock attempt logs a warning with a full
+stack trace: 95,244 of them in 30 seconds, about 3,000 a second. That is the line 074
+added so the mechanism could be named, and it has now been named. The console logger
+pushes back on its callers once its queue is full, which would slow every request in the
+process, whether it touched Redis or not.
+
+**Nothing is changed here, for 073's reason.** The candidate is to log the transitions
+rather than every attempt: `ConnectionFailed` and `ConnectionRestored` on the multiplexer
+say "Redis went away" once. A single sampled line per refused attempt would keep the
+exception type in the evidence. Whichever is chosen, a later session measures it.
+
+### Baseline: what 076 bought by letting the seat lock go
+
+Three runs against 075's six (075 ran three with 068's index and three without, and
+cleared the index, so all six are one pre-076 population):
+
+| extracted baseline | 075, six runs (range) | **079, three runs** |
+|---|---|---|
+| hold p99, contention | 41.3 – 51.1 ms | **36.8 / 37.8 / 47.6** |
+| hold median, contention | 16.0 – 18.1 ms | 13.5 / 13.6 / 16.3 |
+| hold p99, sale | 35.7 – 48.9 ms | 33.8 / 33.9 / 36.5 |
+| purchase p99 | 35.2 – 141.3 ms | 27.7 / 38.4 / 46.2 |
+| contention attempts | 391,087 – 465,548 (mean 431k) | 483,937 / 524,777 / 524,137 (mean 511k) |
+| lost race | 379 – 546 | **1,165 / 1,166 / 1,238** |
+| sold / oversold | 500 of 500, no | 500 of 500, no |
+
+**The direction is the one 076 predicted, and it holds across all three runs.** Two fewer
+Redis round trips per hold and per purchase gave 18% more attempts in the same 60 seconds.
+Median and p99 are at or below the bottom of 075's range, and the purchase tail is
+tighter, with none of 075's 118 and 141 ms outliers.
+
+**Lost races rose about 2.6×**, from about 0.10% of attempts to 0.23%. This is the one
+result that argues with 076's description of the lock as having done nothing. The lock
+never excluded anyone, because every handler proceeded whatever it answered (010). But it
+spent two round trips before each write, which spread the writers out, and fewer of them
+reached the same row at the same instant. It reduced contention by delaying writers, not
+by excluding them, and removing it gives that delay back as races `xmin` has to settle.
+Each lost race is a retriable 409 after one reload. No invariant moved, and every run sold
+500 of 500 with nothing oversold. 18% more throughput for 0.13 points more lost races is
+the trade taken, and it is recorded here because 076 did not predict it.
+
+### What this is not
+
+One session on one laptop, like every measurement in this file. The FailFast result is a
+30-fold change with a named mechanism behind it, and noise does not produce that. The
+baseline comparison is a group of three against a group of six from earlier the same day,
+which is 056's method. It is strong on direction and weak on exact size.
+
+<!-- Next: log the Redis connection's transitions rather than every refused attempt, and
+     measure whether the purchase cost under a Redis outage goes with it. Still open from
+     078: a k6 scenario with multi-seat orders and cancels, the latent double-lost-race in
+     SellSeatCommandHandler, and the client lock measured against Postgres. -->
