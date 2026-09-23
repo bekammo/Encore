@@ -85,6 +85,7 @@ a superseding entry gets added instead.
 - [077](#077--a-cancel-gives-the-seats-back-before-the-money) — A cancel gives the seats back before the money
 - [078](#078--a-second-audit-and-the-documents-that-stopped-at-073) — A second audit, and the documents that stopped at 073
 - [079](#079--failfast-measured-and-what-letting-the-seat-lock-go-cost) — FailFast, measured, and what letting the seat lock go cost
+- [080](#080--an-outage-logs-its-edges-and-an-orders-run-puts-076-and-077-under-load) — An outage logs its edges, and an orders run puts 076 and 077 under load
 
 ---
 
@@ -4673,3 +4674,123 @@ which is 056's method. It is strong on direction and weak on exact size.
      measure whether the purchase cost under a Redis outage goes with it. Still open from
      078: a k6 scenario with multi-seat orders and cancels, the latent double-lost-race in
      SellSeatCommandHandler, and the client lock measured against Postgres. -->
+
+---
+
+## 080 — An outage logs its edges, and an orders run puts 076 and 077 under load
+
+This entry covers two items from 079's list, both on 2026-09-23: the logging change 079
+named, and 078's second open item, a load scenario with multi-seat orders and cancels.
+
+### The lock logs the start and end of an outage, not every attempt
+
+`RedisDistributedLock` used to log a warning with the full exception on every refused
+attempt. That was 074's choice, made so the exception type could name 073's mechanism.
+079 named it, and counted 95,244 of those warnings in a 30-second outage. The new
+`LockOutageLog` logs:
+- **the first refusal** after a success, as a warning with the whole exception, so the
+  type is still in the evidence;
+- **every later refusal** at Debug, with the type's name and no exception object, so no
+  stack trace is formatted and nothing is written at the default level;
+- **the first answer** after a run of refusals, with how many attempts were refused.
+
+It counts what the adapter saw, not the multiplexer's `ConnectionFailed` and
+`ConnectionRestored` events. A hold experiences whether the lock answered, not the state of
+a socket, and this way there is no event subscription whose lifetime needs managing. A
+success reads the shared counter before writing it, so the ordinary case costs one volatile
+read. `LockOutageLogTests` pins the transitions (warn once, Debug after, one line on
+recovery, a second outage warns again). `RedisDistributedLockTests` pins 20 acquires and a
+release against a dead endpoint: one warning in total.
+
+**Measured in a new `redis` session**, a separate `chaos.sh` invocation from 079's:
+
+| Redis fault, within-run ratios | 079 | 080 |
+|---|---|---|
+| hold, lock gone ÷ lock up, median | 1.06 (58.8 / 55.4) | **1.00** (73.2 / 73.5) |
+| hold, lock gone ÷ lock up, p99 | 1.46 (191.9 / 131.4) | 1.33 (231.2 / 173.9) |
+| buy, lock gone ÷ lock up, median | 2.00 (66.5 / 33.3) | **1.78** (75.3 / 42.3) |
+| sold with the lock gone | 500 of 500 | 500 of 500 |
+| oversold / faults | no / 0 | no / 0 |
+
+Only the ratios are compared, because this session ran slower across the board. Its
+healthy control window had a contention hold p99 of 76.7 ms, against 42.2 in 079's.
+
+**The log was a small part of the purchase cost, not the cause.** A hold's median now costs
+nothing extra during an outage. A purchase, which takes no lock at all, still costs 78%
+more, down from 100%. The rest is not attributed. The remaining suspect is the exception
+itself: under `FailFast`, StackExchange.Redis builds a `RedisConnectionException` with a
+long diagnostic message for every refused command, still about 3,000 a second, alongside
+its reconnect loop. The candidate fix is to let the adapter stop asking for a short while
+after a refusal and answer `Unavailable` without touching the multiplexer at all. Per 073's
+rule, that is a separate change measured by a separate session. The warning count for this
+run was not read back: the orders session after it rebuilt and recreated the API container
+before its log was captured. The one-warning behaviour rests on the two tests above.
+
+**One incident, recorded so it is not repeated.** `chaos.sh` was edited while this session
+was running, and bash reads a script as it executes. The run's own report was already
+written and is complete, but the script then failed on a line the edit had moved, and
+exited 2. **Nothing under `load/` is edited while a session runs.**
+
+### The orders run: multi-seat orders, cancels, and a cancel racing each confirm
+
+`bash load/chaos.sh orders` adds a sixth run to the rig and injects nothing: the fault is
+the customer. Ten VUs place orders of one to four seats from a 6,000-seat pool for 30
+seconds. Each order is then confirmed (40%), cancelled (20%), or confirmed with a cancel
+sent while the confirm is in flight (40%). The gateway answers everything, so every order
+reaches an ending that can be read back. k6 sees only answers, so the invariants are read
+from Postgres afterwards, one row per order. A seat counts as an order's sale when it is
+sold to that order's client, and every iteration uses a fresh client id.
+
+**The first run never reached 077's case, and why is the useful part.** It sent the confirm
+and the cancel together through `http.batch`. A cancel takes about 11 ms; a confirm takes
+about 320 ms, most of it the simulated authorisation. So all 438 races ended with the
+cancel completing before the confirm had sold anything: `lost_race` for the confirm and
+`cancelled` for the cancel. A race fired at the same instant is settled by whichever side
+is cheaper, not by the interleaving that matters. The second run sends the confirm with
+`http.asyncRequest` and the cancel after a uniform 0–700 ms delay, which spreads the cancel
+across the confirm's whole duration.
+
+| | run 1 (together) | **run 2 (cancel delayed)** |
+|---|---|---|
+| orders | 1,044 (726 multi-seat) | 899 (572 multi-seat) |
+| races | 438 | 337 |
+| confirmed + cancel `lost_race` | 0 | **92** |
+| confirmed + cancel `order_not_pending` | 0 | 171 |
+| confirm `lost_race` + cancelled | 438 | 72 |
+| confirm `order_failed` + cancel `lost_race` | 0 | 2 |
+| partly sold | **0** | **0** |
+| seats sold, order not confirmed | **0** | **0** |
+| seats sold, no money taken or held | **0** | **0** |
+| money taken, seats not all sold | **0** | **0** |
+| confirmed, money not taken | **0** | **0** |
+| unexpected responses | 0 | 0 |
+
+**The 92 are 077's window.** A confirm that ends `confirmed` sold every seat, so a cancel
+answering `lost_race` beside it must have seen those seats as `SoldToYou`, or lost the
+order row to the confirm's save. Either way it arrived after the sale. Some of the 92 will
+have landed after the capture, where 034's guard alone was enough. The rest landed between
+the sale and the capture, where the old ordering voided the money and left the seats sold.
+All 92 kept both.
+
+**The two `order_failed` are the label trade-off 077 predicted, and nothing worse.** The
+cancel released the seats, the confirm's sale then found them released and failed, and the
+confirm's save reached the order row first. Both authorisations are voided (74 `Voided` =
+72 + 2), nothing is sold, and the customer who pressed cancel sees `failed` instead of
+`cancelled`.
+
+**Across both runs, 1,943 orders and 1,298 of them multi-seat, every row-level invariant
+was zero.** That is 076 and 077 checked under load in the extracted configuration, where
+the confirm crosses a network hop to reach Payments.
+
+### What this is not
+
+The orders run proves the invariants on the interleavings it reached, not on every
+interleaving there is. Its hold windows are much shorter than the five-minute hold, so a
+lapsed hold during a confirm (076's own case) is still covered only by `SeatBatchTests`
+and `CheckoutServiceTests`. The Redis numbers are one session each on one laptop, compared
+as within-run ratios for that reason.
+
+<!-- Next: let RedisDistributedLock stop asking for a short while after a refusal, and
+     measure whether the rest of the purchase cost under a Redis outage goes with it.
+     Still open from 078: the latent double-lost-race in SellSeatCommandHandler, and the
+     client lock measured against Postgres. -->

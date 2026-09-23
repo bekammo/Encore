@@ -230,7 +230,7 @@ direction (`DECISIONS.md` 059), and it also checks which host serves each route 
 docker compose run --rm --build tests
 ```
 
-572 tests: 352 unit and architecture, 220 integration against real Postgres and
+579 tests: 358 unit and architecture, 221 integration against real Postgres and
 Testcontainers. `--build` is not optional: the image compiles the source into itself
 with no bind mount, so a run without it reports on the last build's binaries as though
 they were today's.
@@ -351,7 +351,8 @@ nothing to a reader of the repo.
 bash load/chaos.sh
 ```
 
-Four faults, one run each, against the extracted configuration. k6 drives the traffic
+Four faults, one run each, against the extracted configuration, plus an orders run described
+below. k6 drives the traffic
 and asserts the invariants; it has no access to the Docker daemon and never breaks
 anything. `load/chaos.sh` owns the timeline, stops the containers, takes the locks, and
 reads the aftermath out of Postgres into one report. Faults are injected in the *gaps*
@@ -391,6 +392,19 @@ run for the first time:
   the lock gone.
 - **Lease:** the reconciler now takes an advisory lock for each sweep, and with the lease
   in place two reconcilers lost zero races between them.
+
+**A sixth run, `bash load/chaos.sh orders`, injects nothing: the fault is the customer**
+(`DECISIONS.md` 080). It places orders of one to four seats and then confirms, cancels, or
+does both at once, with the cancel sent at a random point inside the confirm. That covers
+two changes no earlier run had ever loaded: the all-or-none sale (076), and cancel returning
+the seats before the money (077). k6 only sees the answers, so the rig checks the orders in
+Postgres afterwards. Across 1,943 orders in two runs, 1,298 of them multi-seat:
+- no order was partly sold;
+- no order had seats sold without the money taken or held;
+- no order had money taken for seats that did not sell.
+
+In the second run, 92 cancels arrived after their confirm had sold the seats. Each heard
+`SoldToYou` and stepped back.
 
 Reports land in `load/results/` beside the summaries, and are gitignored for the same
 reason.

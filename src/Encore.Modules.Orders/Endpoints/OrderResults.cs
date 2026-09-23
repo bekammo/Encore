@@ -131,8 +131,8 @@ internal static class OrderResults
             OrderStatus.Failed => Conflict(
                 path,
                 "order_failed",
-                "This order could not be completed and needs to be looked at. "
-                + "Some seats may have sold and others not.",
+                // Since 076 no order is partly sold, so this no longer says so.
+                "This order could not be completed and needs to be looked at.",
                 retriable: false),
 
             // Confirm never leaves an order Pending or Cancelled, so reaching
