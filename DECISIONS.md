@@ -78,6 +78,7 @@ a superseding entry gets added instead.
 - [070](#070--retention-and-a-health-check-that-asks-something) — Retention, and a health check that asks something
 - [071](#071--the-openapi-document-learns-which-host-serves-a-route) — The OpenAPI document learns which host serves a route
 - [072](#072--ci-arrives-before-its-phase-and-the-check-it-encodes) — CI arrives before its phase, and the check it encodes
+- [073](#073--the-audit-measured-and-a-timeout-that-only-half-took) — The audit, measured, and a timeout that only half took
 
 ---
 
@@ -4000,3 +4001,177 @@ The same thing 065 concluded: a test that reads English. Whether `README.md` des
 this system is not mechanically decidable, and a string match on "three hosts" is
 defeated by a rewording. What CI does instead is run the checks that *are* decidable,
 every time, which is the half of 065's problem that was actually solvable.
+
+---
+
+## 073 — The audit, measured, and a timeout that only half took
+
+067 closed by saying its two changes had not been measured and that the run which would
+measure them had not been taken. This is that run: `bash load/chaos.sh`, all five, on
+2026-09-22 against the tree 066–072 left — same machine, same script, same parameters as
+064's session. Four of the audit's entries touch something these runs exercise (066,
+067, 068, 069), so this measures all four rather than only the one that asked.
+
+**It is the first session in which every run exits 0.** Every invariant the rig asserts
+held under every fault, including the no-unexpected-responses threshold that 064's Redis
+run failed.
+
+### 067, first half: the pools, and a control arm that finally measures a control
+
+| | 064, lock up | 064, lock gone | **073, lock up** | **073, lock gone** |
+|---|---|---|---|---|
+| hold latency, med / p99 | 140.4 / 517.5 ms | 11,978.8 / 12,096.9 ms | **92.4 / 243.1 ms** | **1,996.9 / 2,076.8 ms** |
+| purchase latency, med / p99 | 128.0 / 423.4 ms | 5,970.7 / 6,043.6 ms | **88.4 / 199.1 ms** | **999.3 / 1,067.3 ms** |
+| holds won | 1,065 | 112 | 1,811 | 429 |
+| seats sold | 499 of 500 | 97 of 500 | 500 of 500 | 349 of 500 |
+| unexpected responses | 114 | 3 | **0** | **0** |
+| oversold | no | no | no | no |
+
+**The control window is clean.** Zero unexpected responses where 064 had 114, and the run
+exits 0 where 064's exited 99. The healthy arm also got faster on its own — hold p99
+517.5 → 243.1 ms — which says 064's "lock up" numbers were partly a measurement of pool
+exhaustion. 064's A/B was comparing a broken lock against a broken pool; this one
+compares it against a working system for the first time.
+
+The `53300` evidence is weaker than the k6 count and is stated as such: neither captured
+log contains the string, but `chaos.sh` recreates `api-strangled` whenever a run changes
+its environment, so the log on disk covers only the last run it served. For the Redis
+run itself, the evidence is k6's zero.
+
+### 067, second half: the timeouts, which took a fifth of what was promised
+
+A hold without Redis went from **85× the cost of a hold with it to 22×** — med 11,979 →
+1,997 ms. That is a real six-fold improvement and it is not what 067 said would happen.
+067 predicted that a vanished Redis would cost "half a second across both locks"; it
+costs two seconds.
+
+**The arithmetic is exact enough to be a clue.** A hold takes two locks and costs 1,997
+ms; a purchase takes one and costs 999. Each lock attempt against a missing Redis costs
+about **1,000 ms, which is `ConnectTimeout`, not the 250 ms `AsyncTimeout` 067 set.**
+The distribution is also very tight — purchase p95 is only 56 ms above its median — so
+this is a fixed wait, not a slow network.
+
+**The mechanism is not confirmed, and the reason is itself a finding.** There are two
+plausible candidates. One: with `AbortOnConnectFail = false`, a command issued while the
+multiplexer is disconnected is held in StackExchange.Redis's backlog and fails when a
+reconnect attempt — bounded by `ConnectTimeout` — fails. Two: the library detects async
+timeouts on a roughly one-second heartbeat, so a 250 ms timeout cannot fire before the
+next tick, and closed-loop VUs would phase-lock to that tick, which would also explain
+the tightness. The run could not tell these apart because **`RedisDistributedLock`
+translates the exception into `Unavailable` and logs nothing**, so the one line that
+would have named the mechanism was never written.
+
+**Nothing is changed here, deliberately.** The candidate fix is `BacklogPolicy.FailFast`,
+which makes a disconnected multiplexer refuse a command immediately rather than queue
+it — the fast "I don't know" 067 meant to buy. But a change measured by the same session
+that motivated it is 067's mistake again. The discriminating experiment is cheap: move
+`ConnectTimeout` alone and see whether the per-lock cost moves with it. That, and a
+warning-level log line in the adapter's catch, come before the fix.
+
+What did not change and must not: no oversell in either window, 0 seats sold without an
+owner, holds still won with no lock in sight. 010's claim holds for the fourth time.
+
+### 066: the gateway's memory, verified row by row
+
+**Fault 1, the ordinary restart.** 064: 121 timed-out attempts, 120 settled `Abandoned`,
+0 `Voided`. Now: 110 timed out; after 90 seconds of reconciliation **50 `Voided`, 53
+`Abandoned`, 7 still `TimedOut`**. `LostRequestRate` is 0.5, so about half of all
+unanswered authorisations never reached the gateway and `NotFound` is the right answer
+for them. The even split is the expected one. 064's 120-to-0 was not.
+
+**Fault 2, two reconcilers, checked against the ledger itself** rather than against what
+either process logged. A few minutes after the run, with every attempt settled, each
+payment was joined to `payments.gateway_ledger` on its idempotency key:
+
+| payment status | ledger says | count |
+|---|---|---|
+| `Voided` | `Succeeded` — funds were held | 235 |
+| `Abandoned` | no row — the gateway never decided | 206 |
+| `Abandoned` | `Succeeded` | **0** |
+
+**Zero attempts were settled `Abandoned` while the gateway held funds.** In 064,
+`api-strangled` settled 379 attempts, every one of them as not-found. Now it reports 118
+authorised and 86 not-found, `payments-api` 33 and 54, and — again — **no attempt was
+settled by both**. 17 sweeps lost the `xmin` race (064: 82).
+
+So the cost of two reconcilers is now what 066 said it would be once the simulator
+stopped being the problem: duplicated lookups and a lost race that writes nothing. **The
+lease is still absent and still worth having, but it has stopped being about
+correctness.** The join's counts are larger than the report's 90-second snapshot, which
+still had 158 `TimedOut`. That is the reconciler finishing its work between the two
+readings, not a discrepancy: lookups themselves go unanswered in this configuration, so
+settling takes several sweeps.
+
+### 069: the delivery bound fired, and what it cost
+
+| fault 4 | 064 | 073 |
+|---|---|---|
+| delivery latency, med / p95 / p99 / max | 1,029 / 18,426 / 20,238 / 20,631 ms | 944 / 18,369 / 20,207 / **23,222 ms** |
+| messages retried | 0 | **4** |
+| request path during the stall, hold / purchase p99 | 23.6 / 16.8 ms | 10.3 / 8.5 ms |
+| unexpected responses | 0 | 0 |
+
+**The four retries are 069 working.** In 064 a delivery blocked on the consumer's lock
+simply waited out the 20-second stall inside the claim transaction. Now `DeliveryTimeout`
+(2 s) cuts it off, the claim transaction ends, and the message goes around again. **The
+price is visible in the max** — 23.2 s against a 20 s stall, the retry's backoff landing
+after the lock was released — and it is paid only by the tail: med, p95 and p99 are
+within noise of 064's. That is the trade 069 described. The seat-schema locks are no
+longer hostage to the slowest consumer, and a handful of messages arrive a few seconds
+later instead.
+
+The request path's p99 halved during the stall. The direction fits 069's argument
+(shorter claim transactions, fewer locks held), but 064's request path was already
+isolated and this is one run, so it is recorded and not claimed.
+
+**One line in the report is an artifact.** It says the backlog was "first observed empty
+26 s after the lock expired". Pending was 5 at five seconds after release; the 36–94
+that follow are the steady state of a sale still running at 100 a second, and pending
+never reads zero until the arrivals stop. The rig's definition of "drained" is wrong for
+a run where traffic continues, and it should ask for messages older than some bound
+rather than for zero. Named, not fixed.
+
+### 068, and a baseline that moved the wrong way
+
+| extracted configuration | hold p99, contention | hold p99, sale | purchase p99 | iterations |
+|---|---|---|---|---|
+| 064 | 47.5 | 46.4 | 68.8 | 391,982 |
+| **073** | **76.8** | 51.8 | 59.7 | 348,700 |
+
+Contention hold p99 is up 62% and iterations are down 11%, which is outside the 22%
+spread 056 measured across three identical runs. **This entry cannot attribute it.**
+The most plausible suspect is 068's partial index: the contention scenario is
+hold-and-release on five seats, and every hold and every release moves a row into or out
+of `ix_seats_expiring_holds`. 070's retention sweeper, also new, is the other.
+
+The counter-evidence is the four shorter control windows at the front of each fault
+run, which have the same shape and moved much less: contention hold p99 was 47.8 / 71.7
+/ 64.0 / 54.2 ms in 064's session and 53.9 / 79.0 / 63.8 / 66.8 ms in this one. One
+60-second window moved and four 15-second ones mostly did not. **That is a question and
+not a result.** The way to answer it is three baseline runs with the index and three
+without, which is 056's method.
+
+### What this is not
+
+One laptop, one session, and every caveat 064 closed with. The A/Bs are windows taken
+minutes apart. Three numbers here are genuinely strong — the ledger join, the clean
+control window, the retries — because they are counts with a mechanism behind them. The
+latency comparisons across sessions are not, and they are marked where they appear.
+
+### Two rig corrections, made
+
+- **`payments.gateway_ledger` was not in the truncation list**, because 066 added the
+  table after the list was written. The ledger accumulated across all five runs — 950
+  rows beside 655 payments at the end. Every join went from payments to ledger and keys
+  are per attempt, so no reported number is wrong, but a count of the ledger alone
+  would have been. It is truncated between runs now.
+- **Faults 1 and 2 wrote `payments-api`'s log to the same file**, so after a full session
+  the log on disk labelled for the session was fault 2's. Fault 1's counts were read
+  before the overwrite and are sound; its evidence just was not kept. Each run's log is
+  named for the run now.
+
+<!-- Next, in order: the ConnectTimeout experiment and a logged catch in
+     RedisDistributedLock, then BacklogPolicy.FailFast measured by a later session than
+     the one that finds it; three-and-three baseline runs to settle whether 068's index
+     is what moved contention p99; the drain criterion in fault 4; and the reconciler's
+     lease, now a matter of duplicated work rather than of correctness. -->
