@@ -83,6 +83,7 @@ a superseding entry gets added instead.
 - [075](#075--three-and-three-and-068s-index-clears) — Three and three, and 068's index clears
 - [076](#076--a-confirm-sells-every-seat-or-none-and-the-seat-lock-goes) — A confirm sells every seat or none, and the seat lock goes
 - [077](#077--a-cancel-gives-the-seats-back-before-the-money) — A cancel gives the seats back before the money
+- [078](#078--a-second-audit-and-the-documents-that-stopped-at-073) — A second audit, and the documents that stopped at 073
 
 ---
 
@@ -4499,3 +4500,77 @@ only a refusal) is its own change. So is a k6 scenario that cancels.
 Postgres. Entries are numbered in the order they are written, so this one took 077 and that
 measurement has no entry yet. The documentation sweep after this change should record that,
 because 076 cannot be edited.
+
+---
+
+## 078 — A second audit, and the documents that stopped at 073
+
+The same audit that found 077 compared the prose with the tree once more, the way 065 did.
+The result had the same shape: the code was right, the suite was green (566 tests, all nine
+assemblies), and the documents had stopped at roughly 073. Four entries (074–077) had
+landed in two days, and each one updated the comments closest to the code it touched and
+nothing further out.
+
+**What was wrong, and is corrected here.**
+
+- `CLAUDE.md` cited **074** in three places for what **076** decided (no per-seat lock,
+  batched seat writes, no partial sale). It still called the Redis mechanism unconfirmed and
+  068's index the leading suspect, when 074 and 075 had settled both, and it never
+  mentioned the reconciler's lease. `CLAUDE.md` is gitignored and has been since it was
+  written, so this correction is real and not in the diff. It changes how an agent reads
+  the repository and nothing a reader of the repository sees.
+- `README.md`:
+  - said `Encore.Shared` holds exactly two things. It has held three since 070 added
+    `IReadinessCheck`.
+  - said "Notifications and Identity do not exist" directly above a paragraph about
+    Notifications.
+  - listed the expired-hold sweep as deliberately absent (built in 062).
+  - described the reconciler's single-owner rule as "a compose setting today rather than a
+    lease" (the lease arrived in 074).
+  - said no test fails when the OpenAPI document and the routes disagree (the test exists
+    since 059).
+  - gave a test count of 547.
+  - had nothing on 073–077.
+
+  The chaos section's 85× now reads as 064's number, with 073–075's results beside it.
+- Code comments:
+  - `InventoryModule` still said a hold takes two locks and still called 061's
+    single-owner rule an unpaid debt.
+  - `EfSeatRepository.FindExpiredHoldsAsync` said the index its query wants did not exist
+    and should not be built until measured. 068 built it.
+  - `SeatLocks` said the expired-hold sweep would take a lock (it takes none), and described
+    a stranded lock as keeping everyone off a seat, a lock 076 removed.
+  - `docker-compose.yml` and `chaos.sh` described fault 2 as pricing a missing lease. They
+    now say it tests the one that exists.
+  - Fault 3 now records that a purchase takes no lock since 076, which makes its buy half a
+    control and its hold half the reading that will measure `FailFast`.
+- The OpenAPI document listed neither confirm's nor cancel's `lost_race`. Cancel's is the
+  answer 077 depends on, so it is documented with what it means.
+
+**076's forward reference.** 076 said "077 is where [the client lock] is measured against
+Postgres". 077 went to the cancel race, because entries are numbered in the order they are
+written. The measurement 076 meant still has no entry: take the client lock away, let a
+Postgres-side serialisation of the cap check do its job, and compare. It is open, and this
+line is the place a reader following 076's reference will land.
+
+**What this does not add**, for 065's reason: a test that reads English. The drifts above
+were all found by deriving each claim from the code, and the two documents most prone to
+drift are the ones no mechanical check can read. The one machine-readable surface that
+drifted, the OpenAPI document, has a test for its routes and none for its reason strings.
+That is a gap, but a small one: the reason strings live in exhaustive switches that a unit
+test already maps member by member.
+
+**What is still open after the audit**, in the order it ranked them:
+
+1. A chaos session that measures `BacklogPolicy.FailFast` (074) and 076's removal of the
+   seat lock together. The hold latency in fault 3 separates them.
+2. A k6 scenario with multi-seat orders and cancels. Every checkout the rig makes is one
+   seat, and nothing cancels, so neither 076's atomic sale nor 077's race has ever been
+   under load.
+3. The latent double-lost-race in `SellSeatCommandHandler` that 077 named.
+4. The client lock measured against Postgres, as above.
+
+One question this entry deliberately does not answer is which phase the project is in.
+`CLAUDE.md` and `README.md` both still say Soundcheck is in progress. Its Payments
+extraction and outbox are done, and every entry since 064 has been Showtime's work. Closing
+a phase is a call like 043's, and it belongs to the owner rather than to a sweep.

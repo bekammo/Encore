@@ -221,6 +221,11 @@ run_baseline() {
 # the other. Redis is stopped in the gap between them, which is why the gap
 # exists: an outage injected inside a window measures a mixture of both states
 # and calls it one number.
+#
+# Since 076 a purchase takes no lock and a hold takes one (the client lock), so the
+# buy latencies here are a control and the hold latencies are the whole of what
+# losing Redis costs. That is also the reading that measures 074's FailFast: about
+# 1,000 ms per hold means it did not take, and roughly baseline means it did.
 run_redis() {
   say 'run 2/5 — Redis stopped mid-run'
   reset_data
@@ -508,8 +513,9 @@ run_stall() {
 
 # Fault 2. 061's single-owner rule, deliberately broken.
 #
-# The point of this run is evidence about what the missing lease costs, not a
-# lease. Nothing here fixes it.
+# Written in 064 to measure what the missing lease cost. The lease exists since
+# 074 (a transaction-scoped advisory lock per sweep), so this run now asks whether
+# it holds: two reconcilers, and the expectation is zero xmin races lost.
 run_reconcilers() {
   say 'run 5/5 — two reconcilers over one table'
   reset_data
@@ -540,10 +546,11 @@ run_reconcilers() {
 
   report '## Fault 2 — two reconcilers over one table'
   report ''
-  report '061 records that the reconciler must run in exactly one process and that nothing'
-  report 'enforces it — "a compose setting and a comment". This run turns the setting on in'
-  report 'both processes on purpose. Nothing in this change adds the lease; the point is to'
-  report 'find out what its absence actually costs.'
+  report '061 recorded that the reconciler must run in exactly one process, enforced by "a'
+  report 'compose setting and a comment". This run turns the setting on in both processes on'
+  report 'purpose. Since 074 each sweep takes a Postgres advisory lock first, so the question'
+  report 'is whether that lease holds: both processes settle work, none of it twice, and no'
+  report 'sweep loses an xmin race.'
   report ''
   report "k6 exit status: ${k6status}"
   report ''

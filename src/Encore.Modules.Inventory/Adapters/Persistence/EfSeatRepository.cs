@@ -146,14 +146,10 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
         // order it accumulated and a row cannot be starved by newer arrivals
         // between one batch and the next.
         //
-        // Served by ix_seats_event_client_status only incidentally — that index
-        // leads on EventId, which this does not filter — so this is a scan of the
-        // seats table filtered on status. That is acceptable for a job that runs
-        // once a minute off the request path, and it is the reason this takes a
-        // limit rather than returning everything. An index on
-        // (Status, HoldExpiresAt) is the obvious answer if it ever shows up in a
-        // measurement; adding one now would be optimising a query nobody has
-        // watched run.
+        // Served by ix_seats_expiring_holds, the partial index on HoldExpiresAt
+        // over held rows that 068 added for exactly this predicate and ordering.
+        // The limit stays regardless: a backlog is worked through in batches, not
+        // materialised whole.
         => await _context.Seats
             .AsNoTracking()
             .Where(seat => seat.Status == SeatStatus.Held && seat.HoldExpiresAt <= utcNow)

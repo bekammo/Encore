@@ -81,16 +81,18 @@ public static class InventoryModule
             // The command timeouts, and they are set here for a reason 064 had to
             // measure before anybody could see it. ConnectTimeout above was tuned
             // and these two were left at StackExchange.Redis's 5s default, so a
-            // hold — which takes two locks — spent about ten seconds discovering
-            // twice that the lock was unavailable before any database work began:
-            // med 11,979ms against 140ms with Redis up, an 85x cost for a
-            // dependency the design says is optional.
+            // hold — which then took two locks — spent about ten seconds
+            // discovering twice that the lock was unavailable before any database
+            // work began: med 11,979ms against 140ms with Redis up, an 85x cost for
+            // a dependency the design says is optional.
             //
             // 250ms rather than something smaller, because this is the budget for
             // a single round trip to a healthy Redis on the same network, and a
             // lock that gives up on an ordinary GC pause would report contention
-            // that is not there. A holder that has genuinely gone away costs half
-            // a second across both locks now instead of ten.
+            // that is not there. 067 predicted this would bring a missing Redis
+            // down to half a second across both locks; 073 measured about a second
+            // per lock instead, which is what FailFast above is for. Since 076 a
+            // hold takes one lock and a purchase none.
             //
             // This does not change what the lock means. Unavailable is still "I
             // don't know", the attempt still proceeds, and xmin still decides
@@ -162,9 +164,9 @@ public static class InventoryModule
     /// <b>No lease, no single-owner flag, and no <c>FOR UPDATE SKIP LOCKED</c>.</b>
     /// Two of these racing over one seat is arbitrated by <c>xmin</c> like every
     /// other write in this module, and the loser writes nothing — see
-    /// <see cref="ExpiredHoldSweeper"/>. 061's single-owner debt is
-    /// <c>PaymentReconciler</c>'s alone, because that job's expensive half is a call
-    /// to a gateway that no database token can arbitrate.
+    /// <see cref="ExpiredHoldSweeper"/>. Only <c>PaymentReconciler</c> needed a
+    /// lease — its expensive half is a call to a gateway that no database token can
+    /// arbitrate — and it has one since 074.
     /// </para>
     /// </remarks>
     private static void AddExpiredHoldSweep(IServiceCollection services, IConfiguration configuration)
