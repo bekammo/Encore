@@ -151,13 +151,29 @@ public class ReleaseSeatCommandHandlerTests
 
     /// <summary>A sale is not undone by asking to release the seat.</summary>
     [Fact]
-    public async Task Handle_WhenSeatIsSold_ShouldReturnAlreadySold()
+    public async Task Handle_WhenSeatIsSoldToSomebodyElse_ShouldReturnAlreadySold()
+    {
+        var seats = new FakeSeatRepository(SeatSoldTo(ClientB));
+
+        var result = await HandlerFor(seats).HandleAsync(Command);
+
+        Assert.Equal(ReleaseSeatOutcome.AlreadySold, result.Outcome);
+        Assert.Equal(0, seats.SaveCalls);
+    }
+
+    /// <summary>
+    /// Still a refusal, but a different one: the client's own purchase went
+    /// through. A cancel racing a confirm reads this as "the confirm won" and
+    /// keeps its hands off the money (077).
+    /// </summary>
+    [Fact]
+    public async Task Handle_WhenSeatIsSoldToThisClient_ShouldReturnSoldToYou()
     {
         var seats = new FakeSeatRepository(SeatSoldTo(ClientA));
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(ReleaseSeatOutcome.AlreadySold, result.Outcome);
+        Assert.Equal(ReleaseSeatOutcome.SoldToYou, result.Outcome);
         Assert.Equal(0, seats.SaveCalls);
     }
 

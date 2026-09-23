@@ -82,6 +82,7 @@ a superseding entry gets added instead.
 - [074](#074--the-discriminating-experiment-a-fixed-cost-that-is-not-connecttimeout-and-two-fixes-measured-by-the-run-that-motivated-them) — The discriminating experiment, a fixed cost that is not ConnectTimeout, and two fixes measured by the run that motivated them
 - [075](#075--three-and-three-and-068s-index-clears) — Three and three, and 068's index clears
 - [076](#076--a-confirm-sells-every-seat-or-none-and-the-seat-lock-goes) — A confirm sells every seat or none, and the seat lock goes
+- [077](#077--a-cancel-gives-the-seats-back-before-the-money) — A cancel gives the seats back before the money
 
 ---
 
@@ -4415,3 +4416,86 @@ path's saving — one round trip per order instead of one per seat — is in no 
 
 What this does not change: the money steps and their order (028), the confirm being two
 modules' transactions rather than one, and every seat invariant resting on `xmin`.
+
+---
+
+## 077 — A cancel gives the seats back before the money
+
+An audit of the tree after 076, on 2026-09-23, found one path that still ends with seats
+sold and nobody charged. 076 closed the partial sale and said a confirm "leaves no seat sold
+without a buyer". That holds for a confirm running alone. It did not hold for a confirm and
+a cancel of the same order running together, because 034 had cancel void first:
+
+1. confirm authorises: `Authorized`
+2. confirm sells: every hold is live, so every seat sells
+3. cancel voids: `Voided`. 034's guard looks for `AlreadyCaptured`, and nothing has been
+   captured yet
+4. cancel releases: every seat answers `AlreadySold`, which is ignored, and cancel writes
+   `Cancelled`
+5. confirm captures: `NoAuthorization`, so it writes `Failed` and loses the order row's
+   `xmin`
+
+End state: the seats are `Sold` to the client, the authorisation is voided, and
+Notifications has announced the sale. `Cancel_BetweenAConfirmsSaleAndItsCapture_…` runs
+exactly this against the old code and fails with the money `Voided`. The window is one
+gateway call wide, and in the extracted configuration that call crosses the network.
+Nothing in the load rig cancels, so no run could have seen it.
+
+A crashed confirm reaches the same state with no second request involved. If the process
+dies after the sale and before the capture, the order stays `Pending`, its seats are sold
+and the funds are held. Before this change, a cancel of that order voided the funds and
+wrote `Cancelled` over seats nobody had paid for.
+
+**The decision: a cancel releases the seats first and touches the money only once they are
+back.** If any seat answers `SoldToYou`, a confirm of this order has already sold it. Money
+is then the only step left to happen, so cancel returns `LostRace` and voids nothing. If no
+seat answers `SoldToYou`, the holds a sale would need are gone, no sale can follow, and the
+void is safe. This is 028's argument run in the other direction. The sale is the step that
+cannot be undone, so each flow keeps its reversible step on the far side of it: a confirm
+secures the money before selling, and a cancel releases the seats before giving the money
+back. 034 had the order backwards and did not notice, because its only guard (a capture that
+had already happened) covers the one interleaving where the money has finished moving.
+
+**Why a new contract member, rather than reading who owns the seat some other way.**
+`AlreadySold` meant "sold", with no buyer attached, and a cancel has to tell "my own confirm
+won" apart from "my hold lapsed and somebody else bought it". Only the second should still
+cancel and void. `Seat` keeps `HeldByClientId` when it sells, and the sell handler already
+reads it to make a repeated purchase idempotent. The release handler now reads it the same
+way. `ReleaseSeatStatus.SoldToYou` and `ReleaseSeatOutcome.SoldToYou` carry the answer, and
+over HTTP it is `409` with reason `sold_to_you`, not retriable. No rule moved: `Release`
+still refuses a sold seat for every caller, and only the reason given to the caller is more
+specific.
+
+**What the other interleavings do now**, each pinned by a test or argued from one:
+
+- *Cancel lands between the authorisation and the sale.* The seats go back, the sale finds
+  them `Available` and refuses, and both flows void. Nothing is sold and nothing is taken.
+  Whichever flow saves the order first writes the ending, so an order the customer
+  cancelled can read `Failed` if the confirm's save wins. The seats and the money are right
+  either way, and only the label depends on which save wins.
+- *Cancel lands after the sale.* `SoldToYou`, `LostRace`, and the confirm captures.
+- *A crashed confirm.* Cancel answers `LostRace` for as long as the seats are sold, and a
+  retried confirm completes the order. The authorisation is still live, the sale answers
+  sold for the client that owns the seats, and the capture takes the money. That is the
+  correct ending: the customer has the seats, so the customer pays.
+- *The defensive case.* `AlreadyCaptured` on the void is kept. No interleaving of this
+  module's own confirm and cancel reaches it, because a capture follows a complete sale and
+  that sale answers `SoldToYou` first. Payments saying the money was taken is still no
+  reason to write a cancellation over it.
+
+**What it costs.** A cancel of an order whose seats someone else bought through Inventory's
+own purchase route (not through this order's confirm) cannot be cancelled while it is
+`Pending`, because the seats answer `SoldToYou` for that client too. A confirm then completes
+the order and charges for seats the client does own. That is a customer sidestepping the
+order flow, and charging them for what they hold is the answer 033 would give.
+
+**What this does not do.** It adds no lock and no new order status. The order row's `xmin`
+still decides which ending is written, and Inventory still decides what happened to the
+seats. The latent double-lost-race in `SellSeatCommandHandler` that the same audit found
+(its catch leaves the seats reading `Sold` in the change tracker, where 076's reload covers
+only a refusal) is its own change. So is a k6 scenario that cancels.
+
+**About the number.** 076 said 077 would be where the client lock is measured against
+Postgres. Entries are numbered in the order they are written, so this one took 077 and that
+measurement has no entry yet. The documentation sweep after this change should record that,
+because 076 cannot be edited.

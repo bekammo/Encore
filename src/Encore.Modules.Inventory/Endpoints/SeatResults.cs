@@ -103,6 +103,9 @@ internal static class SeatResults
             ReleaseSeatOutcome.AlreadySold => Conflict(
                 path, "already_sold", "This seat has been sold and cannot be released.", retriable: false),
 
+            ReleaseSeatOutcome.SoldToYou => Conflict(
+                path, "sold_to_you", "You have bought this seat, and a sale cannot be released.", retriable: false),
+
             ReleaseSeatOutcome.NotTheHolder => Conflict(
                 path, "not_the_holder", "You are not holding this seat.", retriable: false),
 

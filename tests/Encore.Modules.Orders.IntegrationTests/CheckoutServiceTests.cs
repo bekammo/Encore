@@ -766,9 +766,62 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A confirm won the race and the customer has been charged. Cancelling now
-    /// would write an ending that contradicts a completed sale, so this refuses
-    /// and lets the retry find the order as it actually stands.
+    /// A confirm has sold the seats and this client owns them. Voiding now would
+    /// take back the money for a sale that stands, so this touches neither the
+    /// money nor the order and lets the retry find the order as it actually
+    /// stands. 077.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_WhenAConfirmHasSoldTheSeats_ShouldLeaveTheMoneyAndTheOrderAlone()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 2);
+
+        var seats = new FakeSeatReservations { DefaultRelease = ReleaseSeatStatus.SoldToYou };
+        var payments = new FakeOrderPayments();
+
+        await using var context = new OrdersDbContext(_options);
+        var result = await ServiceFor(context, seats, payments: payments)
+            .CancelAsync(clientId, order.Id);
+
+        Assert.Equal(OrderActionOutcome.LostRace, result.Outcome);
+        Assert.Empty(payments.Voids);
+
+        await using var reader = new OrdersDbContext(_options);
+        var stored = await reader.Orders.SingleAsync(candidate => candidate.Id == order.Id);
+        Assert.Equal(OrderStatus.Pending, stored.Status);
+    }
+
+    /// <summary>
+    /// A seat sold to somebody else is not a confirm of this order winning — the
+    /// client's hold lapsed and another buyer took it — so it does not stop the
+    /// cancellation, and the money goes back.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_WhenASeatWasSoldToSomebodyElse_ShouldStillCancelAndVoid()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 2);
+
+        var seats = new FakeSeatReservations();
+        seats.ReleaseAnswers[order.Lines[0].SeatId] = ReleaseSeatStatus.AlreadySold;
+        var payments = new FakeOrderPayments();
+
+        await using var context = new OrdersDbContext(_options);
+        var result = await ServiceFor(context, seats, payments: payments)
+            .CancelAsync(clientId, order.Id);
+
+        Assert.Equal(OrderActionOutcome.Completed, result.Outcome);
+        Assert.Equal(OrderStatus.Cancelled, result.Order!.Status);
+        Assert.Single(payments.Voids);
+    }
+
+    /// <summary>
+    /// Unreachable by any interleaving of this module's own confirm and cancel —
+    /// money is captured only after every seat sold, and a sold seat answers
+    /// <see cref="ReleaseSeatStatus.SoldToYou"/> before the void is asked. Kept
+    /// as a defence: if Payments ever says the money was taken, a cancellation
+    /// is not written over it.
     /// </summary>
     [Fact]
     public async Task Cancel_WhenTheMoneyHasAlreadyBeenTaken_ShouldSayLostRace()
@@ -784,7 +837,6 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
             .CancelAsync(clientId, order.Id);
 
         Assert.Equal(OrderActionOutcome.LostRace, result.Outcome);
-        Assert.Empty(seats.Releases);
 
         await using var reader = new OrdersDbContext(_options);
         var stored = await reader.Orders.SingleAsync(candidate => candidate.Id == order.Id);
@@ -861,14 +913,92 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Equal(CheckoutOutcome.Created, result.Outcome);
     }
 
+    // -- Confirm and cancel together (DECISIONS 077) ----------------------
+
+    /// <summary>
+    /// The interleaving 077 closes. A confirm has authorised and sold, and before
+    /// it captures, a cancel runs start to finish. When cancel voided first, it
+    /// released the authorisation the capture was about to take: the seats stayed
+    /// sold, the capture found nothing, and a customer held seats nobody paid for.
+    /// Now cancel asks about the seats first, hears that its own confirm sold
+    /// them, and leaves the money where it is.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_BetweenAConfirmsSaleAndItsCapture_ShouldLeaveTheSaleToBePaidFor()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 2);
+
+        var seats = new StatefulSeatReservations(order);
+        var payments = new StatefulOrderPayments();
+
+        OrderActionResult? cancel = null;
+        payments.BeforeCapture = async () =>
+        {
+            await using var other = new OrdersDbContext(_options);
+            cancel = await ServiceFor(other, seats, payments: payments).CancelAsync(clientId, order.Id);
+        };
+
+        await using var context = new OrdersDbContext(_options);
+        var confirm = await ServiceFor(context, seats, payments: payments).ConfirmAsync(clientId, order.Id);
+
+        // The invariant, stated before the outcomes: sold seats and taken money
+        // go together.
+        Assert.All(seats.Seats.Values, seat => Assert.Equal(SeatState.Sold, seat));
+        Assert.Equal(MoneyState.Captured, payments.Money);
+
+        Assert.Equal(OrderActionOutcome.LostRace, cancel!.Outcome);
+        Assert.Equal(OrderActionOutcome.Completed, confirm.Outcome);
+
+        await using var reader = new OrdersDbContext(_options);
+        var stored = await reader.Orders.SingleAsync(candidate => candidate.Id == order.Id);
+        Assert.Equal(OrderStatus.Confirmed, stored.Status);
+    }
+
+    /// <summary>
+    /// The other side of the same race: the cancel lands after the confirm has
+    /// authorised but before it sells. The seats go back first, so the sale finds
+    /// nothing to sell, and both halves release the money. Nothing sold, nothing
+    /// taken, and the cancel's ending is the one written.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_BetweenAConfirmsAuthorisationAndItsSale_ShouldLeaveNothingSoldAndNothingTaken()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 2);
+
+        var seats = new StatefulSeatReservations(order);
+        var payments = new StatefulOrderPayments();
+
+        OrderActionResult? cancel = null;
+        seats.BeforeSell = async () =>
+        {
+            await using var other = new OrdersDbContext(_options);
+            cancel = await ServiceFor(other, seats, payments: payments).CancelAsync(clientId, order.Id);
+        };
+
+        await using var context = new OrdersDbContext(_options);
+        var confirm = await ServiceFor(context, seats, payments: payments).ConfirmAsync(clientId, order.Id);
+
+        Assert.All(seats.Seats.Values, seat => Assert.Equal(SeatState.Available, seat));
+        Assert.Equal(MoneyState.Voided, payments.Money);
+
+        Assert.Equal(OrderActionOutcome.Completed, cancel!.Outcome);
+        Assert.Equal(OrderActionOutcome.LostRace, confirm.Outcome);
+
+        await using var reader = new OrdersDbContext(_options);
+        var stored = await reader.Orders.SingleAsync(candidate => candidate.Id == order.Id);
+        Assert.Equal(OrderStatus.Cancelled, stored.Status);
+    }
+
     // -- Helpers ----------------------------------------------------------
 
     private CheckoutService ServiceFor(
         OrdersDbContext context,
-        FakeSeatReservations seats,
+        ISeatReservations seats,
         FakeEventPricing? pricing = null,
         DateTime? at = null,
-        FakeOrderPayments? payments = null) =>
+        IOrderPayments? payments = null) =>
         new(
             context,
             pricing ?? new FakeEventPricing(),
@@ -930,6 +1060,10 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
 
         public SellSeatStatus DefaultSell { get; set; } = SellSeatStatus.Sold;
 
+        public Dictionary<Guid, ReleaseSeatStatus> ReleaseAnswers { get; } = [];
+
+        public ReleaseSeatStatus DefaultRelease { get; set; } = ReleaseSeatStatus.Released;
+
         public List<HoldSeatsRequest> Holds { get; } = [];
 
         public List<SellSeatsRequest> Sells { get; } = [];
@@ -952,7 +1086,9 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
             Releases.Add(request);
 
             return Task.FromResult(new ReleaseSeatsResponse(
-                [.. request.SeatIds.Select(seatId => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.Released))]));
+                [.. request.SeatIds.Select(seatId => new ReleaseSeatResponse(
+                    seatId,
+                    ReleaseAnswers.TryGetValue(seatId, out var answer) ? answer : DefaultRelease))]));
         }
 
         public Task<SellSeatsResponse> SellAsync(
@@ -1027,6 +1163,151 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         {
             Voids.Add(request);
             return Task.FromResult(new VoidPaymentResponse(VoidWith, Guid.NewGuid()));
+        }
+    }
+
+    private enum SeatState
+    {
+        Held,
+        Available,
+        Sold
+    }
+
+    private enum MoneyState
+    {
+        Nothing,
+        Authorized,
+        Voided,
+        Captured
+    }
+
+    /// <summary>
+    /// Inventory as state rather than as canned answers, for one client's order:
+    /// a sale moves every held seat to sold or none, and a release answers
+    /// whatever the seat's state now is. That is what lets a cancel be run
+    /// between two of a confirm's steps and the ending read off the seats.
+    /// </summary>
+    private sealed class StatefulSeatReservations(Order order) : ISeatReservations
+    {
+        public Dictionary<Guid, SeatState> Seats { get; } =
+            order.Lines.ToDictionary(line => line.SeatId, _ => SeatState.Held);
+
+        /// <summary>Runs once, before the next sale looks at any seat.</summary>
+        public Func<Task>? BeforeSell { get; set; }
+
+        public Task<HoldSeatsResponse> HoldAsync(
+            HoldSeatsRequest request,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("The order is opened by the canned fake.");
+
+        public async Task<SellSeatsResponse> SellAsync(
+            SellSeatsRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (BeforeSell is { } hook)
+            {
+                BeforeSell = null;
+                await hook();
+            }
+
+            // Sold to this same client answers as sold, as the real handler does.
+            var refusals = request.SeatIds
+                .Where(seatId => Seats[seatId] is SeatState.Available)
+                .Select(seatId => new SellSeatResponse(seatId, SellSeatStatus.NoActiveHold))
+                .ToList();
+
+            if (refusals.Count is 0)
+            {
+                foreach (var seatId in request.SeatIds)
+                {
+                    Seats[seatId] = SeatState.Sold;
+                }
+            }
+
+            return new SellSeatsResponse(refusals);
+        }
+
+        public Task<ReleaseSeatsResponse> ReleaseAsync(
+            ReleaseSeatsRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            var answers = new List<ReleaseSeatResponse>();
+
+            foreach (var seatId in request.SeatIds)
+            {
+                if (Seats[seatId] is SeatState.Sold)
+                {
+                    answers.Add(new ReleaseSeatResponse(seatId, ReleaseSeatStatus.SoldToYou));
+                    continue;
+                }
+
+                Seats[seatId] = SeatState.Available;
+                answers.Add(new ReleaseSeatResponse(seatId, ReleaseSeatStatus.Released));
+            }
+
+            return Task.FromResult(new ReleaseSeatsResponse(answers));
+        }
+    }
+
+    /// <summary>
+    /// Payments as state: one attempt, whose authorisation a void releases and a
+    /// capture takes — and a capture of something voided finds nothing to take.
+    /// </summary>
+    private sealed class StatefulOrderPayments : IOrderPayments
+    {
+        public MoneyState Money { get; private set; } = MoneyState.Nothing;
+
+        /// <summary>Runs once, before the next capture looks at the money.</summary>
+        public Func<Task>? BeforeCapture { get; set; }
+
+        public Task<AuthorizePaymentResponse> AuthorizeAsync(
+            AuthorizePaymentRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (Money is MoneyState.Captured)
+            {
+                return Task.FromResult(new AuthorizePaymentResponse(AuthorizePaymentStatus.AlreadyCaptured, Guid.NewGuid()));
+            }
+
+            Money = MoneyState.Authorized;
+            return Task.FromResult(new AuthorizePaymentResponse(AuthorizePaymentStatus.Authorized, Guid.NewGuid()));
+        }
+
+        public async Task<CapturePaymentResponse> CaptureAsync(
+            CapturePaymentRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (BeforeCapture is { } hook)
+            {
+                BeforeCapture = null;
+                await hook();
+            }
+
+            if (Money is MoneyState.Authorized or MoneyState.Captured)
+            {
+                Money = MoneyState.Captured;
+                return new CapturePaymentResponse(CapturePaymentStatus.Captured, Guid.NewGuid());
+            }
+
+            return new CapturePaymentResponse(CapturePaymentStatus.NoAuthorization, Guid.NewGuid());
+        }
+
+        public Task<VoidPaymentResponse> VoidAsync(
+            VoidPaymentRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            switch (Money)
+            {
+                case MoneyState.Captured:
+                    return Task.FromResult(new VoidPaymentResponse(VoidPaymentStatus.AlreadyCaptured, Guid.NewGuid()));
+
+                case MoneyState.Authorized:
+                    Money = MoneyState.Voided;
+                    return Task.FromResult(new VoidPaymentResponse(VoidPaymentStatus.Voided, Guid.NewGuid()));
+
+                default:
+                    return Task.FromResult(new VoidPaymentResponse(VoidPaymentStatus.NoAuthorization, Guid.NewGuid()));
+            }
         }
     }
 }

@@ -13,7 +13,8 @@ public enum ReleaseSeatOutcome
     Released = 0,
 
     /// <summary>
-    /// The seat is sold, and a sale cannot be undone by releasing. Terminal.
+    /// The seat is sold to somebody else, and a sale cannot be undone by
+    /// releasing. Terminal.
     /// </summary>
     AlreadySold = 1,
 
@@ -27,5 +28,12 @@ public enum ReleaseSeatOutcome
     /// The seat changed underneath this attempt twice. Rare, and the honest
     /// answer is "try again".
     /// </summary>
-    LostRace = 4
+    LostRace = 4,
+
+    /// <summary>
+    /// The seat is sold to this client. Terminal as well, and told apart from
+    /// <see cref="AlreadySold"/> because it means a purchase of theirs has
+    /// already gone through — see <see cref="ReleaseSeatResult.SoldToYou"/>.
+    /// </summary>
+    SoldToYou = 5
 }

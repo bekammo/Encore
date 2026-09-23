@@ -403,15 +403,23 @@ public sealed class CheckoutService(
     /// in the system for five minutes at a time. See 034.
     /// </para>
     /// <para>
-    /// <b>The money goes back first.</b> If it turns out the money has already
-    /// been taken, this order is not cancellable — a confirm won the race — and
-    /// the client is told to look again rather than being handed a cancellation
-    /// that contradicts a completed sale.
+    /// <b>The seats go back first, and the money only once they have.</b> This is
+    /// 028's reasoning applied from the other end. A confirm can be anywhere
+    /// between its authorisation and its capture while this runs, and the one
+    /// thing that says whether it has passed the point of no return is the seats:
+    /// once they are sold they stay sold. So this asks Inventory first. If any
+    /// seat answers <see cref="ReleaseSeatStatus.SoldToYou"/>, a confirm of this
+    /// order has sold them, the money is the only thing still to happen, and
+    /// voiding it would leave a customer holding seats nobody paid for — the
+    /// client is told to look again instead. If none does, no sale can follow,
+    /// because the holds it would need are gone, and the money is safe to
+    /// release. Voiding first — as this did until 077 — opened exactly that gap
+    /// between a confirm's sale and its capture.
     /// </para>
     /// <para>
-    /// Nothing here checks whether a release succeeded. A refusal means the hold
-    /// was already gone, which is the state this was asking for; Inventory
-    /// reclaims lapsed holds lazily on every path regardless.
+    /// Nothing else here checks whether a release succeeded. Any other refusal
+    /// means the hold was already gone, which is the state this was asking for;
+    /// Inventory reclaims lapsed holds lazily on every path regardless.
     /// </para>
     /// </remarks>
     public async Task<OrderActionResult> CancelAsync(
@@ -436,24 +444,33 @@ public sealed class CheckoutService(
             return new OrderActionResult(OrderActionOutcome.NotPending, order);
         }
 
+        var seats = await _seats
+            .ReleaseAsync(
+                new ReleaseSeatsRequest(order.EventId, [.. order.Lines.Select(line => line.SeatId)], clientId),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (seats.Seats.Any(seat => seat.Status is ReleaseSeatStatus.SoldToYou))
+        {
+            // A confirm of this order has sold the seats and is about to take the
+            // money, or took it and has not yet recorded so. Either way the order
+            // is not this method's to end. The row still reads Pending in memory,
+            // so saying NotPending would be reporting a status it has not read;
+            // LostRace is the truth, and the retry finds the settled order.
+            return new OrderActionResult(OrderActionOutcome.LostRace, order);
+        }
+
         var released = await _payments
             .VoidAsync(new VoidPaymentRequest(order.Id, clientId), cancellationToken)
             .ConfigureAwait(false);
 
         if (released.Status is VoidPaymentStatus.AlreadyCaptured)
         {
-            // A confirm got there first and the customer has been charged. The
-            // order row still reads Pending in memory, so saying NotPending would
-            // be this method reporting a status it has not read; LostRace is the
-            // truth, and the retry finds the settled order.
+            // Not reachable by this module's own confirm, which captures only after
+            // every seat sold — and those answered SoldToYou above. Kept so that a
+            // cancellation is never written over money Payments says it has taken.
             return new OrderActionResult(OrderActionOutcome.LostRace, order);
         }
-
-        await _seats
-            .ReleaseAsync(
-                new ReleaseSeatsRequest(order.EventId, [.. order.Lines.Select(line => line.SeatId)], clientId),
-                cancellationToken)
-            .ConfigureAwait(false);
 
         order.Status = OrderStatus.Cancelled;
 

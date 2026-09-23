@@ -393,7 +393,7 @@
           "200": { "description": "Released, or already available.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SeatActionResponse" } } } },
           "400": { "$ref": "#/components/responses/BadClientId" },
           "404": { "description": "reason: seat_not_found.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
-          "409": { "description": "reason: already_sold (sold is terminal), not_the_holder, lost_race.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+          "409": { "description": "reason: already_sold (sold to somebody else; terminal), sold_to_you (you bought it; terminal), not_the_holder, lost_race.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
         }
       }
     },

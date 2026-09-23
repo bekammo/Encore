@@ -143,6 +143,7 @@ public class SeatResultsTests
 
     [Theory]
     [InlineData(ReleaseSeatOutcome.AlreadySold, StatusCodes.Status409Conflict, "already_sold")]
+    [InlineData(ReleaseSeatOutcome.SoldToYou, StatusCodes.Status409Conflict, "sold_to_you")]
     [InlineData(ReleaseSeatOutcome.NotTheHolder, StatusCodes.Status409Conflict, "not_the_holder")]
     [InlineData(ReleaseSeatOutcome.LostRace, StatusCodes.Status409Conflict, "lost_race")]
     [InlineData(ReleaseSeatOutcome.SeatNotFound, StatusCodes.Status404NotFound, "seat_not_found")]
