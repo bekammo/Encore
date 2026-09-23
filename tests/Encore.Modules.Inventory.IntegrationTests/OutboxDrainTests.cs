@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Contracts.Events;
@@ -81,6 +82,32 @@ public sealed class OutboxDrainTests : IAsyncLifetime
     /// <summary>
     /// A reclaim writes SeatReleased before SeatHeld, with adjacent ids from one save.
     /// </summary>
+    /// <summary>A save inside a traced operation records that trace, so delivery can link back to it.</summary>
+    [Fact]
+    public async Task Hold_InsideATracedOperation_ShouldRecordItsTraceParent()
+    {
+        var seatId = await SeatAsync();
+
+        using (var operation = new Activity("hold").Start())
+        {
+            await HoldAsync(seatId);
+
+            var message = Assert.Single(await MessagesForAsync(seatId));
+            Assert.Equal(operation.Id, message.TraceParent);
+        }
+    }
+
+    [Fact]
+    public async Task Hold_OutsideATrace_ShouldRecordNoTraceParent()
+    {
+        var seatId = await SeatAsync();
+
+        Assert.Null(Activity.Current);
+        await HoldAsync(seatId);
+
+        Assert.Null(Assert.Single(await MessagesForAsync(seatId)).TraceParent);
+    }
+
     [Fact]
     public async Task Hold_WhenReclaimingALapsedHold_ShouldWriteReleasedBeforeHeld()
     {
@@ -370,6 +397,18 @@ public sealed class OutboxDrainTests : IAsyncLifetime
         await context.SaveChangesAsync();
 
         return seatId;
+    }
+
+    /// <summary>Holds the seat for a new client through the repository, as a request would.</summary>
+    private async Task HoldAsync(Guid seatId)
+    {
+        await using var context = new InventoryDbContext(_options);
+        var seats = new EfSeatRepository(context);
+
+        var seat = await seats.GetByIdAsync(seatId);
+
+        seat!.Hold(Guid.NewGuid(), Now());
+        await seats.SaveAsync(seat);
     }
 
     /// <summary>Moves the seat on by two row versions through another context, leaving it Available.</summary>

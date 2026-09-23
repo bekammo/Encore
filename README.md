@@ -39,6 +39,7 @@ Encore.sln
 │   ├── Encore.Payments.Api                 the Payments service — one module, its own process
 │   ├── Encore.Shared                       cross-cutting contracts, zero packages
 │   ├── Encore.Modules.Shared.Persistence   startup migrator + schema wiring, names no module
+│   ├── Encore.Telemetry                    the hosts' OpenTelemetry wiring, names no module
 │   ├── Encore.Modules.Catalog              flat CRUD
 │   ├── Encore.Modules.Catalog.Contracts    its public face — zero packages, zero refs
 │   ├── Encore.Modules.Orders               flat CRUD + the checkout
@@ -230,7 +231,7 @@ direction, and it also checks which host serves each route (`DECISIONS.md` 008).
 docker compose run --rm --build tests
 ```
 
-579 tests: 358 unit and architecture, 221 integration against real Postgres and
+608 tests: 384 unit and architecture, 224 integration against real Postgres and
 Testcontainers. `--build` is not optional: the image compiles the source into itself
 with no bind mount, so a run without it reports on the last build's binaries as though
 they were today's.
@@ -408,6 +409,36 @@ In the second run, 92 cancels arrived after their confirm had sold the seats. Ea
 Reports land in `load/results/` beside the summaries, and are gitignored for the same
 reason.
 
+## Watching it
+
+```bash
+docker compose --profile telemetry up -d lgtm
+OTEL_ENDPOINT=http://lgtm:4317 docker compose --profile strangled up -d --build
+```
+
+Grafana is at [http://localhost:3000](http://localhost:3000), with Tempo, Prometheus and Loki
+behind it. For `dotnet run`, set `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`.
+Telemetry is **off unless that variable names a collector**, so a load run measures the
+system without it (`DECISIONS.md` 021).
+
+The instrumentation follows the same asymmetry as the code. Every module gets the
+framework's spans: HTTP in and out, and every Npgsql query. Only Inventory has instruments of
+its own, recorded at its adapters' edges through the BCL's `ActivitySource` and `Meter`. The
+Domain and the use cases do not know them.
+
+| Metric | What it answers |
+|---|---|
+| `encore.inventory.seat.outcomes` | What each seat answered, by action: held, lost the race, already sold… |
+| `encore.inventory.lock.attempts` | What Redis answered, and how often the cooldown answered for it |
+| `encore.inventory.outbox.deliveries` | Delivered, failed, dead-lettered, by event type |
+| `encore.inventory.outbox.delivery.lag` | How late "late is not wrong" is, from the seat change to delivery |
+
+A confirm is one trace across both processes, with authorise and capture as server spans in
+`encore-payments`. An outbox delivery is a trace of its own, **linked** to the request that
+raised the event rather than joined to it: that request ended long before, and a
+redelivery would give it a second child. Background polls are sampled out. Each would
+otherwise be a one-span trace every second.
+
 ## Status
 
 Load-In is closed, and Soundcheck's two outcomes — the outbox and the Payments extraction —
@@ -425,25 +456,27 @@ are built. The work since has been load and chaos testing.
 - **Payments runs as its own service** (018). The extraction was inert for four days — a
   `services.Replace` that ran before the registration it meant to replace — and the chaos rig
   found it by stopping the service and watching confirms keep succeeding.
+- **OpenTelemetry**, brought forward from On Tour (021). Off by default. What exporting costs
+  a flash sale has not been measured yet.
 
 Open, and named rather than hidden:
 
 - `Payment` raises no domain events, so nothing tells an order that the reconciler released
   its authorisation. That needs Payments to have an outbox of its own (013).
-- Losing Redis still costs a purchase 1.78× at the median. The next change stops the lock
-  asking Redis for a short while after a refusal (019).
+- Losing Redis still costs a purchase 1.78× at the median. The lock now stops asking Redis
+  for a second after a refusal; what that saves has not been measured yet (019).
 - The client lock has not been measured against a Postgres-side serialisation of the cap
   check (005).
 - The `payments` schema still lives in the shared Postgres: the process boundary moved and
   the data boundary did not (018).
 - Identity does not exist, so `X-Client-Id` remains a claimed identity.
 
-Deliberately absent, by roadmap phase rather than oversight: MediatR, MassTransit, SignalR,
-observability and any deployment story.
+Deliberately absent, by roadmap phase rather than oversight: MediatR, MassTransit, SignalR
+and any deployment story.
 
 | Phase | Weeks | Focus |
 |---|---|---|
 | Load-In | 1–3 | Modular monolith, DDD tactical patterns, TDD foundation |
-| **Soundcheck** | 4–6 | Extract Payments and Notifications via Strangler Fig + Outbox |
-| Showtime | 7–10 | Inventory concurrency, load testing, chaos experiments |
+| Soundcheck | 4–6 | Extract Payments and Notifications via Strangler Fig + Outbox |
+| **Showtime** | 7–10 | Inventory concurrency, load testing, chaos experiments |
 | On Tour | 11–12+ | Cloud deploy, observability, write-up |

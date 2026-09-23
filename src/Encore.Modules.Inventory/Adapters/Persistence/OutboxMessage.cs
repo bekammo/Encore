@@ -16,12 +16,13 @@ public sealed class OutboxMessage
     {
     }
 
-    private OutboxMessage(Guid messageId, string eventType, string payload, DateTime occurredAt)
+    private OutboxMessage(Guid messageId, string eventType, string payload, DateTime occurredAt, string? traceParent)
     {
         MessageId = messageId;
         EventType = eventType;
         Payload = payload;
         OccurredAt = occurredAt;
+        TraceParent = traceParent;
 
         // Due immediately.
         NextAttemptAt = occurredAt;
@@ -31,11 +32,13 @@ public sealed class OutboxMessage
     /// <param name="eventType">A published name from <c>InventoryEventTypes</c>.</param>
     /// <param name="payload">The serialised contract.</param>
     /// <param name="occurredAt">When the event happened. UTC.</param>
+    /// <param name="traceParent">The W3C <c>traceparent</c> of the operation that raised it, if one was traced.</param>
     public static OutboxMessage For(
         Guid messageId,
         string eventType,
         string payload,
-        DateTime occurredAt)
+        DateTime occurredAt,
+        string? traceParent = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(eventType);
         ArgumentException.ThrowIfNullOrWhiteSpace(payload);
@@ -47,7 +50,12 @@ public sealed class OutboxMessage
 
         GuardUtc(occurredAt, nameof(occurredAt));
 
-        return new OutboxMessage(messageId, eventType, payload, occurredAt);
+        if (traceParent is { Length: > MaxTraceParentLength })
+        {
+            throw new ArgumentException("A traceparent is at most 55 characters.", nameof(traceParent));
+        }
+
+        return new OutboxMessage(messageId, eventType, payload, occurredAt, traceParent);
     }
 
     public long Id { get; private set; }
@@ -72,6 +80,12 @@ public sealed class OutboxMessage
 
     public string? LastError { get; private set; }
 
+    /// <summary>
+    /// The trace that raised the event, so delivery can link back to it. A link, not a parent:
+    /// delivery is later, and may happen more than once.
+    /// </summary>
+    public string? TraceParent { get; private set; }
+
     public void MarkProcessed(DateTime utcNow)
     {
         GuardUtc(utcNow, nameof(utcNow));
@@ -91,6 +105,9 @@ public sealed class OutboxMessage
     }
 
     internal const int MaxErrorLength = 1_000;
+
+    /// <summary>version-traceid-spanid-flags: 2 + 32 + 16 + 2 characters and three dashes.</summary>
+    internal const int MaxTraceParentLength = 55;
 
     private static void GuardUtc(DateTime value, string parameterName)
     {

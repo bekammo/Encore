@@ -1,3 +1,4 @@
+using Encore.Modules.Inventory.Adapters.Telemetry;
 using Encore.Modules.Inventory.Application;
 using Encore.Modules.Inventory.Contracts;
 
@@ -30,6 +31,11 @@ internal sealed class InProcessSeatReservations(
                 cancellationToken)
             .ConfigureAwait(false);
 
+        foreach (var result in results)
+        {
+            InventoryTelemetry.RecordSeat("hold", result.Outcome);
+        }
+
         return new HoldSeatsResponse(
             [.. request.SeatIds.Zip(results, (seatId, result) => ToResponse(seatId, result))]);
     }
@@ -47,6 +53,11 @@ internal sealed class InProcessSeatReservations(
                 cancellationToken)
             .ConfigureAwait(false);
 
+        foreach (var result in results)
+        {
+            InventoryTelemetry.RecordSeat("release", result.Outcome);
+        }
+
         return new ReleaseSeatsResponse(
             [.. request.SeatIds.Zip(results, (seatId, result) => ToResponse(seatId, result))]);
     }
@@ -63,6 +74,20 @@ internal sealed class InProcessSeatReservations(
                 new SellSeatsCommand(request.EventId, request.SeatIds, request.ClientId),
                 cancellationToken)
             .ConfigureAwait(false);
+
+        // All or none: every seat sold, or only the refusals are worth counting.
+        if (result.AllSold)
+        {
+            InventoryTelemetry.SeatOutcomes.Add(
+                request.SeatIds.Count,
+                new KeyValuePair<string, object?>("action", "sell"),
+                new KeyValuePair<string, object?>("outcome", nameof(SellSeatOutcome.Sold)));
+        }
+
+        foreach (var refusal in result.Refusals)
+        {
+            InventoryTelemetry.RecordSeat("sell", refusal.Outcome);
+        }
 
         return new SellSeatsResponse(
             [.. result.Refusals.Select(refusal => ToResponse(refusal.SeatId, refusal.Outcome))]);

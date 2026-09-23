@@ -11,6 +11,7 @@
     <ProjectReference Include="..\Encore.Modules.Payments\Encore.Modules.Payments.csproj" />
     <!-- Declared explicitly: this host uses IReadinessCheck directly. -->
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
+    <ProjectReference Include="..\Encore.Telemetry\Encore.Telemetry.csproj" />
   </ItemGroup>
 
 </Project>

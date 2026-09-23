@@ -111,6 +111,34 @@ public sealed class SeatBatchTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Another writer moves a seat before each of the two saves. Both attempts lose, and a later
+    /// save on the same context writes nothing and does not fail on the stale seats.
+    /// </summary>
+    [Fact]
+    public async Task Sell_WhenBothAttemptsLoseTheRace_ShouldLeaveNothingForALaterSaveToWrite()
+    {
+        var clientId = Guid.NewGuid();
+        var seatIds = await SeedHeldAsync(clientId, _now, count: 2);
+
+        await using (var context = new InventoryDbContext(_options))
+        {
+            var contested = new MovedBeforeEachSave(
+                new EfSeatRepository(context),
+                () => MoveAsync(seatIds[1], clientId));
+
+            var result = await new SellSeatCommandHandler(contested, new FixedTimeProvider(_now))
+                .HandleAsync(new SellSeatsCommand(_eventId, seatIds, clientId));
+
+            Assert.Equal([new SeatSaleRefusal(seatIds[1], SellSeatOutcome.LostRace)], result.Refusals);
+
+            await context.SaveChangesAsync();
+        }
+
+        Assert.All(await LoadAsync(seatIds), seat => Assert.Equal(SeatStatus.Held, seat.Status));
+        Assert.Equal(0, await CountEventsAsync(seatIds, InventoryEventTypes.SeatSold));
+    }
+
+    /// <summary>
     /// Another writer moves one seat between load and save; the untouched seat does not sell either.
     /// </summary>
     [Fact]
@@ -338,5 +366,42 @@ public sealed class SeatBatchTests : IAsyncLifetime
     private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => new(utcNow, TimeSpan.Zero);
+    }
+
+    /// <summary>A real repository whose batch saves each lose a race, because another writer moves first.</summary>
+    private sealed class MovedBeforeEachSave(ISeatRepository inner, Func<Task> move) : ISeatRepository
+    {
+        public Task<Seat?> GetByIdAsync(Guid seatId, CancellationToken cancellationToken = default) =>
+            inner.GetByIdAsync(seatId, cancellationToken);
+
+        public Task<IReadOnlyList<Seat>> GetByIdsAsync(
+            IReadOnlyCollection<Guid> seatIds,
+            CancellationToken cancellationToken = default) =>
+            inner.GetByIdsAsync(seatIds, cancellationToken);
+
+        public Task SaveAsync(Seat seat, CancellationToken cancellationToken = default) =>
+            inner.SaveAsync(seat, cancellationToken);
+
+        public async Task SaveAsync(IReadOnlyCollection<Seat> seats, CancellationToken cancellationToken = default)
+        {
+            await move();
+            await inner.SaveAsync(seats, cancellationToken);
+        }
+
+        public Task<IReadOnlyCollection<Guid>> FindLiveHoldsAsync(
+            Guid clientId,
+            Guid eventId,
+            DateTime utcNow,
+            CancellationToken cancellationToken = default) =>
+            inner.FindLiveHoldsAsync(clientId, eventId, utcNow, cancellationToken);
+
+        public Task<IReadOnlyList<Guid>> FindExpiredHoldsAsync(
+            DateTime utcNow,
+            int limit,
+            CancellationToken cancellationToken = default) =>
+            inner.FindExpiredHoldsAsync(utcNow, limit, cancellationToken);
+
+        public Task AddRangeAsync(IReadOnlyCollection<Seat> seats, CancellationToken cancellationToken = default) =>
+            inner.AddRangeAsync(seats, cancellationToken);
     }
 }

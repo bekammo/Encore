@@ -1,3 +1,4 @@
+using Encore.Modules.Inventory.Adapters.Telemetry;
 using Encore.Modules.Inventory.Application;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -87,6 +88,7 @@ public static class SeatEndpoints
         var command = new HoldSeatCommand(eventId, seatId, ClientIdEndpointFilter.ClientId(context));
 
         var result = await handler.HandleAsync(command, cancellationToken).ConfigureAwait(false);
+        InventoryTelemetry.RecordSeat("hold", result.Outcome);
 
         return SeatResults.ForHold(seatId, result, context.Request.Path);
     }
@@ -101,6 +103,7 @@ public static class SeatEndpoints
         var command = new ReleaseSeatCommand(eventId, seatId, ClientIdEndpointFilter.ClientId(context));
 
         var result = await handler.HandleAsync(command, cancellationToken).ConfigureAwait(false);
+        InventoryTelemetry.RecordSeat("release", result.Outcome);
 
         return SeatResults.ForRelease(seatId, result, context.Request.Path);
     }
@@ -115,6 +118,7 @@ public static class SeatEndpoints
         var command = new SellSeatCommand(eventId, seatId, ClientIdEndpointFilter.ClientId(context));
 
         var result = await handler.HandleAsync(command, cancellationToken).ConfigureAwait(false);
+        InventoryTelemetry.RecordSeat("sell", result.Outcome);
 
         return SeatResults.ForSell(seatId, result, context.Request.Path);
     }

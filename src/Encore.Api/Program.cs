@@ -4,8 +4,12 @@ using Encore.Modules.Notifications;
 using Encore.Modules.Orders;
 using Encore.Modules.Payments;
 using Encore.Shared;
+using Encore.Telemetry;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Off unless OTEL_EXPORTER_OTLP_ENDPOINT is set.
+builder.AddEncoreTelemetry("encore-api");
 
 // Problem details for every response: module refusals, unhandled exceptions and
 // framework statuses alike. This registration is the body factory the other two use.

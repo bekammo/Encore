@@ -175,6 +175,53 @@ public class AssemblyReferenceTests
             $"{EncoreTree.SharedPersistence} knows what a DbContext and a schema are and may not know that a module exists. Found: {string.Join(", ", named)}");
     }
 
+    /// <summary>
+    /// The telemetry project may not name a module, a contracts assembly or the shared persistence
+    /// project. Module instruments are subscribed by wildcard.
+    /// </summary>
+    [Fact]
+    public void Telemetry_ShouldNameNoModuleContractsOrPersistenceAssembly()
+    {
+        var forbidden = EncoreTree.ModuleAssemblies
+            .Concat(EncoreTree.ContractsAssemblies)
+            .Append(EncoreTree.SharedPersistence)
+            .Append("Encore.Shared")
+            .ToHashSet(StringComparer.Ordinal);
+
+        var named = EncoreTree
+            .ReferencedNames(EncoreTree.Telemetry)
+            .Where(forbidden.Contains)
+            .ToList();
+
+        Assert.True(
+            named.Count == 0,
+            $"{EncoreTree.Telemetry} knows what an exporter is and may not know that a module exists. Found: {string.Join(", ", named)}");
+    }
+
+    /// <summary>No module or contracts assembly emits a reference to the telemetry project or to OpenTelemetry.</summary>
+    [Theory]
+    [InlineData("Encore.Shared")]
+    [InlineData("Encore.Modules.Catalog")]
+    [InlineData("Encore.Modules.Catalog.Contracts")]
+    [InlineData("Encore.Modules.Orders")]
+    [InlineData("Encore.Modules.Notifications")]
+    [InlineData("Encore.Modules.Payments")]
+    [InlineData("Encore.Modules.Payments.Contracts")]
+    [InlineData("Encore.Modules.Inventory")]
+    [InlineData("Encore.Modules.Inventory.Contracts")]
+    [InlineData("Encore.Modules.Inventory.Domain")]
+    public void Module_ShouldNameNoTelemetryAssembly(string assembly)
+    {
+        var leaked = EncoreTree
+            .ReferencedNames(assembly)
+            .Where(name => name == EncoreTree.Telemetry || name.StartsWith("OpenTelemetry", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.True(
+            leaked.Count == 0,
+            $"{assembly} emits through System.Diagnostics; exporters belong to the host. Found: {string.Join(", ", leaked)}");
+    }
+
     /// <summary>The host never names the shared persistence project: each module registers its own migrator.</summary>
     [Fact]
     public void Host_ShouldNotNameTheSharedPersistenceAssembly() =>

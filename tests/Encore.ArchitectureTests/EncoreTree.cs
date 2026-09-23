@@ -31,11 +31,15 @@ internal static class EncoreTree
         "Encore.Modules.Inventory",
         "Encore.Modules.Inventory.Contracts",
         "Encore.Modules.Inventory.Domain",
-        "Encore.Modules.Shared.Persistence"
+        "Encore.Modules.Shared.Persistence",
+        "Encore.Telemetry"
     ];
 
     /// <summary>The shared persistence project.</summary>
     internal const string SharedPersistence = "Encore.Modules.Shared.Persistence";
+
+    /// <summary>The hosts' OpenTelemetry wiring.</summary>
+    internal const string Telemetry = "Encore.Telemetry";
 
     /// <summary>Every host. A list, so a new host inherits the rules instead of silently escaping them.</summary>
     internal static readonly string[] Hosts =

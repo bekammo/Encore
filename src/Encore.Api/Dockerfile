@@ -12,6 +12,7 @@ WORKDIR /src
 COPY Directory.Build.props Directory.Build.targets ./
 COPY src/Encore.Api/Encore.Api.csproj                                                 src/Encore.Api/
 COPY src/Encore.Shared/Encore.Shared.csproj                                           src/Encore.Shared/
+COPY src/Encore.Telemetry/Encore.Telemetry.csproj                                     src/Encore.Telemetry/
 COPY src/Encore.Modules.Shared.Persistence/Encore.Modules.Shared.Persistence.csproj    src/Encore.Modules.Shared.Persistence/
 COPY src/Encore.Modules.Catalog/Encore.Modules.Catalog.csproj                         src/Encore.Modules.Catalog/
 COPY src/Encore.Modules.Orders/Encore.Modules.Orders.csproj                           src/Encore.Modules.Orders/

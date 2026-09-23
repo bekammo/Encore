@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The hosts' OpenTelemetry wiring, and the only place its packages live. Not a module and
+       not shared by modules: the architecture tests forbid it to name one, forbid anything but
+       a host to reference it, and forbid it any ProjectReference. Modules emit through the
+       BCL's ActivitySource and Meter and never learn this exists (021). -->
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.19.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.19.0" />
+  </ItemGroup>
+
+</Project>
