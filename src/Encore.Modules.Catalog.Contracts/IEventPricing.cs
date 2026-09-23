@@ -11,7 +11,7 @@ namespace Encore.Modules.Catalog.Contracts;
 /// with no owner. <c>IEventPricing</c> can only grow in one direction, and
 /// anything that is not "what does it cost to sell a seat at this event, and may
 /// I yet" belongs on a contract of its own. <c>ISeatRepository</c> carries the
-/// same warning about <c>CountLiveHoldsAsync</c>, for the same reason.
+/// same warning about <c>FindLiveHoldsAsync</c>, for the same reason.
 /// </para>
 /// <para>
 /// <b>Refusals are return values.</b> An event that does not exist is an

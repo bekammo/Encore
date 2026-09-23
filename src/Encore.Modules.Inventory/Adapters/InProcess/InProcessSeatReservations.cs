@@ -40,90 +40,99 @@ internal sealed class InProcessSeatReservations(
     private readonly SellSeatCommandHandler _sellSeat = sellSeat;
 
     /// <inheritdoc />
-    public async Task<HoldSeatResponse> HoldAsync(
-        HoldSeatRequest request,
+    public async Task<HoldSeatsResponse> HoldAsync(
+        HoldSeatsRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var result = await _holdSeat
+        var results = await _holdSeat
             .HandleAsync(
-                new HoldSeatCommand(request.EventId, request.SeatId, request.ClientId),
+                new HoldSeatsCommand(request.EventId, request.SeatIds, request.ClientId),
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return result.Outcome switch
-        {
-            // The expiry is only ever present on success, which is exactly the
-            // promise HoldSeatResponse makes, so the bang is safe here and
-            // nowhere else.
-            HoldSeatOutcome.Held =>
-                new HoldSeatResponse(HoldSeatStatus.Held, result.HoldExpiresAt!.Value),
-
-            HoldSeatOutcome.AlreadyHeld => new HoldSeatResponse(HoldSeatStatus.AlreadyHeld),
-            HoldSeatOutcome.AlreadySold => new HoldSeatResponse(HoldSeatStatus.AlreadySold),
-            HoldSeatOutcome.SeatNotFound => new HoldSeatResponse(HoldSeatStatus.SeatNotFound),
-            HoldSeatOutcome.LostRace => new HoldSeatResponse(HoldSeatStatus.LostRace),
-            HoldSeatOutcome.HoldCapReached => new HoldSeatResponse(HoldSeatStatus.HoldCapReached),
-            HoldSeatOutcome.ConcurrentRequestInFlight =>
-                new HoldSeatResponse(HoldSeatStatus.ConcurrentRequestInFlight),
-
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(request), result.Outcome, "Unmapped hold outcome.")
-        };
+        return new HoldSeatsResponse(
+            [.. request.SeatIds.Zip(results, (seatId, result) => ToResponse(seatId, result))]);
     }
 
     /// <inheritdoc />
-    public async Task<ReleaseSeatResponse> ReleaseAsync(
-        ReleaseSeatRequest request,
+    public async Task<ReleaseSeatsResponse> ReleaseAsync(
+        ReleaseSeatsRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var result = await _releaseSeat
+        var results = await _releaseSeat
             .HandleAsync(
-                new ReleaseSeatCommand(request.EventId, request.SeatId, request.ClientId),
+                new ReleaseSeatsCommand(request.EventId, request.SeatIds, request.ClientId),
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return result.Outcome switch
-        {
-            ReleaseSeatOutcome.Released => new ReleaseSeatResponse(ReleaseSeatStatus.Released),
-            ReleaseSeatOutcome.AlreadySold => new ReleaseSeatResponse(ReleaseSeatStatus.AlreadySold),
-            ReleaseSeatOutcome.NotTheHolder => new ReleaseSeatResponse(ReleaseSeatStatus.NotTheHolder),
-            ReleaseSeatOutcome.SeatNotFound => new ReleaseSeatResponse(ReleaseSeatStatus.SeatNotFound),
-            ReleaseSeatOutcome.LostRace => new ReleaseSeatResponse(ReleaseSeatStatus.LostRace),
-
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(request), result.Outcome, "Unmapped release outcome.")
-        };
+        return new ReleaseSeatsResponse(
+            [.. request.SeatIds.Zip(results, (seatId, result) => ToResponse(seatId, result))]);
     }
 
     /// <inheritdoc />
-    public async Task<SellSeatResponse> SellAsync(
-        SellSeatRequest request,
+    public async Task<SellSeatsResponse> SellAsync(
+        SellSeatsRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         var result = await _sellSeat
             .HandleAsync(
-                new SellSeatCommand(request.EventId, request.SeatId, request.ClientId),
+                new SellSeatsCommand(request.EventId, request.SeatIds, request.ClientId),
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return result.Outcome switch
-        {
-            SellSeatOutcome.Sold => new SellSeatResponse(SellSeatStatus.Sold),
-            SellSeatOutcome.AlreadySold => new SellSeatResponse(SellSeatStatus.AlreadySold),
-            SellSeatOutcome.NotTheHolder => new SellSeatResponse(SellSeatStatus.NotTheHolder),
-            SellSeatOutcome.HoldExpired => new SellSeatResponse(SellSeatStatus.HoldExpired),
-            SellSeatOutcome.NoActiveHold => new SellSeatResponse(SellSeatStatus.NoActiveHold),
-            SellSeatOutcome.SeatNotFound => new SellSeatResponse(SellSeatStatus.SeatNotFound),
-            SellSeatOutcome.LostRace => new SellSeatResponse(SellSeatStatus.LostRace),
-
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(request), result.Outcome, "Unmapped sell outcome.")
-        };
+        return new SellSeatsResponse(
+            [.. result.Refusals.Select(refusal => ToResponse(refusal.SeatId, refusal.Outcome))]);
     }
+
+    private static HoldSeatResponse ToResponse(Guid seatId, HoldSeatResult result) => result.Outcome switch
+    {
+        // The expiry is only ever present on success, which is exactly the
+        // promise HoldSeatResponse makes, so the bang is safe here and nowhere
+        // else.
+        HoldSeatOutcome.Held =>
+            new HoldSeatResponse(seatId, HoldSeatStatus.Held, result.HoldExpiresAt!.Value),
+
+        HoldSeatOutcome.AlreadyHeld => new HoldSeatResponse(seatId, HoldSeatStatus.AlreadyHeld),
+        HoldSeatOutcome.AlreadySold => new HoldSeatResponse(seatId, HoldSeatStatus.AlreadySold),
+        HoldSeatOutcome.SeatNotFound => new HoldSeatResponse(seatId, HoldSeatStatus.SeatNotFound),
+        HoldSeatOutcome.LostRace => new HoldSeatResponse(seatId, HoldSeatStatus.LostRace),
+        HoldSeatOutcome.HoldCapReached => new HoldSeatResponse(seatId, HoldSeatStatus.HoldCapReached),
+        HoldSeatOutcome.ConcurrentRequestInFlight =>
+            new HoldSeatResponse(seatId, HoldSeatStatus.ConcurrentRequestInFlight),
+
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(result), result.Outcome, "Unmapped hold outcome.")
+    };
+
+    private static ReleaseSeatResponse ToResponse(Guid seatId, ReleaseSeatResult result) => result.Outcome switch
+    {
+        ReleaseSeatOutcome.Released => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.Released),
+        ReleaseSeatOutcome.AlreadySold => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.AlreadySold),
+        ReleaseSeatOutcome.NotTheHolder => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.NotTheHolder),
+        ReleaseSeatOutcome.SeatNotFound => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.SeatNotFound),
+        ReleaseSeatOutcome.LostRace => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.LostRace),
+
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(result), result.Outcome, "Unmapped release outcome.")
+    };
+
+    private static SellSeatResponse ToResponse(Guid seatId, SellSeatOutcome outcome) => outcome switch
+    {
+        SellSeatOutcome.Sold => new SellSeatResponse(seatId, SellSeatStatus.Sold),
+        SellSeatOutcome.AlreadySold => new SellSeatResponse(seatId, SellSeatStatus.AlreadySold),
+        SellSeatOutcome.NotTheHolder => new SellSeatResponse(seatId, SellSeatStatus.NotTheHolder),
+        SellSeatOutcome.HoldExpired => new SellSeatResponse(seatId, SellSeatStatus.HoldExpired),
+        SellSeatOutcome.NoActiveHold => new SellSeatResponse(seatId, SellSeatStatus.NoActiveHold),
+        SellSeatOutcome.SeatNotFound => new SellSeatResponse(seatId, SellSeatStatus.SeatNotFound),
+        SellSeatOutcome.LostRace => new SellSeatResponse(seatId, SellSeatStatus.LostRace),
+
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(outcome), outcome, "Unmapped sell outcome.")
+    };
 }

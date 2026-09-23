@@ -16,9 +16,8 @@ namespace Encore.Modules.Inventory.Contracts;
 /// <para>
 /// <b>Every operation is idempotent.</b> Holding a seat this client already
 /// holds succeeds without moving the expiry; releasing an already-available
-/// seat succeeds; selling a seat this client already bought reports
-/// <see cref="SellSeatStatus.Sold"/>. A retried request after a dropped response
-/// is therefore safe.
+/// seat succeeds; selling a seat this client already bought is no refusal. A
+/// retried request after a dropped response is therefore safe.
 /// </para>
 /// <para>
 /// <b>The shape survives becoming remote.</b> Nothing here names a type from
@@ -27,15 +26,23 @@ namespace Encore.Modules.Inventory.Contracts;
 /// cancellable. The day Inventory is extracted, this interface is implemented by
 /// an HTTP client instead and no consumer changes.
 /// </para>
+/// <para>
+/// <b>Every call takes an order's seats together</b>, in one round trip and one
+/// transaction. Holding and releasing still answer each seat on its own; selling
+/// is all or none, because a sold seat cannot be taken back (076).
+/// </para>
 /// </remarks>
 public interface ISeatReservations
 {
-    /// <summary>Holds a seat for the requesting client, for a fixed window Inventory owns.</summary>
-    Task<HoldSeatResponse> HoldAsync(HoldSeatRequest request, CancellationToken cancellationToken = default);
+    /// <summary>Holds seats for the requesting client, for a fixed window Inventory owns.</summary>
+    Task<HoldSeatsResponse> HoldAsync(HoldSeatsRequest request, CancellationToken cancellationToken = default);
 
-    /// <summary>Gives a held seat back. Only the holding client may release.</summary>
-    Task<ReleaseSeatResponse> ReleaseAsync(ReleaseSeatRequest request, CancellationToken cancellationToken = default);
+    /// <summary>Gives held seats back. Only the holding client may release.</summary>
+    Task<ReleaseSeatsResponse> ReleaseAsync(ReleaseSeatsRequest request, CancellationToken cancellationToken = default);
 
-    /// <summary>Converts this client's live hold into a sale. Requires an unexpired hold.</summary>
-    Task<SellSeatResponse> SellAsync(SellSeatRequest request, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Converts this client's live holds into sales — all of them, or none.
+    /// Requires an unexpired hold on every seat.
+    /// </summary>
+    Task<SellSeatsResponse> SellAsync(SellSeatsRequest request, CancellationToken cancellationToken = default);
 }

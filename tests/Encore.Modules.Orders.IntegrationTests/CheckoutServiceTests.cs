@@ -147,7 +147,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         var result = await ServiceFor(context, seats).CheckoutAsync(clientId, eventId, [gone, sold, free]);
 
         Assert.Equal(CheckoutOutcome.SeatsUnavailable, result.Outcome);
-        Assert.Equal(3, seats.Holds.Count);
+        Assert.Equal(3, Assert.Single(seats.Holds).SeatIds.Count);
 
         Assert.Collection(
             result.Refusals!,
@@ -436,12 +436,13 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Some sold and some did not. There is no automatic recovery, because there
-    /// cannot be one: a sold seat is terminal, so nothing can un-sell the half
-    /// that worked. A person has to look.
+    /// The case 028 had to leave for a person to look at, and 076 closed. One
+    /// hold has lapsed and the other is live. Sold one at a time, the live seat
+    /// sold and stayed sold with nobody paying for it; now the seats are asked
+    /// for together, in one request, and the order ends with nothing sold.
     /// </summary>
     [Fact]
-    public async Task Confirm_WhenSomeSeatsSellAndOthersDoNot_ShouldFailTheOrder()
+    public async Task Confirm_WhenOneHoldHasLapsed_ShouldSellTheSeatsTogetherAndExpireTheOrder()
     {
         var clientId = Guid.NewGuid();
         var order = await AnOpenOrderAsync(clientId, seatCount: 2);
@@ -453,7 +454,12 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         await using var context = new OrdersDbContext(_options);
         var result = await ServiceFor(context, seats).ConfirmAsync(clientId, order.Id);
 
-        Assert.Equal(OrderStatus.Failed, result.Order!.Status);
+        var sale = Assert.Single(seats.Sells);
+        Assert.Equal(order.Lines.Select(line => line.SeatId).Order(), sale.SeatIds.Order());
+
+        // Every refusal was an expiry, so this is the ordinary ending rather than
+        // a failure — the seat that was still live never sold.
+        Assert.Equal(OrderStatus.Expired, result.Order!.Status);
     }
 
     /// <summary>
@@ -596,19 +602,18 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The partial case, which is the question <c>OrderStatus.Failed</c> used to
-    /// leave open: is the customer charged for a partial order, or refunded? They
-    /// are charged nothing. Taking money for an order that did not complete is
-    /// the worse of the two ways to be wrong.
+    /// One seat of two refuses for a reason that is not expiry. Nothing sold, so
+    /// the order is <c>Failed</c> and the customer is charged nothing — which is
+    /// no longer a refund for seats that were kept, because none were.
     /// </summary>
     [Fact]
-    public async Task Confirm_WhenOnlySomeSeatsSell_ShouldChargeNothing()
+    public async Task Confirm_WhenOneSeatIsNoLongerTheirs_ShouldFailAndChargeNothing()
     {
         var clientId = Guid.NewGuid();
         var order = await AnOpenOrderAsync(clientId, seatCount: 2);
 
         var seats = new FakeSeatReservations();
-        seats.SellRefusals[order.Lines[1].SeatId] = SellSeatStatus.HoldExpired;
+        seats.SellRefusals[order.Lines[1].SeatId] = SellSeatStatus.NotTheHolder;
         var payments = new FakeOrderPayments();
 
         await using var context = new OrdersDbContext(_options);
@@ -754,8 +759,9 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         Assert.Equal(Now, result.Order.ClosedAt);
         Assert.Null(result.Order.HoldsExpireAt);
 
-        Assert.Equal(2, seats.Releases.Count);
-        Assert.All(seats.Releases, release => Assert.Equal(clientId, release.ClientId));
+        var release = Assert.Single(seats.Releases);
+        Assert.Equal(order.Lines.Select(line => line.SeatId).Order(), release.SeatIds.Order());
+        Assert.Equal(clientId, release.ClientId);
         Assert.Single(payments.Voids);
     }
 
@@ -911,7 +917,8 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
 
     /// <summary>
     /// Inventory, faked at its published contract. Holds succeed and sales
-    /// succeed unless a test names a seat that should not.
+    /// succeed unless a test names a seat that should not — and, as the contract
+    /// promises, one refusing seat means none sell.
     /// </summary>
     private sealed class FakeSeatReservations : ISeatReservations
     {
@@ -923,49 +930,59 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
 
         public SellSeatStatus DefaultSell { get; set; } = SellSeatStatus.Sold;
 
-        public List<HoldSeatRequest> Holds { get; } = [];
+        public List<HoldSeatsRequest> Holds { get; } = [];
 
-        public List<SellSeatRequest> Sells { get; } = [];
+        public List<SellSeatsRequest> Sells { get; } = [];
 
-        public List<ReleaseSeatRequest> Releases { get; } = [];
+        public List<ReleaseSeatsRequest> Releases { get; } = [];
 
-        public Task<HoldSeatResponse> HoldAsync(
-            HoldSeatRequest request,
+        public Task<HoldSeatsResponse> HoldAsync(
+            HoldSeatsRequest request,
             CancellationToken cancellationToken = default)
         {
             Holds.Add(request);
 
-            if (HoldRefusals.TryGetValue(request.SeatId, out var refusal))
-            {
-                return Task.FromResult(new HoldSeatResponse(refusal));
-            }
-
-            var expiry = HoldsExpiringAt.TryGetValue(request.SeatId, out var at)
-                ? at
-                : Now.AddMinutes(5);
-
-            return Task.FromResult(new HoldSeatResponse(HoldSeatStatus.Held, expiry));
+            return Task.FromResult(new HoldSeatsResponse([.. request.SeatIds.Select(HoldOne)]));
         }
 
-        public Task<ReleaseSeatResponse> ReleaseAsync(
-            ReleaseSeatRequest request,
+        public Task<ReleaseSeatsResponse> ReleaseAsync(
+            ReleaseSeatsRequest request,
             CancellationToken cancellationToken = default)
         {
             Releases.Add(request);
-            return Task.FromResult(new ReleaseSeatResponse(ReleaseSeatStatus.Released));
+
+            return Task.FromResult(new ReleaseSeatsResponse(
+                [.. request.SeatIds.Select(seatId => new ReleaseSeatResponse(seatId, ReleaseSeatStatus.Released))]));
         }
 
-        public Task<SellSeatResponse> SellAsync(
-            SellSeatRequest request,
+        public Task<SellSeatsResponse> SellAsync(
+            SellSeatsRequest request,
             CancellationToken cancellationToken = default)
         {
             Sells.Add(request);
 
-            var status = SellRefusals.TryGetValue(request.SeatId, out var refusal)
-                ? refusal
-                : DefaultSell;
+            var refusals = request.SeatIds
+                .Select(seatId => new SellSeatResponse(
+                    seatId,
+                    SellRefusals.TryGetValue(seatId, out var refusal) ? refusal : DefaultSell))
+                .Where(answer => answer.Status is not SellSeatStatus.Sold)
+                .ToList();
 
-            return Task.FromResult(new SellSeatResponse(status));
+            return Task.FromResult(new SellSeatsResponse(refusals));
+        }
+
+        private HoldSeatResponse HoldOne(Guid seatId)
+        {
+            if (HoldRefusals.TryGetValue(seatId, out var refusal))
+            {
+                return new HoldSeatResponse(seatId, refusal);
+            }
+
+            var expiry = HoldsExpiringAt.TryGetValue(seatId, out var at)
+                ? at
+                : Now.AddMinutes(5);
+
+            return new HoldSeatResponse(seatId, HoldSeatStatus.Held, expiry);
         }
     }
 

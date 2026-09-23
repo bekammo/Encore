@@ -49,6 +49,32 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<Seat>> GetByIdsAsync(
+        IReadOnlyCollection<Guid> seatIds,
+        CancellationToken cancellationToken = default)
+    {
+        // Detached and read again in one query, rather than reloaded one entry at
+        // a time as GetByIdAsync does: a retried four-seat batch would otherwise
+        // pay four round trips to learn what one can tell it. Detaching also
+        // discards whatever a refused or rejected attempt did to these instances,
+        // so nothing it changed can reach a later save.
+        var tracked = _context.ChangeTracker
+            .Entries<Seat>()
+            .Where(entry => seatIds.Contains(entry.Entity.Id))
+            .ToList();
+
+        foreach (var entry in tracked)
+        {
+            entry.State = EntityState.Detached;
+        }
+
+        return await _context.Seats
+            .Where(seat => seatIds.Contains(seat.Id))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     public async Task SaveAsync(Seat seat, CancellationToken cancellationToken = default)
     {
         // The outbox drain is not this method's: InventoryDbContext's SaveChanges
@@ -67,10 +93,28 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
     }
 
     /// <inheritdoc />
-    public Task<int> CountLiveHoldsAsync(
+    public async Task SaveAsync(IReadOnlyCollection<Seat> seats, CancellationToken cancellationToken = default)
+    {
+        // One SaveChanges is one transaction, and Npgsql sends its statements as
+        // one batch: every seat's conditional UPDATE and every outbox INSERT land
+        // together or not at all, in a single round trip.
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            var lost = ex.Entries.Select(entry => entry.Entity).OfType<Seat>().FirstOrDefault()
+                ?? seats.First();
+
+            throw new ConcurrentSeatModificationException(lost.Id, ex);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyCollection<Guid>> FindLiveHoldsAsync(
         Guid clientId,
         Guid eventId,
-        Guid excludingSeatId,
         DateTime utcNow,
         CancellationToken cancellationToken = default)
         // Expiry is part of the predicate rather than something filtered
@@ -78,14 +122,16 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
         // says Held. Served by ix_seats_event_client_status; without that index
         // this is a sequential scan on every hold attempt during a flash sale,
         // which is the worst possible moment for one.
-        => _context.Seats
+        => await _context.Seats
+            .AsNoTracking()
             .Where(seat =>
                 seat.EventId == eventId
                 && seat.HeldByClientId == clientId
                 && seat.Status == SeatStatus.Held
-                && seat.HoldExpiresAt > utcNow
-                && seat.Id != excludingSeatId)
-            .CountAsync(cancellationToken);
+                && seat.HoldExpiresAt > utcNow)
+            .Select(seat => seat.Id)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<Guid>> FindExpiredHoldsAsync(

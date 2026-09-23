@@ -144,7 +144,7 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
     /// rule exists there in a second form, in SQL. If that copy said only
     /// <c>Status = Held</c>, this client would be capped until a background job
     /// happened to run, and every test that did not involve waiting would still
-    /// pass. <c>CountLiveHoldsAsync</c> puts <c>HoldExpiresAt &gt; utcNow</c> in the
+    /// pass. <c>FindLiveHoldsAsync</c> puts <c>HoldExpiresAt &gt; utcNow</c> in the
     /// predicate, so the count is of live holds rather than of rows, and the cap
     /// reopens the moment the holds lapse rather than the moment somebody tidies up.
     /// </para>
@@ -272,7 +272,6 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
 
         var handler = new SellSeatCommandHandler(
             new EfSeatRepository(context),
-            new AlwaysGrantingLock(),
             new FixedTimeProvider(_now));
 
         return await handler.HandleAsync(new SellSeatCommand(_eventId, seatId, clientId));

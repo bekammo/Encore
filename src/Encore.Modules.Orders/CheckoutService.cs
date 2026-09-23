@@ -141,33 +141,26 @@ public sealed class CheckoutService(
             return CheckoutResult.Refused(CheckoutOutcome.CheckoutAlreadyOpen);
         }
 
-        var held = new List<(Guid SeatId, DateTime ExpiresAt)>(seatIds.Count);
-        var refusals = new List<SeatRefusal>();
+        // One call for every seat, and every seat answered. Inventory attempts
+        // them all even when one is refused, so the client learns about every
+        // unavailable seat and can choose replacements in a single round trip.
+        var holds = await _seats
+            .HoldAsync(new HoldSeatsRequest(eventId, seatIds, clientId), cancellationToken)
+            .ConfigureAwait(false);
 
-        // Every seat is attempted even after the first refusal. Stopping early
-        // would be cheaper, and would tell the client about one unavailable seat
-        // when it needs to know about all of them to choose replacements in a
-        // single round trip.
-        foreach (var seatId in seatIds)
-        {
-            var response = await _seats
-                .HoldAsync(new HoldSeatRequest(eventId, seatId, clientId), cancellationToken)
-                .ConfigureAwait(false);
-
-            if (response.Status is HoldSeatStatus.Held)
-            {
-                held.Add((seatId, response.HoldExpiresAt!.Value));
-            }
-            else
-            {
-                refusals.Add(new SeatRefusal(seatId, response.Status));
-            }
-        }
+        var refusals = holds.Seats
+            .Where(seat => seat.Status is not HoldSeatStatus.Held)
+            .Select(seat => new SeatRefusal(seat.SeatId, seat.Status))
+            .ToList();
 
         if (refusals.Count > 0)
         {
             return CheckoutResult.Unavailable(refusals);
         }
+
+        var held = holds.Seats
+            .Select(seat => (seat.SeatId, ExpiresAt: seat.HoldExpiresAt!.Value))
+            .ToList();
 
         var unitPrice = priced.UnitPrice!.Value;
         var currency = priced.Currency!;
@@ -238,12 +231,12 @@ public sealed class CheckoutService(
     /// The endings follow 021, with one addition. Every seat sold and the money
     /// taken is <see cref="OrderStatus.Confirmed"/>; every seat sold and the
     /// capture unanswered is <see cref="OrderStatus.AwaitingCapture"/>, which the
-    /// next confirm resolves (027). Nothing sold and every refusal an expiry is
-    /// <see cref="OrderStatus.Expired"/>. Anything else is
-    /// <see cref="OrderStatus.Failed"/>. Both of those last two release the
-    /// authorisation, so an order that did not complete costs the customer
-    /// nothing — including the partial case, which is the question
-    /// <see cref="OrderStatus.Failed"/> used to leave open.
+    /// next confirm resolves (027). Inventory sells every seat or none (076), so
+    /// the only other ending is nothing sold: every refusal an expiry is
+    /// <see cref="OrderStatus.Expired"/>, anything else is
+    /// <see cref="OrderStatus.Failed"/>. Both release the authorisation, so an
+    /// order that did not complete costs the customer nothing and leaves no seat
+    /// sold without a buyer.
     /// </para>
     /// <para>
     /// A decline or a gateway timeout does <b>not</b> end the order. It stays
@@ -272,9 +265,9 @@ public sealed class CheckoutService(
 
         // The seats are already sold and only the money is outstanding, so this
         // retries the capture and nothing else. Selling again would be harmless —
-        // Inventory answers Sold to the client that already bought — but asking
-        // is four round trips against the hottest rows in the system for an answer
-        // nobody needs.
+        // Inventory answers Sold to the client that already bought — but it is a
+        // transaction against the hottest rows in the system for an answer nobody
+        // needs.
         if (order.Status is OrderStatus.AwaitingCapture)
         {
             return await CaptureAsync(order, clientId, cancellationToken).ConfigureAwait(false);
@@ -321,61 +314,38 @@ public sealed class CheckoutService(
                     nameof(order), authorized.Status, "Unmapped authorize status.");
         }
 
-        var sold = 0;
-        var expired = 0;
-        var otherRefusals = 0;
+        // Every seat or none, in one transaction (076). Sold one at a time, an
+        // order whose last hold had lapsed kept the seats before it sold and
+        // refunded the customer for them — seats gone with nobody paying.
+        var sale = await _seats
+            .SellAsync(
+                new SellSeatsRequest(order.EventId, [.. order.Lines.Select(line => line.SeatId)], clientId),
+                cancellationToken)
+            .ConfigureAwait(false);
 
-        foreach (var line in order.Lines)
+        if (sale.AllSold)
         {
-            var response = await _seats
-                .SellAsync(new SellSeatRequest(order.EventId, line.SeatId, clientId), cancellationToken)
-                .ConfigureAwait(false);
-
-            switch (response.Status)
-            {
-                case SellSeatStatus.Sold:
-                    sold++;
-                    break;
-
-                case SellSeatStatus.HoldExpired:
-                    expired++;
-                    break;
-
-                case SellSeatStatus.AlreadySold:
-                case SellSeatStatus.NotTheHolder:
-                case SellSeatStatus.NoActiveHold:
-                case SellSeatStatus.SeatNotFound:
-                case SellSeatStatus.LostRace:
-                    otherRefusals++;
-                    break;
-
-                default:
-                    throw new ArgumentOutOfRangeException(
-                        nameof(response), response.Status, "Unmapped sell status.");
-            }
+            return await CaptureAsync(order, clientId, cancellationToken).ConfigureAwait(false);
         }
 
-        order.Status = (sold, expired, otherRefusals) switch
-        {
-            (_, 0, 0) => OrderStatus.Confirmed,
-            (0, _, 0) => OrderStatus.Expired,
-            _ => OrderStatus.Failed
-        };
+        // Nothing sold. Every refusal an expiry is the ordinary ending; anything
+        // else is a seat that stopped being this client's, which is what Failed
+        // names. The holds that are still live stay live: the client can open a
+        // new checkout with them and one replacement, as after a refused
+        // checkout (023), and whatever it abandons lapses by itself.
+        order.Status = sale.Refusals.All(refusal => refusal.Status is SellSeatStatus.HoldExpired)
+            ? OrderStatus.Expired
+            : OrderStatus.Failed;
 
-        if (order.Status is not OrderStatus.Confirmed)
-        {
-            // The sale did not complete, so the money goes back before anything
-            // else happens. Nothing is checked about the answer: NoAuthorization
-            // means there was nothing to release, and a timeout means the hold
-            // lapses at the gateway on its own. Neither changes what this order is.
-            await _payments
-                .VoidAsync(new VoidPaymentRequest(order.Id, clientId), cancellationToken)
-                .ConfigureAwait(false);
+        // The money goes back before anything else happens. Nothing is checked
+        // about the answer: NoAuthorization means there was nothing to release,
+        // and a timeout means the hold lapses at the gateway on its own. Neither
+        // changes what this order is.
+        await _payments
+            .VoidAsync(new VoidPaymentRequest(order.Id, clientId), cancellationToken)
+            .ConfigureAwait(false);
 
-            return await CloseAsync(order, cancellationToken).ConfigureAwait(false);
-        }
-
-        return await CaptureAsync(order, clientId, cancellationToken).ConfigureAwait(false);
+        return await CloseAsync(order, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -479,14 +449,11 @@ public sealed class CheckoutService(
             return new OrderActionResult(OrderActionOutcome.LostRace, order);
         }
 
-        foreach (var line in order.Lines)
-        {
-            await _seats
-                .ReleaseAsync(
-                    new ReleaseSeatRequest(order.EventId, line.SeatId, clientId),
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
+        await _seats
+            .ReleaseAsync(
+                new ReleaseSeatsRequest(order.EventId, [.. order.Lines.Select(line => line.SeatId)], clientId),
+                cancellationToken)
+            .ConfigureAwait(false);
 
         order.Status = OrderStatus.Cancelled;
 
