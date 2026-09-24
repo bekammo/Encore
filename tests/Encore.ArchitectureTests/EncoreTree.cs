@@ -80,6 +80,23 @@ internal static class EncoreTree
         "Encore.Modules.Inventory.Domain"
     ];
 
+    /// <summary>
+    /// The modules a host composes, by short name: <c>Catalog</c> for <c>Encore.Modules.Catalog</c>.
+    /// Each is reached through <c>Add{Name}Module</c> and <c>Map{Name}Module</c> on a
+    /// <c>{Name}Module</c> class in the module's root namespace. Declared after
+    /// <see cref="ModuleAssemblies"/>, which it reads.
+    /// </summary>
+    internal static readonly string[] ComposedModules =
+    [
+        .. ModuleAssemblies
+            .Where(module => module.Count(character => character == '.') == 2)
+            .Select(module => module["Encore.Modules.".Length..])
+    ];
+
+    /// <summary>Every inspected assembly that is not a host.</summary>
+    internal static IEnumerable<string> NonHosts =>
+        AllAssemblies.Where(assembly => !Hosts.Contains(assembly, StringComparer.Ordinal));
+
     /// <summary>The path a project's compiled output is expected at.</summary>
     internal static string AssemblyPath(string name) =>
         Path.Combine(

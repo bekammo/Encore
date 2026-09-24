@@ -3,7 +3,6 @@ using Encore.Modules.Notifications.Data;
 using Encore.Modules.Notifications.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
-using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Notifications.IntegrationTests;
 
@@ -11,33 +10,9 @@ namespace Encore.Modules.Notifications.IntegrationTests;
 /// The SeatSold consumer records a sale and survives redelivery. Against real Postgres, because
 /// the guard is a unique index, not handler code.
 /// </summary>
-public sealed class SeatSoldNotifierTests : IAsyncLifetime
+public sealed class SeatSoldNotifierTests(NotificationsDatabase database) : IClassFixture<NotificationsDatabase>
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
-
-    private DbContextOptions<NotificationsDbContext> _options = null!;
-
-    /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        _options = new DbContextOptionsBuilder<NotificationsDbContext>()
-            .UseNotificationsNpgsql(_postgres.GetConnectionString())
-            .Options;
-
-        await using var context = new NotificationsDbContext(_options);
-
-        // Migrate rather than EnsureCreated, so the real migration and its unique index are exercised.
-        await context.Database.MigrateAsync();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    private readonly DbContextOptions<NotificationsDbContext> _options = database.Options;
 
     [Fact]
     public async Task Handle_ShouldRecordWhatTheClientShouldBeTold()

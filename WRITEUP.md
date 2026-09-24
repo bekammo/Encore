@@ -120,7 +120,10 @@ The dispatcher delivers late, never wrong. With it switched off under load, 21,9
 up undelivered and the sale still sold exactly 500 of 500 seats. Measured, the drain inside the
 seat transaction cost almost nothing — a refused hold never reaches the save, so only about
 15,000 of 304,000 iterations wrote anything — and **the dispatcher was the whole cost**, as a
-second workload on the same database.
+second workload on the same database. Most of that cost turned out to be fixable: its claim
+read the whole due backlog every tick, and EF Core logged every statement. With both fixed,
+three runs with the dispatcher on came in inside the pre-outbox spread or below it, apart from
+one outlier purchase p99 (019).
 
 ## Strangling Payments, and the four days it did nothing
 

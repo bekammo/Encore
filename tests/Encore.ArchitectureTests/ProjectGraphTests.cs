@@ -33,10 +33,7 @@ public class ProjectGraphTests
     /// <c>Encore.Modules.Inventory</c>.
     /// </summary>
     [Theory]
-    [InlineData("Encore.Modules.Catalog")]
-    [InlineData("Encore.Modules.Orders")]
-    [InlineData("Encore.Modules.Payments")]
-    [InlineData("Encore.Modules.Inventory")]
+    [MemberData(nameof(TheoryRows.ComposedModuleAssemblies), MemberType = typeof(TheoryRows))]
     public void Module_ShouldDeclareNoProjectReferenceToAnotherModulesImplementation(string module)
     {
         var forbidden = EncoreTree
@@ -100,8 +97,7 @@ public class ProjectGraphTests
     /// build-order edge only (<c>ReferenceOutputAssembly="false"</c>).
     /// </summary>
     [Theory]
-    [InlineData("Encore.Api")]
-    [InlineData("Encore.Payments.Api")]
+    [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]
     public void NoProjectShouldDeclareAProjectReferenceToAHost(string host)
     {
         var offenders = EncoreTree.SourceProjects()
@@ -157,6 +153,28 @@ public class ProjectGraphTests
         Assert.True(
             offenders.Count == 0,
             $"{EncoreTree.Telemetry} is host wiring; a module that references it carries OpenTelemetry. Found: {string.Join(", ", offenders)}");
+    }
+
+    /// <summary>
+    /// The declared half of the host seam: a host references module implementations, whose
+    /// <c>{Module}Module</c> class is the seam, plus <c>Encore.Shared</c> and the telemetry
+    /// project. Never a contracts assembly, the Domain or the shared persistence project.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]
+    public void Host_ShouldDeclareProjectReferencesOnlyToModulesSharedAndTelemetry(string host)
+    {
+        var allowed = EncoreTree.ComposedModules
+            .Select(module => $"Encore.Modules.{module}")
+            .Append("Encore.Shared")
+            .Append(EncoreTree.Telemetry)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var stray = Declared(host).Where(reference => !allowed.Contains(reference)).ToList();
+
+        Assert.True(
+            stray.Count == 0,
+            $"{host} reaches a module only through its Add/Map seam, so it references module implementations, Encore.Shared and {EncoreTree.Telemetry} and nothing else. Found: {string.Join(", ", stray)}");
     }
 
     private static IReadOnlyList<string> Declared(string project)

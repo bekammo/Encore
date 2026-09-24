@@ -6,38 +6,27 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Testcontainers.PostgreSql;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
 /// After delivery: the retention sweep removes old delivered rows, and the readiness check
-/// counts the rows nobody managed to deliver. A fixed clock throughout.
+/// counts the rows nobody managed to deliver. A fixed clock throughout. Both count the whole
+/// outbox, so the shared database is emptied before each test.
 /// </summary>
-public sealed class OutboxHousekeepingTests : IAsyncLifetime
+public sealed class OutboxHousekeepingTests(InventoryDatabase database)
+    : IClassFixture<InventoryDatabase>, IAsyncLifetime
 {
     private static readonly DateTime Now = new(2026, 9, 22, 12, 0, 0, DateTimeKind.Utc);
 
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
+    private readonly InventoryDatabase _database = database;
 
-    private string _connectionString = null!;
+    /// <summary>Empties the outbox the previous test left.</summary>
+    public Task InitializeAsync() => _database.ResetAsync();
 
     /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-        _connectionString = _postgres.GetConnectionString();
-
-        await using var context = Context();
-        await context.Database.MigrateAsync();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    public Task DisposeAsync() => Task.CompletedTask;
 
     // -- Retention --------------------------------------------------------
 
@@ -130,10 +119,7 @@ public sealed class OutboxHousekeepingTests : IAsyncLifetime
 
     // -- Plumbing ---------------------------------------------------------
 
-    private InventoryDbContext Context() =>
-        new(new DbContextOptionsBuilder<InventoryDbContext>()
-            .UseInventoryNpgsql(_connectionString)
-            .Options);
+    private InventoryDbContext Context() => new(_database.Options);
 
     /// <summary>One outbox row in the state a test needs, moved on with its own methods.</summary>
     private async Task<Guid> SeedAsync(
@@ -181,6 +167,10 @@ public sealed class OutboxHousekeepingTests : IAsyncLifetime
             .ToListAsync();
     }
 
+    /// <summary>
+    /// The sweep over its own container, with a clock that does not move, so retention is data
+    /// rather than duration.
+    /// </summary>
     private SweeperHost Host(Action<OutboxRetentionOptions>? configure = null)
     {
         var options = new OutboxRetentionOptions();
@@ -189,14 +179,14 @@ public sealed class OutboxHousekeepingTests : IAsyncLifetime
         var services = new ServiceCollection();
 
         services.AddDbContext<InventoryDbContext>(builder =>
-            builder.UseInventoryNpgsql(_connectionString));
+            builder.UseInventoryNpgsql(_database.ConnectionString));
 
         var provider = services.BuildServiceProvider();
 
         var sweeper = new OutboxRetentionSweeper(
             provider.GetRequiredService<IServiceScopeFactory>(),
             Options.Create(options),
-            new FixedTimeProvider(Now),
+            new FakeTimeProvider(Now),
             NullLogger<OutboxRetentionSweeper>.Instance);
 
         return new SweeperHost(provider, sweeper);
@@ -208,11 +198,5 @@ public sealed class OutboxHousekeepingTests : IAsyncLifetime
         internal OutboxRetentionSweeper Sweeper { get; } = sweeper;
 
         public ValueTask DisposeAsync() => provider.DisposeAsync();
-    }
-
-    /// <summary>A clock that does not move, so retention is data rather than duration.</summary>
-    private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => new(utcNow, TimeSpan.Zero);
     }
 }

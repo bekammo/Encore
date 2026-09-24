@@ -1,43 +1,19 @@
 using Encore.Modules.Orders.Data;
 using Encore.Modules.Orders.Models;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Orders.IntegrationTests;
 
 /// <summary>
 /// Orders' schema enforces what the module relies on, above all the partial unique index
-/// whose SQL filter no compiler checks.
+/// whose SQL filter no compiler checks. The database is shared by the class and never emptied,
+/// so every test uses fresh ids.
 /// </summary>
-public sealed class OrdersSchemaTests : IAsyncLifetime
+public sealed class OrdersSchemaTests(OrdersDatabase database) : IClassFixture<OrdersDatabase>
 {
     private static readonly DateTime PlacedAt = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
 
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
-
-    private DbContextOptions<OrdersDbContext> _options = null!;
-
-    /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        _options = new DbContextOptionsBuilder<OrdersDbContext>()
-            .UseOrdersNpgsql(_postgres.GetConnectionString())
-            .Options;
-
-        await using var context = new OrdersDbContext(_options);
-
-        // Migrate rather than EnsureCreated, so the real migration is exercised.
-        await context.Database.MigrateAsync();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    private readonly DbContextOptions<OrdersDbContext> _options = database.Options;
 
     [Fact]
     public async Task Migrate_ShouldLeaveNoPendingMigrations()

@@ -2,7 +2,6 @@ using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Domain.Exceptions;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
@@ -10,22 +9,16 @@ namespace Encore.Modules.Inventory.IntegrationTests;
 /// The sale under contention, against real Postgres and with no Redis lock: the <c>xmin</c>
 /// token alone must prevent a double sale.
 /// </summary>
-public sealed class ConcurrentSellTests : IAsyncLifetime
+public sealed class ConcurrentSellTests(InventoryDatabase database) : IClassFixture<InventoryDatabase>
 {
     /// <summary>How many times one impatient client submits the checkout form.</summary>
     private const int ConcurrentSubmissions = 50;
-
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
 
     private readonly Guid _eventId = Guid.NewGuid();
     private readonly Guid _clientA = Guid.NewGuid();
     private readonly Guid _clientB = Guid.NewGuid();
 
-    private DbContextOptions<InventoryDbContext> _options = null!;
+    private readonly DbContextOptions<InventoryDbContext> _options = database.Options;
 
     private enum Outcome
     {
@@ -41,22 +34,6 @@ public sealed class ConcurrentSellTests : IAsyncLifetime
         /// <summary>Failed in a way this test does not sanction.</summary>
         Unexpected
     }
-
-    /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        _options = new DbContextOptionsBuilder<InventoryDbContext>()
-            .UseInventoryNpgsql(_postgres.GetConnectionString())
-            .Options;
-
-        await using var context = new InventoryDbContext(_options);
-        await context.Database.MigrateAsync();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
 
     /// <summary>Truncated to microseconds, the resolution Postgres stores.</summary>
     private static DateTime Truncate(DateTime value) =>

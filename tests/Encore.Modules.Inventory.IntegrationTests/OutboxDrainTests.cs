@@ -5,43 +5,28 @@ using Encore.Modules.Inventory.Contracts.Events;
 using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Domain.Exceptions;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
 /// The drain: every domain event a seat raises becomes exactly one outbox row, in the same
-/// transaction as the seat. Against real Postgres, with no dispatcher involved.
+/// transaction as the seat. Against real Postgres, with no dispatcher involved. One test reads
+/// the whole outbox, so the shared database is emptied before each test.
 /// </summary>
-public sealed class OutboxDrainTests : IAsyncLifetime
+public sealed class OutboxDrainTests(InventoryDatabase database)
+    : IClassFixture<InventoryDatabase>, IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
+    private readonly InventoryDatabase _database = database;
 
     private readonly Guid _eventId = Guid.NewGuid();
 
-    private DbContextOptions<InventoryDbContext> _options = null!;
+    private readonly DbContextOptions<InventoryDbContext> _options = database.Options;
+
+    /// <summary>Empties the seats and the outbox the previous test left.</summary>
+    public Task InitializeAsync() => _database.ResetAsync();
 
     /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        _options = new DbContextOptionsBuilder<InventoryDbContext>()
-            .UseInventoryNpgsql(_postgres.GetConnectionString())
-            .Options;
-
-        await using var context = new InventoryDbContext(_options);
-
-        // Migrate rather than EnsureCreated, so the real migration and its partial index are exercised.
-        await context.Database.MigrateAsync();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
     public async Task Hold_ShouldWriteTheRaisedEventAsAnOutboxRow()
@@ -429,7 +414,7 @@ public sealed class OutboxDrainTests : IAsyncLifetime
     {
         await using var context = new InventoryDbContext(_options);
 
-        // Filter on the jsonb payload to scope to one seat in a shared container.
+        // Filter on the jsonb payload to scope to one seat among the test's other rows.
         return await context.OutboxMessages.AsNoTracking()
             .Where(message => EF.Functions.JsonContains(
                 message.Payload,

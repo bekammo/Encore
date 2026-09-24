@@ -1,81 +1,22 @@
-using Encore.Modules.Payments.Data;
 using Encore.Modules.Payments.Simulation;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Payments.IntegrationTests;
 
 /// <summary>
-/// One Postgres shared by every gateway test, with the ledger emptied between tests. A class
-/// fixture, since a container per test would start forty.
-/// </summary>
-public sealed class GatewayLedgerDatabase : IAsyncLifetime
-{
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
-
-    private ServiceProvider _provider = null!;
-
-    /// <summary>What the gateway resolves its context through.</summary>
-    public IServiceScopeFactory Scopes { get; private set; } = null!;
-
-    /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        var connectionString = _postgres.GetConnectionString();
-
-        await using (var context = new PaymentsDbContext(
-            new DbContextOptionsBuilder<PaymentsDbContext>().UsePaymentsNpgsql(connectionString).Options))
-        {
-            await context.Database.MigrateAsync();
-        }
-
-        var services = new ServiceCollection();
-        services.AddDbContext<PaymentsDbContext>(options => options.UsePaymentsNpgsql(connectionString));
-
-        _provider = services.BuildServiceProvider();
-        Scopes = _provider.GetRequiredService<IServiceScopeFactory>();
-    }
-
-    /// <summary>Empties the gateway's ledger, so the next test starts with a gateway that has answered nothing.</summary>
-    public async Task ResetAsync()
-    {
-        using var scope = Scopes.CreateScope();
-        var context = scope.ServiceProvider.GetRequiredService<PaymentsDbContext>();
-
-        await context.Database.ExecuteSqlRawAsync(
-            $"TRUNCATE TABLE \"{PaymentsPersistence.Schema}\".\"gateway_ledger\"");
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync()
-    {
-        await _provider.DisposeAsync();
-        await _postgres.DisposeAsync();
-    }
-}
-
-/// <summary>
 /// The simulated gateway: it honours idempotency keys, a seeded run is reproducible, and its
 /// decisions outlive the process. Integration tests because its memory is a table; zero
-/// latency throughout.
+/// latency throughout. The ledger is emptied before each test, since tests reuse keys.
 /// </summary>
-public sealed class SimulatedPaymentGatewayTests(GatewayLedgerDatabase database)
-    : IClassFixture<GatewayLedgerDatabase>, IAsyncLifetime
+public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
+    : IClassFixture<PaymentsDatabase>, IAsyncLifetime
 {
     private const decimal Amount = 99.99m;
     private const string Currency = "GBP";
 
-    private readonly GatewayLedgerDatabase _database = database;
+    private readonly PaymentsDatabase _database = database;
 
-    /// <inheritdoc />
+    /// <summary>Empties the ledger, so every test starts with a gateway that has answered nothing.</summary>
     public Task InitializeAsync() => _database.ResetAsync();
 
     /// <inheritdoc />

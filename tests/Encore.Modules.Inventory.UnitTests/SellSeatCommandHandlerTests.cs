@@ -2,6 +2,7 @@ using Encore.Modules.Inventory.Application;
 using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Domain.Exceptions;
 using Encore.Modules.Inventory.Ports;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Inventory.UnitTests;
 
@@ -55,7 +56,7 @@ public class SellSeatCommandHandlerTests
         new(EventId, [.. seats.Select(seat => seat.Id)], ClientA);
 
     private static SellSeatCommandHandler HandlerFor(FakeSeatRepository seats, DateTime? now = null) =>
-        new(seats, new FixedTimeProvider(now ?? WithinHold));
+        new(seats, new FakeTimeProvider(now ?? WithinHold));
 
     // -- Happy path -------------------------------------------------------
 
@@ -424,12 +425,5 @@ public class SellSeatCommandHandlerTests
         await Assert.ThrowsAsync<ArgumentException>(() =>
             HandlerFor(FakeSeatRepository.Holding(seat))
                 .HandleAsync(new SellSeatsCommand(EventId, [seat.Id, seat.Id], ClientA)));
-    }
-
-    // -- Fakes ------------------------------------------------------------
-
-    private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

@@ -1,16 +1,13 @@
 using Encore.Modules.Orders.Data;
 using Encore.Modules.Payments;
 using Encore.Modules.Payments.Contracts;
-using Encore.Modules.Payments.Data;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http.Features;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Orders.IntegrationTests;
 
@@ -18,30 +15,20 @@ namespace Encore.Modules.Orders.IntegrationTests;
 /// Orders' HTTP client against the real Payments service routes, hosted in process on a real
 /// port. Every other test of this seam fakes one side: <c>HttpOrderPaymentsTests</c> answers
 /// from a stub, and <c>PaymentServiceEndpointsTests</c> sends hand-written requests. Only here
-/// do both run together, so a wire format the two disagree on fails a test (018).
+/// do both run together, so a wire format the two disagree on fails a test (018). The database
+/// is shared by the class and never emptied; every test pays for orders of its own.
 /// </summary>
-public sealed class PaymentsServiceRoundTripTests : IAsyncLifetime
+public sealed class PaymentsServiceRoundTripTests(OrdersDatabase database)
+    : IClassFixture<OrdersDatabase>, IAsyncLifetime
 {
     private const string Token = "round-trip-token";
 
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
+    private readonly OrdersDatabase _database = database;
 
     private readonly List<WebApplication> _services = [];
 
     /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        await using var context = new PaymentsDbContext(
-            new DbContextOptionsBuilder<PaymentsDbContext>().UsePaymentsNpgsql(_postgres.GetConnectionString()).Options);
-
-        await context.Database.MigrateAsync();
-    }
+    public Task InitializeAsync() => Task.CompletedTask;
 
     /// <inheritdoc />
     public async Task DisposeAsync()
@@ -50,8 +37,6 @@ public sealed class PaymentsServiceRoundTripTests : IAsyncLifetime
         {
             await service.DisposeAsync();
         }
-
-        await _postgres.DisposeAsync();
     }
 
     /// <summary>Authorise, authorise again, capture, then a void that finds the money taken.</summary>
@@ -129,7 +114,7 @@ public sealed class PaymentsServiceRoundTripTests : IAsyncLifetime
 
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["ConnectionStrings:Payments"] = _postgres.GetConnectionString(),
+            ["ConnectionStrings:Payments"] = _database.ConnectionString,
             ["Payments:ServiceToken"] = Token,
             ["Payments:Reconciliation:Enabled"] = "false",
             ["Payments:Simulation:DeclineRate"] = declineRate.ToString(System.Globalization.CultureInfo.InvariantCulture),

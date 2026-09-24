@@ -2,29 +2,24 @@ using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Domain.Exceptions;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
 /// Fifty clients grab the same seat at once and exactly one gets it. Real Postgres and no Redis
-/// lock, so the result rests on the <c>xmin</c> token alone.
+/// lock, so the result rests on the <c>xmin</c> token alone. The database is shared by the
+/// class; each test seeds a seat of its own.
 /// </summary>
-public sealed class ConcurrentHoldTests : IAsyncLifetime
+public sealed class ConcurrentHoldTests(InventoryDatabase database)
+    : IClassFixture<InventoryDatabase>, IAsyncLifetime
 {
     /// <summary>How many clients pile onto the one seat.</summary>
     private const int ConcurrentAttempts = 50;
 
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
-
     private readonly Guid _seatId = Guid.NewGuid();
     private readonly Guid _eventId = Guid.NewGuid();
 
-    private DbContextOptions<InventoryDbContext> _options = null!;
+    private readonly DbContextOptions<InventoryDbContext> _options = database.Options;
 
     /// <summary>How each attempt ended. Anything but these four is a test failure.</summary>
     private enum Outcome
@@ -42,26 +37,17 @@ public sealed class ConcurrentHoldTests : IAsyncLifetime
         Unexpected
     }
 
-    /// <inheritdoc />
+    /// <summary>Seeds this test's seat, available.</summary>
     public async Task InitializeAsync()
     {
-        await _postgres.StartAsync();
-
-        _options = new DbContextOptionsBuilder<InventoryDbContext>()
-            .UseInventoryNpgsql(_postgres.GetConnectionString())
-            .Options;
-
         await using var context = new InventoryDbContext(_options);
-
-        // Migrate rather than EnsureCreated, so the real migration is exercised.
-        await context.Database.MigrateAsync();
 
         context.Seats.Add(Seat.Create(_seatId, _eventId));
         await context.SaveChangesAsync();
     }
 
     /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
     public async Task Hold_WhenManyClientsRaceForTheSameSeat_ExactlyOneShouldWin()

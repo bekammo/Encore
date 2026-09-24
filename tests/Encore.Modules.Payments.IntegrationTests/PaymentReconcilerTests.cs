@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Testcontainers.PostgreSql;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Payments.IntegrationTests;
 
@@ -14,13 +14,15 @@ namespace Encore.Modules.Payments.IntegrationTests;
 /// The reconciler: what it settles timed-out attempts to, what it leaves alone, and how it
 /// frees the order to be paid for again. Timed-out rows are produced by the real adapter and
 /// gateway, with the gateway's options changed between the authorisation and the lookup. One
-/// sweep is driven directly per test.
+/// sweep is driven directly per test. A sweep visits every unresolved attempt, so the shared
+/// database is emptied before each test.
 /// </summary>
 /// <remarks>
 /// Not covered: a lookup that finds funds held and then fails to release them. Forcing it would
 /// need a simulator knob that exists only for this test.
 /// </remarks>
-public sealed class PaymentReconcilerTests : IAsyncLifetime
+public sealed class PaymentReconcilerTests(PaymentsDatabase database)
+    : IClassFixture<PaymentsDatabase>, IAsyncLifetime
 {
     private const decimal Amount = 120.50m;
     private const string Currency = "GBP";
@@ -30,45 +32,18 @@ public sealed class PaymentReconcilerTests : IAsyncLifetime
     /// <summary>Comfortably past <see cref="PaymentReconciliationOptions.MinimumAge"/>.</summary>
     private static readonly DateTime Afterwards = T0.AddMinutes(10);
 
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
+    private readonly PaymentsDatabase _database = database;
 
-    private string _connectionString = null!;
-    private DbContextOptions<PaymentsDbContext> _options = null!;
+    private readonly DbContextOptions<PaymentsDbContext> _options = database.Options;
 
     /// <summary>How the gateway reaches its ledger table.</summary>
-    private ServiceProvider _provider = null!;
-    private IServiceScopeFactory _scopes = null!;
+    private readonly IServiceScopeFactory _scopes = database.Scopes;
+
+    /// <summary>Empties the attempts and the ledger the previous test left.</summary>
+    public Task InitializeAsync() => _database.ResetAsync();
 
     /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-        _connectionString = _postgres.GetConnectionString();
-
-        _options = new DbContextOptionsBuilder<PaymentsDbContext>()
-            .UsePaymentsNpgsql(_connectionString)
-            .Options;
-
-        await using var context = new PaymentsDbContext(_options);
-        await context.Database.MigrateAsync();
-
-        var services = new ServiceCollection();
-        services.AddDbContext<PaymentsDbContext>(builder => builder.UsePaymentsNpgsql(_connectionString));
-
-        _provider = services.BuildServiceProvider();
-        _scopes = _provider.GetRequiredService<IServiceScopeFactory>();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync()
-    {
-        await _provider.DisposeAsync();
-        await _postgres.DisposeAsync();
-    }
+    public Task DisposeAsync() => Task.CompletedTask;
 
     /// <summary>
     /// The authorisation landed but its answer was lost: funds are held, so the reconciler
@@ -452,7 +427,7 @@ public sealed class PaymentReconcilerTests : IAsyncLifetime
     {
         await using var context = new PaymentsDbContext(_options);
 
-        var payments = new InProcessOrderPayments(context, gateway.Gateway, new FixedTimeProvider(T0));
+        var payments = new InProcessOrderPayments(context, gateway.Gateway, new FakeTimeProvider(T0));
 
         return await payments.AuthorizeAsync(
             new AuthorizePaymentRequest(orderId, clientId, Amount, Currency));
@@ -468,7 +443,7 @@ public sealed class PaymentReconcilerTests : IAsyncLifetime
 
         var services = new ServiceCollection();
 
-        services.AddDbContext<PaymentsDbContext>(builder => builder.UsePaymentsNpgsql(_connectionString));
+        services.AddDbContext<PaymentsDbContext>(builder => builder.UsePaymentsNpgsql(_database.ConnectionString));
 
         var provider = services.BuildServiceProvider();
 
@@ -476,7 +451,7 @@ public sealed class PaymentReconcilerTests : IAsyncLifetime
             provider.GetRequiredService<IServiceScopeFactory>(),
             gateway.Gateway,
             Options.Create(options),
-            new FixedTimeProvider(at ?? Afterwards),
+            new FakeTimeProvider(at ?? Afterwards),
             NullLogger<PaymentReconciler>.Instance);
 
         return new ReconcilerHost(provider, reconciler);
@@ -514,10 +489,5 @@ public sealed class PaymentReconcilerTests : IAsyncLifetime
         internal PaymentReconciler Reconciler { get; } = reconciler;
 
         public ValueTask DisposeAsync() => provider.DisposeAsync();
-    }
-
-    private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => new(utcNow, TimeSpan.Zero);
     }
 }

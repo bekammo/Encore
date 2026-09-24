@@ -320,12 +320,16 @@ OUTBOX_ENABLED=false docker compose run --rm --build load
 | Before the outbox (three runs) | 41.1 / 41.9 / 50.2 ms | 44.2 / 55.5 / 60.5 ms | 425,299 |
 | Drain only | 48.4 ms | 57.4 ms | 398,048 |
 | Drain and dispatcher | 78.2 ms | 141.4 ms | 304,071 |
+| Both, after the audit's fixes (three runs) | 34.1 / 42.5 / 43.7 ms | 27.1 / 30.4 / 86.4 ms | not recorded |
 
 **The half that cannot be turned off is nearly free; the half that can is the whole
 cost.** Writing an outbox row inside every seat transaction lands inside the spread
 three pre-outbox runs produced. Running the dispatcher alongside the API adds 62% to
 hold p99 and 146% to purchase p99 — not because it writes to the hot path, but because
-it puts a second workload on the database the hot path is contending on.
+it puts a second workload on the database the hot path is contending on. Most of that
+workload was waste. The claim read the whole due backlog every tick, and EF Core logged every
+statement. With both fixed, the last row is back inside the pre-outbox spread or below it, apart from
+one purchase p99 whose median matched the other runs (019).
 
 The prediction going in was the opposite, and the refusal counts say why: only about
 15,000 of 304,000 iterations write anything at all, because a refused hold throws

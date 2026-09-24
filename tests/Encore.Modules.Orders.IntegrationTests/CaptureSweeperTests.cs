@@ -7,46 +7,34 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Testcontainers.PostgreSql;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Orders.IntegrationTests;
 
 /// <summary>
 /// The capture sweep against real Postgres, with Payments faked at its contract: which orders
-/// it finishes, which it leaves alone, and that it only ever does what a confirm would.
+/// it finishes, which it leaves alone, and that it only ever does what a confirm would. A sweep
+/// visits every owed order, so the shared database is emptied before each test.
 /// </summary>
-public sealed class CaptureSweeperTests : IAsyncLifetime
+public sealed class CaptureSweeperTests(OrdersDatabase database)
+    : IClassFixture<OrdersDatabase>, IAsyncLifetime
 {
     private static readonly DateTime Now = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
 
     /// <summary>Comfortably past <see cref="CaptureSweepOptions.MinimumAge"/>.</summary>
     private static readonly DateTime LongAgo = Now.AddMinutes(-10);
 
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
+    private readonly OrdersDatabase _database = database;
 
     private readonly CountingPayments _payments = new();
 
-    private DbContextOptions<OrdersDbContext> _options = null!;
+    private readonly DbContextOptions<OrdersDbContext> _options = database.Options;
+
+    /// <summary>Empties the orders the previous test left.</summary>
+    public Task InitializeAsync() => _database.ResetAsync();
 
     /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        _options = new DbContextOptionsBuilder<OrdersDbContext>()
-            .UseOrdersNpgsql(_postgres.GetConnectionString())
-            .Options;
-
-        await using var context = new OrdersDbContext(_options);
-        await context.Database.MigrateAsync();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    public Task DisposeAsync() => Task.CompletedTask;
 
     /// <summary>An order owed its capture for long enough is captured and confirmed.</summary>
     [Fact]
@@ -170,9 +158,9 @@ public sealed class CaptureSweeperTests : IAsyncLifetime
     private SweeperHost Host()
     {
         var services = new ServiceCollection();
-        var clock = new FixedTimeProvider(Now);
+        var clock = new FakeTimeProvider(Now);
 
-        services.AddDbContext<OrdersDbContext>(builder => builder.UseOrdersNpgsql(_postgres.GetConnectionString()));
+        services.AddDbContext<OrdersDbContext>(builder => builder.UseOrdersNpgsql(_database.ConnectionString));
         services.AddSingleton<TimeProvider>(clock);
         services.AddSingleton<IOrderPayments>(_payments);
         services.AddSingleton<IEventPricing, Unused>();
@@ -195,11 +183,6 @@ public sealed class CaptureSweeperTests : IAsyncLifetime
         internal CaptureSweeper Sweeper { get; } = sweeper;
 
         public ValueTask DisposeAsync() => provider.DisposeAsync();
-    }
-
-    private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => new(utcNow, TimeSpan.Zero);
     }
 
     /// <summary>Payments at its contract, counting captures.</summary>

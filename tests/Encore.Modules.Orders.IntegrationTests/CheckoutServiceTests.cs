@@ -4,15 +4,16 @@ using Encore.Modules.Orders.Data;
 using Encore.Modules.Orders.Models;
 using Encore.Modules.Payments.Contracts;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.PostgreSql;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Orders.IntegrationTests;
 
 /// <summary>
 /// Checkout, confirm and cancel against real Postgres, with Catalog, Inventory and Payments
-/// faked at their contracts. Every test uses fresh ids, since rows accumulate per class.
+/// faked at their contracts. The database is shared by the class and never emptied, so rows
+/// accumulate and every test uses fresh ids.
 /// </summary>
-public sealed class CheckoutServiceTests : IAsyncLifetime
+public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixture<OrdersDatabase>
 {
     private static readonly DateTime OnSale = new(2026, 1, 1, 9, 0, 0, DateTimeKind.Utc);
     private static readonly DateTime Now = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
@@ -20,29 +21,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
     private const decimal UnitPrice = 25m;
     private const string Currency = "GBP";
 
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
-
-    private DbContextOptions<OrdersDbContext> _options = null!;
-
-    /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        _options = new DbContextOptionsBuilder<OrdersDbContext>()
-            .UseOrdersNpgsql(_postgres.GetConnectionString())
-            .Options;
-
-        await using var context = new OrdersDbContext(_options);
-        await context.Database.MigrateAsync();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    private readonly DbContextOptions<OrdersDbContext> _options = database.Options;
 
     // -- Checkout ---------------------------------------------------------
 
@@ -998,7 +977,7 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
             pricing ?? new FakeEventPricing(),
             seats,
             payments ?? new FakeOrderPayments(),
-            new FixedTimeProvider(at ?? Now));
+            new FakeTimeProvider(at ?? Now));
 
     /// <summary>A committed, detached pending order with the given number of seats.</summary>
     private async Task<Order> AnOpenOrderAsync(Guid clientId, int seatCount)
@@ -1015,11 +994,6 @@ public sealed class CheckoutServiceTests : IAsyncLifetime
         var result = await ServiceFor(context, seats).CheckoutAsync(clientId, Guid.NewGuid(), seatIds);
 
         return result.Order!;
-    }
-
-    private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => new(utcNow, TimeSpan.Zero);
     }
 
     /// <summary>Catalog faked at its contract: priced and on sale unless a test says otherwise.</summary>
