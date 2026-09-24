@@ -4,18 +4,14 @@ using Microsoft.Extensions.Options;
 
 namespace Encore.Modules.Payments.Data;
 
-/// <summary>
-/// Payments' readiness: can it reach its database, and how many unanswered attempts are
-/// older than the reconciler's minimum age. That count is reported, not failed on.
-/// </summary>
 internal sealed class PaymentsReadinessCheck(
     PaymentsDbContext context,
     IOptions<PaymentReconciliationOptions> reconciliation,
-    TimeProvider clock) : IReadinessCheck
+    TimeProvider timeProvider) : IReadinessCheck
 {
     private readonly PaymentsDbContext _context = context;
     private readonly PaymentReconciliationOptions _reconciliation = reconciliation.Value;
-    private readonly TimeProvider _clock = clock;
+    private readonly TimeProvider _timeProvider = timeProvider;
 
     /// <inheritdoc />
     public string Name => "payments";
@@ -23,7 +19,7 @@ internal sealed class PaymentsReadinessCheck(
     /// <inheritdoc />
     public async Task<ReadinessResult> CheckAsync(CancellationToken cancellationToken = default)
     {
-        var cutoff = _clock.GetUtcNow().UtcDateTime - _reconciliation.MinimumAge;
+        var cutoff = _timeProvider.GetUtcNow().UtcDateTime - _reconciliation.MinimumAge;
 
         try
         {

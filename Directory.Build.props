@@ -1,17 +1,14 @@
 <Project>
 
-  <!-- Settings shared by every project. -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
 
-    <!--
-      A switch expression over an enum names every member and has no default arm, so a new
-      member is a build error (CS8509) rather than a runtime throw (008). An unnamed value cast
-      into the enum (CS8524) is not a case anyone writes, and still throws at run time.
-    -->
+    <!-- An enum switch names every member and has no default arm, so a new member is a build
+         error (CS8509), not a runtime throw (008). CS8524, an unnamed value cast into the
+         enum, is a case nobody writes; it still throws at run time. -->
     <NoWarn>$(NoWarn);CS8524</NoWarn>
     <WarningsAsErrors>$(WarningsAsErrors);CS8509</WarningsAsErrors>
   </PropertyGroup>

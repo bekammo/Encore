@@ -4,20 +4,11 @@ using StackExchange.Redis;
 
 namespace Encore.Modules.Inventory.Adapters.Caching;
 
-/// <summary>
-/// Redis implementation of <see cref="IDistributedLock"/>: <c>SET key token NX PX ttl</c>
-/// to acquire, and an atomic check-and-delete script to release.
-/// </summary>
-/// <remarks>
-/// Release is not a bare <c>DEL</c>: a holder that stalled past its TTL would otherwise
-/// delete someone else's lock. Connection failures are reported as
-/// <see cref="LockOutcome.Unavailable"/> rather than thrown.
-/// </remarks>
 public sealed class RedisDistributedLock(
     IConnectionMultiplexer connection,
     ILogger<RedisDistributedLock> logger) : IDistributedLock
 {
-    /// <summary>Deletes the key only if it still holds this caller's token. Returns 1 if deleted.</summary>
+    // Not a bare DEL: a holder that stalled past its TTL would delete someone else's lock.
     private const string ReleaseIfOwnerScript =
         """
         if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -80,17 +71,13 @@ public sealed class RedisDistributedLock(
         }
         catch (Exception ex) when (IsLockServiceFailure(ex))
         {
-            // The key has a TTL and frees itself; the work it guarded already succeeded.
             _outage.Refused("release", resource, ex);
 
             return false;
         }
     }
 
-    /// <summary>
-    /// Whether Redis could not answer, as opposed to a programming error. Deliberately
-    /// narrow, so real bugs are not reported as "unavailable".
-    /// </summary>
+    // Deliberately narrow: a programming error must surface, not be reported as "unavailable".
     private static bool IsLockServiceFailure(Exception ex) =>
         ex is RedisConnectionException or RedisTimeoutException or ObjectDisposedException;
 

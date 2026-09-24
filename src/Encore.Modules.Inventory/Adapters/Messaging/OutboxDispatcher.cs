@@ -11,14 +11,10 @@ using Microsoft.Extensions.Options;
 namespace Encore.Modules.Inventory.Adapters.Messaging;
 
 /// <summary>
-/// Delivers undelivered rows from <c>inventory.outbox_messages</c> to their handlers,
-/// with exponential backoff and a dead letter after <see cref="OutboxOptions.MaxAttempts"/>.
-/// </summary>
-/// <remarks>
-/// At-least-once, in no order a consumer may rely on: a failing message is overtaken rather
+/// At least once, in no order a consumer may rely on: a failing message is overtaken rather
 /// than blocking the queue, even by a row from its own transaction, and several dispatchers
 /// share the table (024). No seat invariant depends on it running.
-/// </remarks>
+/// </summary>
 internal sealed class OutboxDispatcher(
     IServiceScopeFactory scopeFactory,
     OutboxEventCatalog catalog,
@@ -26,14 +22,10 @@ internal sealed class OutboxDispatcher(
     TimeProvider timeProvider,
     ILogger<OutboxDispatcher> logger) : BackgroundService
 {
-    /// <summary>
-    /// Raw SQL because EF Core cannot express a locking clause. <c>SKIP LOCKED</c> lets
-    /// several dispatchers share the table; claiming on <c>ProcessedAt IS NULL</c> rather
-    /// than a last-seen id means a late-committing row is never skipped. Ordered as
-    /// <c>ix_outbox_messages_unprocessed</c> is, so the index supplies the order and the
-    /// <c>LIMIT</c> ends the scan. Ordering by <c>Id</c> alone made every tick read the whole
-    /// due backlog.
-    /// </summary>
+    // Raw SQL: EF Core cannot express FOR UPDATE SKIP LOCKED. ProcessedAt IS NULL rather than a
+    // last-seen id, so a late-committing row is never skipped. Ordered as
+    // ix_outbox_messages_unprocessed is, so LIMIT ends the scan; ordering by Id alone read the
+    // whole due backlog every tick.
     private const string ClaimSql = $$"""
         SELECT * FROM "{{InventoryPersistence.Schema}}"."outbox_messages"
         WHERE "ProcessedAt" IS NULL
@@ -50,7 +42,6 @@ internal sealed class OutboxDispatcher(
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<OutboxDispatcher> _logger = logger;
 
-    /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
@@ -71,8 +62,6 @@ internal sealed class OutboxDispatcher(
         _logger.LogInformation("Inventory outbox dispatcher stopped.");
     }
 
-    /// <summary>Claims one batch, delivers it and records the outcome. Internal so tests can drive one tick.</summary>
-    /// <returns>How many messages were claimed.</returns>
     internal async Task<int> DispatchBatchAsync(CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();
@@ -97,7 +86,7 @@ internal sealed class OutboxDispatcher(
             return 0;
         }
 
-        // Wall clock, not TimeProvider: this bounds how long real row locks are held.
+        // Wall clock, not TimeProvider: this bounds how long real row locks are held (016).
         var started = Stopwatch.StartNew();
         var delivered = 0;
 
@@ -105,7 +94,6 @@ internal sealed class OutboxDispatcher(
         {
             if (started.Elapsed >= _options.MaxBatchDuration)
             {
-                // Out of budget. The rest are untouched and will be claimed again next tick.
                 _logger.LogWarning(
                     "Outbox tick spent its {MaxBatchDuration} budget after {Delivered} of {Claimed} messages. Committing and leaving the rest for the next tick.",
                     _options.MaxBatchDuration,
@@ -121,17 +109,11 @@ internal sealed class OutboxDispatcher(
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
+        // Claimed, not delivered: a batch the budget cut short still reads as full, so the
+        // next tick starts at once.
         return claimed.Count;
     }
 
-    /// <summary>
-    /// Hands one message to its handler under <see cref="OutboxOptions.DeliveryTimeout"/>.
-    /// A handler that overruns fails like any other.
-    /// </summary>
-    /// <remarks>
-    /// Each message gets its own scope. A shared one would carry a failed handler's state, such
-    /// as an insert still tracked by its context, into the next message's delivery.
-    /// </remarks>
     private async Task DeliverAsync(OutboxMessage message, CancellationToken cancellationToken)
     {
         var utcNow = _timeProvider.GetUtcNow().UtcDateTime;
@@ -141,6 +123,8 @@ internal sealed class OutboxDispatcher(
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(_options.DeliveryTimeout);
 
+        // A scope per message: a shared one would carry a failed handler's tracked insert into
+        // the next delivery.
         await using var scope = _scopeFactory.CreateAsyncScope();
 
         try
@@ -155,7 +139,8 @@ internal sealed class OutboxDispatcher(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Shutting down: leave the row as it was, without spending an attempt.
+            // Shutting down: leave the row as it was, spending no attempt. A deadline overrun
+            // is not caught here; it fails like any handler error.
             throw;
         }
         catch (Exception ex)
@@ -190,9 +175,9 @@ internal sealed class OutboxDispatcher(
         }
     }
 
-    /// <summary>Exponential backoff, capped. The exponent is clamped so the shift cannot overflow.</summary>
     private TimeSpan BackoffFor(int attemptsSoFar)
     {
+        // Clamped so the shift cannot overflow.
         var exponent = Math.Min(attemptsSoFar, 16);
         var delay = _options.BaseBackoff * (1L << exponent);
 
@@ -200,8 +185,8 @@ internal sealed class OutboxDispatcher(
     }
 
     /// <summary>
-    /// A consumer span that links to the trace which raised the event, rather than joining it:
-    /// that trace ended long ago, and a redelivery would give it a second child.
+    /// Links to the trace that raised the event instead of joining it: that trace ended long
+    /// ago, and a redelivery would give it a second child.
     /// </summary>
     internal static Activity? StartDelivery(OutboxMessage message)
     {

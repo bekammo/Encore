@@ -1,9 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The hosts' OpenTelemetry wiring, and the only place its packages live. Not a module and
-       not shared by modules: the architecture tests forbid it to name one, forbid anything but
-       a host to reference it, and forbid it any ProjectReference. Modules emit through the
-       BCL's ActivitySource and Meter and never learn this exists (021). -->
+  <!-- Host-only, and the one home of the OpenTelemetry packages (021). Modules emit through
+       the BCL's ActivitySource and Meter and never learn this exists. -->
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

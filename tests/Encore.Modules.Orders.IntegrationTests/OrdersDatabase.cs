@@ -7,14 +7,12 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Orders.IntegrationTests;
 
 /// <summary>
-/// One Postgres per test class, migrated once with every schema a class here uses: Orders' own,
-/// and Inventory's and Payments' for the classes that compose those modules. A class that does
-/// not use a schema pays one extra migration for it, which is cheaper than a fixture per shape.
-/// Rows accumulate across the class unless its tests call <see cref="ResetAsync"/>.
+/// Rows accumulate across a class unless its tests call <see cref="ResetAsync"/>. Every class
+/// gets all three schemas, which is cheaper than a fixture per shape.
 /// </summary>
 public sealed class OrdersDatabase : IAsyncLifetime
 {
-    /// <summary>Every table in the three schemas. The migrations history tables are not among them.</summary>
+    // Every data table in the three schemas: add a new one here, or rows leak between tests that reset.
     private const string TruncateSql =
         $"TRUNCATE TABLE \"{OrdersPersistence.Schema}\".\"orders\", \"{OrdersPersistence.Schema}\".\"order_lines\", "
         + $"\"{InventoryPersistence.Schema}\".\"seats\", \"{InventoryPersistence.Schema}\".\"outbox_messages\", "
@@ -27,13 +25,10 @@ public sealed class OrdersDatabase : IAsyncLifetime
         .WithPassword("encore")
         .Build();
 
-    /// <summary>The migrated database, for a composed container or a raw connection.</summary>
     public string ConnectionString { get; private set; } = null!;
 
-    /// <summary>Options for an Orders context on the migrated database.</summary>
     public DbContextOptions<OrdersDbContext> Options { get; private set; } = null!;
 
-    /// <inheritdoc />
     public async Task InitializeAsync()
     {
         await _postgres.StartAsync();
@@ -63,7 +58,6 @@ public sealed class OrdersDatabase : IAsyncLifetime
         }
     }
 
-    /// <summary>Empties every table in the three schemas, so the next test starts from nothing.</summary>
     public async Task ResetAsync()
     {
         await using var context = new OrdersDbContext(Options);
@@ -71,6 +65,5 @@ public sealed class OrdersDatabase : IAsyncLifetime
         await context.Database.ExecuteSqlRawAsync(TruncateSql);
     }
 
-    /// <inheritdoc />
     public async Task DisposeAsync() => await _postgres.DisposeAsync();
 }

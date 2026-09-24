@@ -4,14 +4,6 @@ using Encore.Modules.Inventory.Ports;
 
 namespace Encore.Modules.Inventory.Application;
 
-/// <summary>
-/// Turns a client's live holds into sales: every seat or none, in one transaction,
-/// because a sale cannot be taken back.
-/// </summary>
-/// <remarks>
-/// Buying a seat the client already bought is a success, not a refusal. No lock: each
-/// seat's <c>xmin</c> settles its own race. A lost race is retried once.
-/// </remarks>
 public sealed class SellSeatCommandHandler(
     ISeatRepository seats,
     TimeProvider timeProvider)
@@ -19,7 +11,6 @@ public sealed class SellSeatCommandHandler(
     private readonly ISeatRepository _seats = seats;
     private readonly TimeProvider _timeProvider = timeProvider;
 
-    /// <summary>Sells one seat. A batch of one.</summary>
     public async Task<SellSeatOutcome> HandleAsync(
         SellSeatCommand command,
         CancellationToken cancellationToken = default)
@@ -32,8 +23,6 @@ public sealed class SellSeatCommandHandler(
         return result.AllSold ? SellSeatOutcome.Sold : result.Refusals[0].Outcome;
     }
 
-    /// <summary>Sells every requested seat, or none.</summary>
-    /// <returns>Sold, or every seat's reason for refusing.</returns>
     public async Task<SellSeatsResult> HandleAsync(
         SellSeatsCommand command,
         CancellationToken cancellationToken = default)
@@ -47,12 +36,11 @@ public sealed class SellSeatCommandHandler(
             return attempt.Result;
         }
 
-        // The retry's load discards the first attempt's changes.
         var retry = await AttemptAsync(command, cancellationToken).ConfigureAwait(false);
 
         if (retry.LostRace)
         {
-            // Nothing else will: reload so the seats that read Sold in memory cannot reach a later save.
+            // Reloads only to discard the sales in memory, so no later save writes them (011).
             await _seats.GetByIdsAsync(command.SeatIds, cancellationToken).ConfigureAwait(false);
         }
 
@@ -67,7 +55,6 @@ public sealed class SellSeatCommandHandler(
 
         var loaded = await _seats.GetByIdsAsync(command.SeatIds, cancellationToken).ConfigureAwait(false);
 
-        // The event id is checked, never trusted.
         var seats = loaded
             .Where(seat => seat.EventId == command.EventId)
             .ToDictionary(seat => seat.Id);
@@ -96,7 +83,7 @@ public sealed class SellSeatCommandHandler(
 
         if (refusals.Count > 0)
         {
-            // Reload so the seats that read Sold in memory cannot reach a later save.
+            // A refused sale reloads, so seats sold in memory cannot reach a later save (011).
             if (sold.Count > 0)
             {
                 await _seats.GetByIdsAsync(command.SeatIds, cancellationToken).ConfigureAwait(false);
@@ -124,7 +111,7 @@ public sealed class SellSeatCommandHandler(
         }
     }
 
-    /// <summary>Asks one seat to sell; returns why it would not, or null if it did.</summary>
+    // Null when the seat sold now or was already sold to this client.
     private static SellSeatOutcome? TrySell(Seat seat, Guid clientId, DateTime utcNow)
     {
         try
@@ -135,7 +122,6 @@ public sealed class SellSeatCommandHandler(
         }
         catch (SeatTransitionException ex) when (ex.Reason is SeatTransitionReason.SeatAlreadySold)
         {
-            // Already sold to this client means a retried purchase, not a failure.
             return seat.HeldByClientId == clientId ? null : SellSeatOutcome.AlreadySold;
         }
         catch (SeatTransitionException ex) when (ex.Reason is SeatTransitionReason.NotTheHolder)
@@ -150,8 +136,6 @@ public sealed class SellSeatCommandHandler(
         {
             return SellSeatOutcome.NoActiveHold;
         }
-
-        // Any other reason propagates: it would mean the aggregate's contract changed.
     }
 
     private sealed record Attempt(SellSeatsResult Result, bool LostRace);

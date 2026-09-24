@@ -1,5 +1,6 @@
 using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Application;
+using Encore.Modules.Inventory.Contracts;
 using Encore.Modules.Inventory.Contracts.Events;
 using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Domain.Exceptions;
@@ -10,10 +11,10 @@ using Microsoft.Extensions.Time.Testing;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// An order's seats written together against real Postgres: a sale of every seat or none, and
-/// holds and releases answered per seat but written in one transaction. Seats written together
-/// share one <c>xmin</c>, which is how "one transaction" is checked. The database is shared by
-/// the class and never emptied, so every assertion is scoped to the test's own seats.
+/// A sale writes every seat or none; holds and releases answer per seat but write in one
+/// transaction (011). Seats written together share one <c>xmin</c>, which is how "one
+/// transaction" is checked. The database is never emptied, so assertions are scoped to the
+/// test's own seats.
 /// </summary>
 public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<InventoryDatabase>
 {
@@ -21,8 +22,6 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
     private readonly DateTime _now = Now();
 
     private readonly DbContextOptions<InventoryDbContext> _options = database.Options;
-
-    // -- Selling: all or none ----------------------------------------------
 
     [Fact]
     public async Task Sell_WhenEveryHoldIsLive_ShouldSellThemAllInOneTransaction()
@@ -41,7 +40,6 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         Assert.Equal(4, await CountEventsAsync(seatIds, InventoryEventTypes.SeatSold));
     }
 
-    /// <summary>Four seats, the last hold lapsed: none sell, nothing is announced, the live holds remain.</summary>
     [Fact]
     public async Task Sell_WhenOneOfFourHoldsHasLapsed_ShouldSellNone()
     {
@@ -64,10 +62,6 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         Assert.Equal(0, await CountEventsAsync(seatIds, InventoryEventTypes.SeatSold));
     }
 
-    /// <summary>
-    /// After a refused sale, a later save on the same context sells nothing: the seats that read
-    /// Sold in memory were reloaded.
-    /// </summary>
     [Fact]
     public async Task Sell_WhenRefused_ShouldLeaveNothingForALaterSaveToWrite()
     {
@@ -89,10 +83,7 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         Assert.Equal(0, await CountEventsAsync(live, InventoryEventTypes.SeatSold));
     }
 
-    /// <summary>
-    /// Another writer moves a seat before each of the two saves. Both attempts lose, and a later
-    /// save on the same context writes nothing and does not fail on the stale seats.
-    /// </summary>
+    /// <summary>The later save must neither write the stale seats nor fail on them.</summary>
     [Fact]
     public async Task Sell_WhenBothAttemptsLoseTheRace_ShouldLeaveNothingForALaterSaveToWrite()
     {
@@ -117,9 +108,6 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         Assert.Equal(0, await CountEventsAsync(seatIds, InventoryEventTypes.SeatSold));
     }
 
-    /// <summary>
-    /// Another writer moves one seat between load and save; the untouched seat does not sell either.
-    /// </summary>
     [Fact]
     public async Task Save_WhenAnotherWriterMovesOneSeat_ShouldCommitNone()
     {
@@ -144,7 +132,6 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         Assert.Equal(0, await CountEventsAsync(seatIds, InventoryEventTypes.SeatSold));
     }
 
-    /// <summary>A retried confirm after the sale: success, and nothing announced twice.</summary>
     [Fact]
     public async Task Sell_WhenRetriedAfterTheSale_ShouldSucceedWithoutASecondEvent()
     {
@@ -158,9 +145,6 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         Assert.Equal(2, await CountEventsAsync(seatIds, InventoryEventTypes.SeatSold));
     }
 
-    // -- Holding: every seat answered, one transaction ----------------------
-
-    /// <summary>A seat someone else holds is refused; the free ones are held in one write.</summary>
     [Fact]
     public async Task Hold_WhenOneSeatIsTaken_ShouldHoldTheOthersInOneTransaction()
     {
@@ -181,7 +165,7 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         Assert.Equal(2, await CountEventsAsync(free, InventoryEventTypes.SeatHeld));
     }
 
-    /// <summary>The cap counts across the batch: the database ends with exactly the cap.</summary>
+    /// <summary>The cap counts the holds this batch has already made.</summary>
     [Fact]
     public async Task Hold_WhenTheCapRunsOutPartWay_ShouldStopAtTheCap()
     {
@@ -192,19 +176,20 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         var results = await HoldAsync(asked, clientId);
 
         Assert.Equal(
-            [HoldSeatOutcome.Held, HoldSeatOutcome.Held, HoldSeatOutcome.HoldCapReached, HoldSeatOutcome.HoldCapReached],
+            [
+                HoldSeatOutcome.Held,
+                HoldSeatOutcome.Held,
+                HoldSeatOutcome.HoldCapReached,
+                HoldSeatOutcome.HoldCapReached
+            ],
             results.Select(result => result.Outcome));
 
         await using var context = new InventoryDbContext(_options);
         Assert.Equal(
-            HoldSeatCommandHandler.MaxHoldsPerClientPerEvent,
+            SeatReservationLimits.MaxHoldsPerClientPerEvent,
             await context.Seats.CountAsync(seat => seat.HeldByClientId == clientId && seat.Status == SeatStatus.Held));
     }
 
-    /// <summary>
-    /// Another writer moves a seat before each save, so both hold attempts lose. A later save
-    /// on the same context writes no hold and does not fail on the stale seats.
-    /// </summary>
     [Fact]
     public async Task Hold_WhenBothAttemptsLoseTheRace_ShouldLeaveNothingForALaterSaveToWrite()
     {
@@ -217,7 +202,10 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
                 new EfSeatRepository(context),
                 () => BumpAsync(seatIds[1]));
 
-            var results = await new HoldSeatCommandHandler(contested, new AlwaysGrantingLock(), new FakeTimeProvider(_now))
+            var results = await new HoldSeatCommandHandler(
+                    contested,
+                    new AlwaysGrantingLock(),
+                    new FakeTimeProvider(_now))
                 .HandleAsync(new HoldSeatsCommand(_eventId, seatIds, clientId));
 
             Assert.All(results, result => Assert.Equal(HoldSeatOutcome.LostRace, result.Outcome));
@@ -229,10 +217,6 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         Assert.Equal(0, await CountEventsAsync(seatIds, InventoryEventTypes.SeatHeld));
     }
 
-    /// <summary>
-    /// A hold reads the seats it asks for and the client's other live holds in one query. The
-    /// other holds are counted for the cap and nothing more: not tracked, so no save can write them.
-    /// </summary>
     [Fact]
     public async Task Hold_ShouldCountTheClientsOtherHoldsWithoutTakingThemIn()
     {
@@ -253,12 +237,6 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         Assert.Equal(asked, context.ChangeTracker.Entries<Seat>().Select(entry => entry.Entity.Id));
     }
 
-    // -- Releasing ----------------------------------------------------------
-
-    /// <summary>
-    /// Both release attempts lose to another writer. A later save on the same context releases
-    /// nothing and does not fail on the stale seats.
-    /// </summary>
     [Fact]
     public async Task Release_WhenBothAttemptsLoseTheRace_ShouldLeaveNothingForALaterSaveToWrite()
     {
@@ -306,8 +284,6 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         Assert.All(seats, seat => Assert.Equal(SeatStatus.Available, seat.Status));
         Assert.Single(seats.Select(seat => seat.RowVersion).Distinct());
     }
-
-    // -- Helpers ------------------------------------------------------------
 
     private SellSeatCommandHandler SellHandler(InventoryDbContext context) =>
         new(new EfSeatRepository(context), new FakeTimeProvider(_now));
@@ -359,10 +335,7 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         return [.. seats.Select(seat => seat.Id)];
     }
 
-    /// <summary>
-    /// Moves a seat's row version through another context without changing its holder: release
-    /// and re-hold. One write would not do, since EF sends no UPDATE when nothing changed.
-    /// </summary>
+    // Two saves, since EF sends no UPDATE when nothing changed.
     private async Task MoveAsync(Guid seatId, Guid clientId)
     {
         await using var context = new InventoryDbContext(_options);
@@ -377,10 +350,7 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         await repository.SaveAsync(seat);
     }
 
-    /// <summary>
-    /// Moves an available seat's row version through another context and leaves it available:
-    /// a stranger holds it, then releases it. Its events are dropped, so only the handler's count.
-    /// </summary>
+    // Events dropped so only the handler's are counted.
     private async Task BumpAsync(Guid seatId)
     {
         var stranger = Guid.NewGuid();
@@ -412,7 +382,6 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
 
         var count = 0;
 
-        // One query per seat, filtered on the payload, because the database is shared by the class.
         foreach (var seatId in seatIds)
         {
             count += await context.OutboxMessages.AsNoTracking()
@@ -424,14 +393,14 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         return count;
     }
 
+    // Truncated to microseconds to survive the Postgres round trip.
     private static DateTime Now()
     {
         var utcNow = DateTime.UtcNow;
 
-        return new DateTime(utcNow.Ticks - (utcNow.Ticks % TimeSpan.TicksPerMicrosecond), DateTimeKind.Utc);
+        return new DateTime(utcNow.Ticks - utcNow.Ticks % TimeSpan.TicksPerMicrosecond, DateTimeKind.Utc);
     }
 
-    /// <summary>A real repository whose batch saves each lose a race, because another writer moves first.</summary>
     private sealed class MovedBeforeEachSave(ISeatRepository inner, Func<Task> move) : ISeatRepository
     {
         public Task<Seat?> GetByIdAsync(Guid seatId, CancellationToken cancellationToken = default) =>

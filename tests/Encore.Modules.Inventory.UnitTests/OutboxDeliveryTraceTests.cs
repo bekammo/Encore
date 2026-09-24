@@ -5,10 +5,6 @@ using Encore.Modules.Inventory.Adapters.Telemetry;
 
 namespace Encore.Modules.Inventory.UnitTests;
 
-/// <summary>
-/// A delivery is its own trace with a link to the one that raised the event: the raising
-/// request ended long before, and a redelivery must not give it a second child.
-/// </summary>
 public sealed class OutboxDeliveryTraceTests : IDisposable
 {
     private static readonly DateTime OccurredAt = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
@@ -51,7 +47,6 @@ public sealed class OutboxDeliveryTraceTests : IDisposable
         Assert.Empty(delivery.Links);
     }
 
-    /// <summary>A malformed value is not worth failing a delivery over.</summary>
     [Fact]
     public void StartDelivery_WithAMalformedTraceParent_ShouldLinkToNothing()
     {
@@ -61,10 +56,6 @@ public sealed class OutboxDeliveryTraceTests : IDisposable
         Assert.Empty(delivery.Links);
     }
 
-    /// <summary>
-    /// Healthy deliveries take milliseconds. With the SDK's default boundaries, sized for
-    /// milliseconds, every one landed in the 0–5 bucket and the dashboard read p99 = 5 s.
-    /// </summary>
     [Fact]
     public void DeliveryLag_ShouldBucketSubSecondDelays()
     {

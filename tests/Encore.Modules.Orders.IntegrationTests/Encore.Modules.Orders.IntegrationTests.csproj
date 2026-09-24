@@ -19,9 +19,7 @@
     <ProjectReference Include="..\..\src\Encore.Modules.Orders\Encore.Modules.Orders.csproj" />
   </ItemGroup>
 
-  <!-- The real modules on the far side of Orders' seams: composed through their Add* methods
-       as the host composes them by CheckoutCompositionTests and PaymentsServiceRoundTripTests
-       (018), and migrated by OrdersDatabase for those two. -->
+  <!-- The real modules behind Orders' seams, for the composition tests (018). -->
   <ItemGroup>
     <ProjectReference Include="..\..\src\Encore.Modules.Inventory\Encore.Modules.Inventory.csproj" />
     <ProjectReference Include="..\..\src\Encore.Modules.Payments\Encore.Modules.Payments.csproj" />

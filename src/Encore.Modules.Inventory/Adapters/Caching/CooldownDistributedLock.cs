@@ -4,30 +4,22 @@ using Encore.Modules.Inventory.Ports;
 namespace Encore.Modules.Inventory.Adapters.Caching;
 
 /// <summary>
-/// Stops asking the lock service for a short while after it could not answer. During an
-/// outage every attempt would be refused anyway; this refuses it without the round trip and
-/// the exception. The first attempt after the window is the probe.
+/// Skips only acquires. A release always goes through: its caller took the lock before the
+/// window opened, and skipping it would strand the key until its TTL. The first acquire after
+/// the window is the probe; several may probe at once, and with fail-fast connections that is
+/// cheap enough that none is elected.
 /// </summary>
-/// <remarks>
-/// Changes nothing a caller can rely on: "unavailable" already means "proceed without the
-/// lock". Only acquiring is skipped. A release always goes through, because a caller holding
-/// a token took its lock before the window opened, and skipping the release would strand that
-/// key until its TTL. Several callers may probe at once when a window ends; with fail-fast
-/// connections a probe is cheap, so no one is elected.
-/// </remarks>
 internal sealed class CooldownDistributedLock(
     IDistributedLock inner,
     TimeSpan cooldown,
     TimeProvider timeProvider) : IDistributedLock
 {
-    /// <summary>The outcome recorded when the cooldown answered instead of the service.</summary>
     internal const string CoolingDownOutcome = "CoolingDown";
 
     private readonly IDistributedLock _inner = inner;
     private readonly TimeSpan _cooldown = cooldown;
     private readonly TimeProvider _timeProvider = timeProvider;
 
-    /// <summary>UTC ticks until which the service is not asked. Zero when it is answering.</summary>
     private long _coolUntilTicks;
 
     /// <inheritdoc />
@@ -52,7 +44,6 @@ internal sealed class CooldownDistributedLock(
     }
 
     /// <inheritdoc />
-    /// <remarks>Never skipped, cooling down or not: see the class remarks.</remarks>
     public async Task<bool> ReleaseAsync(
         string resource,
         string token,

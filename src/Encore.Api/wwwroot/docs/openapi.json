@@ -107,7 +107,7 @@
           "name": { "type": "string", "maxLength": 200 },
           "startsAt": { "type": "string", "format": "date-time", "description": "Must carry a timezone. Stored and returned as UTC." },
           "onSaleAt": { "type": ["string", "null"], "format": "date-time", "description": "When tickets become orderable. Null means immediately. Must carry a timezone when supplied." },
-          "price": { "type": "number", "minimum": 0, "exclusiveMaximum": 1000000000000000, "description": "What one seat costs. At most 4 decimal places; more is refused, not rounded." },
+          "price": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1000000000000000, "description": "What one seat costs. Above zero: there are no free events. At most 4 decimal places; more is refused, not rounded." },
           "currency": { "type": "string", "description": "ISO 4217 code.", "example": "GBP" }
         }
       },
@@ -174,7 +174,7 @@
           "eventId": { "type": "string", "format": "uuid" },
           "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled", "expired", "failed", "awaiting_capture"], "description": "awaiting_capture is non-terminal: every seat is sold and the capture is owed. The next confirm resolves it, and so does the capture sweep, within a minute or two." },
           "placedAt": { "type": "string", "format": "date-time" },
-          "holdsExpireAt": { "type": ["string", "null"], "format": "date-time", "description": "Null once the order closes." },
+          "holdsExpireAt": { "type": ["string", "null"], "format": "date-time", "description": "When the first of the order's holds lapses. Null once the seats have sold or the order has ended." },
           "closedAt": { "type": ["string", "null"], "format": "date-time" },
           "total": { "type": "number" },
           "currency": { "type": "string" },

@@ -7,16 +7,11 @@ using Outcomes = Encore.Modules.Payments.Contracts.PaymentsServiceApi.Outcomes;
 namespace Encore.Modules.Payments.Endpoints;
 
 /// <summary>
-/// The write side of Payments over HTTP, for one caller: Orders, when Payments runs as its
-/// own service. Not customer-facing: no <c>X-Client-Id</c>, a service token instead, and an
-/// <c>/internal</c> prefix an ingress can refuse. RPC-shaped because the seam is keyed by order.
+/// Not customer-facing: a service token instead of <c>X-Client-Id</c>, and an <c>/internal</c>
+/// prefix an ingress can refuse. RPC-shaped because the seam is keyed by order (018).
 /// </summary>
 public static class PaymentServiceEndpoints
 {
-    /// <summary>
-    /// Maps the service API.
-    /// </summary>
-    /// <param name="serviceToken">The shared secret every caller must present.</param>
     public static IEndpointRouteBuilder MapPaymentServiceEndpoints(
         this IEndpointRouteBuilder endpoints,
         string serviceToken)
@@ -24,22 +19,21 @@ public static class PaymentServiceEndpoints
         ArgumentNullException.ThrowIfNull(endpoints);
         ArgumentException.ThrowIfNullOrWhiteSpace(serviceToken);
 
-        // A literal, so the OpenAPI drift test can read it; that test pins it too.
-        var group = endpoints
+        // A literal: the OpenAPI drift test reads it from source.
+        var service = endpoints
             .MapGroup("/internal/payments")
             .AddEndpointFilter(new ServiceTokenEndpointFilter(serviceToken));
 
-        group.MapPost("/authorize", AuthorizeAsync);
-        group.MapPost("/capture", CaptureAsync);
-        group.MapPost("/void", VoidAsync);
+        service.MapPost("/authorize", AuthorizeAsync);
+        service.MapPost("/capture", CaptureAsync);
+        service.MapPost("/void", VoidAsync);
 
         return endpoints;
     }
 
-    /// <summary>Opens or reuses this order's authorisation.</summary>
     private static async Task<IResult> AuthorizeAsync(
         AuthorizePaymentRequest request,
-        HttpContext http,
+        HttpContext context,
         IOrderPayments payments,
         CancellationToken cancellationToken)
     {
@@ -49,32 +43,29 @@ public static class PaymentServiceEndpoints
 
         return response.Status switch
         {
-            // Answers, not refusals: a retry gets back what it already has.
             AuthorizePaymentStatus.Authorized =>
                 Ok(Outcomes.Authorized, response.PaymentId),
             AuthorizePaymentStatus.AlreadyCaptured =>
                 Ok(Outcomes.AlreadyCaptured, response.PaymentId),
 
             AuthorizePaymentStatus.Declined => Refused(
-                http, StatusCodes.Status402PaymentRequired,
+                context, StatusCodes.Status402PaymentRequired,
                 "Payment declined", Outcomes.Declined, response.PaymentId),
 
-            // 504: the upstream gateway did not answer. The reconciler will settle it.
             AuthorizePaymentStatus.TimedOut => Refused(
-                http, StatusCodes.Status504GatewayTimeout,
+                context, StatusCodes.Status504GatewayTimeout,
                 "The gateway did not answer", Outcomes.TimedOut, response.PaymentId),
 
             AuthorizePaymentStatus.ConcurrentAttemptInFlight => Refused(
-                http, StatusCodes.Status409Conflict,
+                context, StatusCodes.Status409Conflict,
                 "Another attempt for this order is in flight",
                 Outcomes.ConcurrentAttemptInFlight, response.PaymentId)
         };
     }
 
-    /// <summary>Takes the funds this order's attempt is holding.</summary>
     private static async Task<IResult> CaptureAsync(
         CapturePaymentRequest request,
-        HttpContext http,
+        HttpContext context,
         IOrderPayments payments,
         CancellationToken cancellationToken)
     {
@@ -87,19 +78,18 @@ public static class PaymentServiceEndpoints
             CapturePaymentStatus.Captured => Ok(Outcomes.Captured, response.PaymentId),
 
             CapturePaymentStatus.TimedOut => Refused(
-                http, StatusCodes.Status504GatewayTimeout,
+                context, StatusCodes.Status504GatewayTimeout,
                 "The gateway did not answer", Outcomes.TimedOut, response.PaymentId),
 
             CapturePaymentStatus.NoAuthorization => Refused(
-                http, StatusCodes.Status409Conflict,
+                context, StatusCodes.Status409Conflict,
                 "There is nothing held for this order", Outcomes.NoAuthorization, response.PaymentId)
         };
     }
 
-    /// <summary>Releases what this order's attempt is holding.</summary>
     private static async Task<IResult> VoidAsync(
         VoidPaymentRequest request,
-        HttpContext http,
+        HttpContext context,
         IOrderPayments payments,
         CancellationToken cancellationToken)
     {
@@ -112,16 +102,15 @@ public static class PaymentServiceEndpoints
             VoidPaymentStatus.Voided => Ok(Outcomes.Voided, response.PaymentId),
 
             VoidPaymentStatus.TimedOut => Refused(
-                http, StatusCodes.Status504GatewayTimeout,
+                context, StatusCodes.Status504GatewayTimeout,
                 "The gateway did not answer", Outcomes.TimedOut, response.PaymentId),
 
-            // Orders reads this as a lost race.
             VoidPaymentStatus.AlreadyCaptured => Refused(
-                http, StatusCodes.Status409Conflict,
+                context, StatusCodes.Status409Conflict,
                 "That attempt has already been captured", Outcomes.AlreadyCaptured, response.PaymentId),
 
             VoidPaymentStatus.NoAuthorization => Refused(
-                http, StatusCodes.Status409Conflict,
+                context, StatusCodes.Status409Conflict,
                 "There is nothing held for this order", Outcomes.NoAuthorization, response.PaymentId)
         };
     }
@@ -132,12 +121,9 @@ public static class PaymentServiceEndpoints
             paymentId ?? throw new InvalidOperationException(
                 $"A '{outcome}' outcome must carry the attempt it is about.")));
 
-    /// <summary>
-    /// A problem+json refusal with a <c>reason</c>, plus <c>paymentId</c> when there is one,
-    /// because the caller reads it back.
-    /// </summary>
+    // The caller reads paymentId back from refusals too.
     private static IResult Refused(
-        HttpContext http,
+        HttpContext context,
         int statusCode,
         string title,
         string reason,
@@ -154,7 +140,7 @@ public static class PaymentServiceEndpoints
             detail: title + ".",
             statusCode: statusCode,
             title: title,
-            instance: http.Request.Path,
+            instance: context.Request.Path,
             extensions: extensions);
     }
 }

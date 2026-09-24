@@ -1,8 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The module's only tests: it serves no routes. Its one rule, one row per delivered
-       message, is a unique index, so real Postgres and no in-memory provider. -->
-
   <PropertyGroup>
     <IsPackable>false</IsPackable>
   </PropertyGroup>

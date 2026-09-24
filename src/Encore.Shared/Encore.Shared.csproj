@@ -1,8 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Contracts every module agrees on. No logic, no infrastructure. It is the
-       Domain's only project reference, so it opts into the same zero-dependency
-       rules (ENCORE001-003 in Directory.Build.targets). -->
+  <!-- The Domain's only project reference, so it takes the Domain's zero-dependency rules (002). -->
   <PropertyGroup>
     <EncoreZeroDependency>true</EncoreZeroDependency>
   </PropertyGroup>

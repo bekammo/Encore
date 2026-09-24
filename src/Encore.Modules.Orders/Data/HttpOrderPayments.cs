@@ -7,9 +7,9 @@ using Outcomes = Encore.Modules.Payments.Contracts.PaymentsServiceApi.Outcomes;
 namespace Encore.Modules.Orders.Data;
 
 /// <summary>
-/// <see cref="IOrderPayments"/> over HTTP, used when Payments runs as its own service.
-/// Refusals are read from <c>reason</c>, never from the status code, and an unreadable
-/// answer is treated as a timeout.
+/// Reads the answer from the body, <c>outcome</c> on success and <c>reason</c> on a refusal,
+/// never from the status code. A missing or unreadable answer is a timeout: the one status
+/// already handled safely for "the money may or may not be held".
 /// </summary>
 internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
 {
@@ -31,9 +31,6 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
             Outcomes.Declined => AuthorizePaymentResponse.Declined(outcome.RequirePaymentId()),
             Outcomes.TimedOut => AuthorizePaymentResponse.TimedOut(outcome.RequirePaymentId()),
             Outcomes.ConcurrentAttemptInFlight => AuthorizePaymentResponse.ConcurrentAttemptInFlight,
-
-            // Unreadable or missing: a timeout is the one status already handled safely
-            // for "the money may or may not be held". The id is unknown, hence Guid.Empty.
             _ => AuthorizePaymentResponse.TimedOut(outcome.PaymentId ?? Guid.Empty)
         };
     }
@@ -51,8 +48,6 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
         {
             Outcomes.Captured => CapturePaymentResponse.Captured(outcome.RequirePaymentId()),
             Outcomes.NoAuthorization => CapturePaymentResponse.NoAuthorization,
-
-            // Unknown is a timeout: the order becomes AwaitingCapture and the next confirm resolves it.
             _ => CapturePaymentResponse.TimedOut(outcome.PaymentId ?? Guid.Empty)
         };
     }
@@ -75,10 +70,6 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
         };
     }
 
-    /// <summary>
-    /// One round trip, reduced to the outcome and the attempt id. Network faults become
-    /// "no answer" instead of a 500; cancellation by the caller is not swallowed.
-    /// </summary>
     private async Task<Outcome> SendAsync<TRequest>(
         string operation,
         TRequest body,
@@ -92,7 +83,6 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
 
             if (response.StatusCode is HttpStatusCode.Unauthorized)
             {
-                // Misconfiguration, not a payment outcome: fail loudly.
                 throw new InvalidOperationException(
                     "The Payments service rejected this service token. Check Orders:Payments:ServiceToken.");
             }
@@ -117,16 +107,10 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
         }
     }
 
-    /// <summary>The outcome or refusal reason, and the attempt it is about.</summary>
     private readonly record struct Outcome(string? Reason, Guid? PaymentId)
     {
-        /// <summary>Nothing readable came back.</summary>
         internal static Outcome NoAnswer { get; } = new(null, null);
 
-        /// <summary>
-        /// Reads either shape: a success body carries <c>outcome</c>, a problem+json
-        /// refusal carries <c>reason</c>, and both may carry <c>paymentId</c>.
-        /// </summary>
         internal static Outcome From(JsonElement document)
         {
             if (document.ValueKind is not JsonValueKind.Object)
@@ -151,10 +135,7 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
             return new Outcome(reason, paymentId);
         }
 
-        /// <summary>
-        /// The attempt id for an outcome that must name one. Missing means the two sides
-        /// disagree about the wire format, which is a bug.
-        /// </summary>
+        // A known outcome without an id is a wire-format bug, not an outage, so it throws.
         internal Guid RequirePaymentId() =>
             PaymentId ?? throw new InvalidOperationException(
                 $"The Payments service answered '{Reason}' without naming the attempt.");

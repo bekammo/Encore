@@ -12,7 +12,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Encore.Modules.Payments;
 
-/// <summary>The Payments module's composition seam.</summary>
 public static class PaymentsModule
 {
     public static IServiceCollection AddPaymentsModule(
@@ -27,10 +26,10 @@ public static class PaymentsModule
         services.Configure<PaymentSimulationOptions>(
             configuration.GetSection(PaymentSimulationOptions.SectionName));
 
-        // Singleton so a seeded Random is one sequence; the gateway's memory is a table.
+        // Singleton so a seeded Random is one sequence.
         services.AddSingleton<SimulatedPaymentGateway>();
 
-        // TryAdd, so Orders' HTTP client wins whichever module registers first.
+        // TryAdd, so Orders' HTTP client wins whichever module registers first (018);
         // StranglerSwitchTests pins all four orders.
         services.TryAddScoped<IOrderPayments, InProcessOrderPayments>();
 
@@ -48,9 +47,6 @@ public static class PaymentsModule
         return services;
     }
 
-    /// <summary>
-    /// Registers the sweep that settles attempts the gateway never answered.
-    /// </summary>
     private static void AddReconciliation(IServiceCollection services, IConfiguration configuration)
     {
         var section = configuration.GetSection(PaymentReconciliationOptions.SectionName);
@@ -72,10 +68,6 @@ public static class PaymentsModule
         }
     }
 
-    /// <summary>
-    /// Maps the customer-facing routes, which are read-only. The write side is
-    /// <see cref="MapPaymentsServiceApi"/>, which no customer can reach.
-    /// </summary>
     public static IEndpointRouteBuilder MapPaymentsModule(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapPaymentEndpoints();
@@ -83,8 +75,8 @@ public static class PaymentsModule
     }
 
     /// <summary>
-    /// Maps the service API Orders calls when Payments runs out of process. A separate seam,
-    /// so a host must opt in; a missing service token fails startup rather than defaulting.
+    /// A second seam, which only a host serving Payments out of process opts into (018). A missing
+    /// service token fails startup rather than defaulting.
     /// </summary>
     public static IEndpointRouteBuilder MapPaymentsServiceApi(
         this IEndpointRouteBuilder endpoints,

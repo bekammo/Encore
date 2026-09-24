@@ -13,11 +13,7 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
-/// <summary>
-/// The expired-hold sweep against real Postgres: what it tidies, what it leaves alone, and
-/// what happens when a row moves underneath it. One sweep is driven directly per test. A sweep
-/// visits every seat, so the shared database is emptied before each test.
-/// </summary>
+/// <summary>A sweep visits every seat, so the database is emptied before each test.</summary>
 public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
     : IClassFixture<InventoryDatabase>, IAsyncLifetime
 {
@@ -27,17 +23,14 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
     private readonly Guid _clientA = Guid.NewGuid();
     private readonly Guid _clientB = Guid.NewGuid();
 
-    /// <summary>"Now" for every test, truncated to microseconds to survive the Postgres round trip.</summary>
-    private readonly DateTime _now = new(DateTime.UtcNow.Ticks / 10 * 10, DateTimeKind.Utc);
+    private readonly DateTime _now = Now();
 
     private readonly DbContextOptions<InventoryDbContext> _options = database.Options;
 
     private DateTime LapsedAt => _now - Seat.HoldDuration - TimeSpan.FromMinutes(1);
 
-    /// <summary>Empties the seats and the outbox the previous test left.</summary>
     public Task InitializeAsync() => _database.ResetAsync();
 
-    /// <inheritdoc />
     public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
@@ -52,15 +45,11 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
 
         Assert.Equal(SeatStatus.Available, seat.Status);
 
-        // The lapsed hold stays on record, so the sweep cannot change what a sale answers.
+        // The lapsed pair stays on record, so the sweep cannot change what a sale answers (023).
         Assert.Equal(_clientA, seat.HeldByClientId);
         Assert.Equal(LapsedAt + Seat.HoldDuration, seat.HoldExpiresAt);
     }
 
-    /// <summary>
-    /// After the sweep, a sale is refused as it was before it: the lapsed holder hears its hold
-    /// expired, and anyone else that they never held it. The sweep is cleanup (006).
-    /// </summary>
     [Fact]
     public async Task Sweep_ThenASale_ShouldBeRefusedForTheSameReasonAsBeforeIt()
     {
@@ -78,7 +67,6 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
         Assert.Equal(SeatTransitionReason.NotTheHolder, stranger.Reason);
     }
 
-    /// <summary>The sweep publishes SeatReleased(Expired), which a bulk UPDATE would have lost.</summary>
     [Fact]
     public async Task Sweep_WhenAHoldHasLapsed_ShouldWriteSeatReleasedToTheOutbox()
     {
@@ -87,7 +75,7 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
         await using var host = Host();
         await host.Sweeper.SweepBatchAsync(CancellationToken.None);
 
-        var message = Assert.Single(await OutboxAsync());
+        var message = Assert.Single(await MessagesAsync());
 
         Assert.Equal(InventoryEventTypes.SeatReleased, message.EventType);
 
@@ -102,7 +90,6 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
         Assert.Equal(_now, released.OccurredAt);
     }
 
-    /// <summary>A live hold is never expired.</summary>
     [Fact]
     public async Task Sweep_WhenAHoldIsStillLive_ShouldLeaveItAlone()
     {
@@ -115,7 +102,7 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
 
         Assert.Equal(SeatStatus.Held, seat.Status);
         Assert.Equal(_clientA, seat.HeldByClientId);
-        Assert.Empty(await OutboxAsync());
+        Assert.Empty(await MessagesAsync());
     }
 
     [Fact]
@@ -130,13 +117,9 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
 
         Assert.Equal(SeatStatus.Sold, seat.Status);
         Assert.Equal(_clientA, seat.HeldByClientId);
-        Assert.Empty(await OutboxAsync());
+        Assert.Empty(await MessagesAsync());
     }
 
-    /// <summary>
-    /// A seat re-held between the candidate query and the write keeps its new hold: the
-    /// aggregate re-decides.
-    /// </summary>
     [Fact]
     public async Task Sweep_WhenTheSeatIsReHeldFirst_ShouldLeaveTheNewHoldStanding()
     {
@@ -144,7 +127,6 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
 
         await using var host = Host();
 
-        // A lazy reclaim between the sweep's query and its write.
         await ReHoldAsync(seatId, _clientB);
 
         await host.Sweeper.SweepBatchAsync(CancellationToken.None);
@@ -155,7 +137,6 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
         Assert.Equal(_clientB, seat.HeldByClientId);
     }
 
-    /// <summary>Two sweeps over one table expire each seat once; xmin arbitrates.</summary>
     [Fact]
     public async Task Sweep_WhenTwoSweepsRunTogether_ShouldExpireEachSeatOnce()
     {
@@ -194,8 +175,7 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
             Seats,
             await context.Seats.CountAsync(seat => seat.Status == SeatStatus.Available));
 
-        // One announcement per seat, not two.
-        Assert.Equal(Seats, (await OutboxAsync()).Count);
+        Assert.Equal(Seats, (await MessagesAsync()).Count);
     }
 
     [Fact]
@@ -222,10 +202,9 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
         await using var host = Host();
 
         Assert.Equal(0, await host.Sweeper.SweepBatchAsync(CancellationToken.None));
-        Assert.Empty(await OutboxAsync());
+        Assert.Empty(await MessagesAsync());
     }
 
-    /// <summary>Sweeping twice announces once.</summary>
     [Fact]
     public async Task Sweep_WhenRunTwice_ShouldAnnounceOnce()
     {
@@ -236,13 +215,10 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
         await host.Sweeper.SweepBatchAsync(CancellationToken.None);
         Assert.Equal(0, await host.Sweeper.SweepBatchAsync(CancellationToken.None));
 
-        Assert.Single(await OutboxAsync());
+        Assert.Single(await MessagesAsync());
     }
 
-    /// <summary>
-    /// Writes a seat held since <paramref name="heldAt"/>, through <c>Seat.Hold</c>, then clears
-    /// its events so only the sweep's rows are asserted.
-    /// </summary>
+    // Events cleared, so the outbox holds only the sweep's rows.
     private async Task<Guid> SeedHeldAsync(Guid clientId, DateTime heldAt)
     {
         var seatId = Guid.NewGuid();
@@ -292,7 +268,7 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
         return await context.Seats.AsNoTracking().SingleAsync(seat => seat.Id == seatId);
     }
 
-    private async Task<List<OutboxMessage>> OutboxAsync()
+    private async Task<List<OutboxMessage>> MessagesAsync()
     {
         await using var context = new InventoryDbContext(_options);
 
@@ -301,10 +277,6 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
             .ToListAsync();
     }
 
-    /// <summary>
-    /// A container resolving <c>ISeatRepository</c> per scope, with a clock that does not move,
-    /// so expiry is data rather than duration.
-    /// </summary>
     private SweeperHost Host(Action<ExpiredHoldSweepOptions>? configure = null)
     {
         var options = new ExpiredHoldSweepOptions();
@@ -326,6 +298,14 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
             NullLogger<ExpiredHoldSweeper>.Instance);
 
         return new SweeperHost(provider, sweeper);
+    }
+
+    // Truncated to microseconds to survive the Postgres round trip.
+    private static DateTime Now()
+    {
+        var utcNow = DateTime.UtcNow;
+
+        return new DateTime(utcNow.Ticks - utcNow.Ticks % TimeSpan.TicksPerMicrosecond, DateTimeKind.Utc);
     }
 
     private sealed class SweeperHost(ServiceProvider provider, ExpiredHoldSweeper sweeper)

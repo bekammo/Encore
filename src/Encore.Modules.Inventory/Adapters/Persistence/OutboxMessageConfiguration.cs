@@ -3,20 +3,14 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace Encore.Modules.Inventory.Adapters.Persistence;
 
-/// <summary>
-/// Maps <see cref="OutboxMessage"/> to <c>inventory.outbox_messages</c>. The payload is
-/// <c>jsonb</c> so a stuck message can be queried into.
-/// </summary>
 public sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<OutboxMessage>
 {
-    /// <inheritdoc />
     public void Configure(EntityTypeBuilder<OutboxMessage> builder)
     {
         builder.ToTable("outbox_messages");
 
         builder.HasKey(message => message.Id);
 
-        // Database-assigned, because it exists to order rows.
         builder.Property(message => message.Id)
             .UseIdentityAlwaysColumn();
 
@@ -27,6 +21,7 @@ public sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outbox
             .HasMaxLength(200)
             .IsRequired();
 
+        // jsonb, so a stuck message can be queried into.
         builder.Property(message => message.Payload)
             .HasColumnType("jsonb")
             .IsRequired();
@@ -48,19 +43,16 @@ public sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outbox
         builder.Property(message => message.LastError)
             .HasMaxLength(OutboxMessage.MaxErrorLength);
 
-        // Nullable: a seat changed outside a traced operation has no trace to link to.
         builder.Property(message => message.TraceParent)
             .HasMaxLength(OutboxMessage.MaxTraceParentLength);
 
-        // Partial: indexes only the backlog, so the dispatcher's poll stays cheap as the
-        // table grows. Column order matches the claim query.
+        // Column order is the dispatcher's claim ORDER BY.
         builder
             .HasIndex(message => new { message.NextAttemptAt, message.Id })
             .HasFilter("\"ProcessedAt\" IS NULL")
             .HasDatabaseName("ix_outbox_messages_unprocessed");
 
-        // MessageId is not indexed: nothing reads by it, and an index here would be one more
-        // write inside every seat transaction. The consumer's unique index is the one that
-        // deduplicates.
+        // No index on MessageId: nothing here reads by it, and each index is one more write in
+        // every seat transaction. The consumer's unique index deduplicates.
     }
 }

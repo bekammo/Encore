@@ -1,5 +1,6 @@
 using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Application;
+using Encore.Modules.Inventory.Contracts;
 using Encore.Modules.Inventory.Domain;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
@@ -7,35 +8,29 @@ using Microsoft.Extensions.Time.Testing;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// Expiry with no sweep and no Redis: if any of these needed the sweep, the design would be
-/// broken. Lapsed rows stay <c>Held</c> in Postgres throughout, and the invariants hold anyway.
-/// Covers reclaiming, selling against a lapsed hold, the hold cap and the oversell invariant.
-/// The database is shared by the class and never emptied; every test has its own client and event.
+/// The falsification of lazy expiry (006): no sweep and no Redis, so lapsed rows stay
+/// <c>Held</c> throughout. If any test here needed the sweep, the design would be broken. The
+/// database is never emptied; every test has its own client and event.
 /// </summary>
 public sealed class ExpiryWithoutTheSweepTests(InventoryDatabase database) : IClassFixture<InventoryDatabase>
 {
-    /// <summary>How many clients pile onto the one lapsed seat.</summary>
     private const int ConcurrentAttempts = 30;
 
     private readonly Guid _eventId = Guid.NewGuid();
     private readonly Guid _clientA = Guid.NewGuid();
     private readonly Guid _clientB = Guid.NewGuid();
 
-    /// <summary>Truncated to whole microseconds; see <c>ConcurrentHoldTests</c>.</summary>
-    private readonly DateTime _now = new(DateTime.UtcNow.Ticks / 10 * 10, DateTimeKind.Utc);
+    private readonly DateTime _now = Now();
 
     private readonly DbContextOptions<InventoryDbContext> _options = database.Options;
 
-    /// <summary>A hold taken this long ago has lapsed by <see cref="_now"/>.</summary>
     private DateTime LapsedAt => _now - Seat.HoldDuration - TimeSpan.FromMinutes(1);
 
-    /// <summary>The row still says Held by someone else, and the next client gets the seat.</summary>
     [Fact]
     public async Task Hold_WhenTheHolderLapsed_ShouldBeReclaimedWithNoSweep()
     {
         var seatId = await SeedHeldAsync(_clientA, LapsedAt);
 
-        // The stale row is still stale: nothing tidied it.
         Assert.Equal(SeatStatus.Held, (await LoadAsync(seatId)).Status);
 
         var result = await HoldAsync(seatId, _clientB);
@@ -44,7 +39,6 @@ public sealed class ExpiryWithoutTheSweepTests(InventoryDatabase database) : ICl
         Assert.Equal(_clientB, (await LoadAsync(seatId)).HeldByClientId);
     }
 
-    /// <summary>The lapsed holder cannot sell.</summary>
     [Fact]
     public async Task Sell_WhenTheHoldLapsed_ShouldBeRefusedWithNoSweep()
     {
@@ -57,8 +51,8 @@ public sealed class ExpiryWithoutTheSweepTests(InventoryDatabase database) : ICl
     }
 
     /// <summary>
-    /// A passer-by cannot buy an effectively available seat without holding it first; the
-    /// refusal is NotTheHolder because the row still names the old holder.
+    /// Effectively available, but no sale without a hold (003). The row still names the lapsed
+    /// holder, hence NotTheHolder.
     /// </summary>
     [Fact]
     public async Task Sell_WhenAnotherClientsHoldLapsed_ShouldStillRefuseWithNoSweep()
@@ -72,13 +66,13 @@ public sealed class ExpiryWithoutTheSweepTests(InventoryDatabase database) : ICl
     }
 
     /// <summary>
-    /// The hold cap reopens as holds lapse. The cap is a SQL count with its own copy of the
-    /// expiry rule, so this checks that copy while all four stale rows still read Held.
+    /// The cap is a SQL count with its own copy of the expiry rule; this checks that copy while
+    /// the lapsed rows still read Held.
     /// </summary>
     [Fact]
     public async Task Hold_WhenAllOfAClientsHoldsLapsed_ShouldReopenTheCapWithNoSweep()
     {
-        var cap = HoldSeatCommandHandler.MaxHoldsPerClientPerEvent;
+        var cap = SeatReservationLimits.MaxHoldsPerClientPerEvent;
 
         for (var i = 0; i < cap; i++)
         {
@@ -100,10 +94,6 @@ public sealed class ExpiryWithoutTheSweepTests(InventoryDatabase database) : ICl
         Assert.Equal(HoldSeatOutcome.Held, result.Outcome);
     }
 
-    /// <summary>
-    /// Thirty clients reclaim one lapsed seat at once and exactly one gets it, with no lock and
-    /// no sweep.
-    /// </summary>
     [Fact]
     public async Task Hold_WhenManyClientsReclaimOneLapsedSeat_ExactlyOneShouldWinWithNoSweep()
     {
@@ -142,7 +132,7 @@ public sealed class ExpiryWithoutTheSweepTests(InventoryDatabase database) : ICl
 
             Assert.Equal(1, won);
 
-            // Nothing threw, and no racer read a row mid-flight as missing.
+            // No racer may read the row mid-flight as missing.
             Assert.All(results, result => Assert.Contains(result.Outcome, new[]
             {
                 HoldSeatOutcome.Held,
@@ -219,5 +209,13 @@ public sealed class ExpiryWithoutTheSweepTests(InventoryDatabase database) : ICl
         await using var context = new InventoryDbContext(_options);
 
         return await context.Seats.AsNoTracking().SingleAsync(seat => seat.Id == seatId);
+    }
+
+    // Truncated to microseconds to survive the Postgres round trip.
+    private static DateTime Now()
+    {
+        var utcNow = DateTime.UtcNow;
+
+        return new DateTime(utcNow.Ticks - utcNow.Ticks % TimeSpan.TicksPerMicrosecond, DateTimeKind.Utc);
     }
 }

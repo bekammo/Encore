@@ -8,12 +8,9 @@ using Npgsql;
 namespace Encore.Modules.Notifications.Data;
 
 /// <summary>
-/// Records that a client should be told about a seat they have bought.
+/// Sends nothing, only records. Idempotent by insert-and-catch: the unique index is the guard,
+/// and a redelivery that hits it is a success, not an error (016).
 /// </summary>
-/// <remarks>
-/// The first consumer of a published event. Idempotent by insert-and-catch: the unique index
-/// is the guard, and a redelivery that hits it is a success, not an error.
-/// </remarks>
 internal sealed class SeatSoldNotifier(
     NotificationsDbContext notifications,
     TimeProvider timeProvider,
@@ -47,7 +44,6 @@ internal sealed class SeatSoldNotifier(
         }
         catch (DbUpdateException ex) when (IsDuplicateMessage(ex))
         {
-            // Already recorded by an earlier delivery.
             _logger.LogDebug(
                 "Outbox message {MessageId} was already recorded; ignoring the redelivery.",
                 messageId);
@@ -57,12 +53,8 @@ internal sealed class SeatSoldNotifier(
         }
     }
 
-    /// <summary>
-    /// Whether this is the unique index refusing a redelivery. Matched by SQL state and
-    /// constraint name, so no other failure that happens to mention the index, and no
-    /// dropped connection, is mistaken for "already handled".
-    /// </summary>
+    // Matched on SQL state and constraint name, so no other failure passes for "already handled".
     private static bool IsDuplicateMessage(DbUpdateException exception) =>
-        exception.InnerException is PostgresException { SqlState: "23505" } postgres
+        exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation } postgres
         && postgres.ConstraintName == NotificationConfiguration.MessageIdIndex;
 }

@@ -5,9 +5,8 @@ using Microsoft.EntityFrameworkCore;
 namespace Encore.Modules.Orders.IntegrationTests;
 
 /// <summary>
-/// Orders' schema enforces what the module relies on, above all the partial unique index
-/// whose SQL filter no compiler checks. The database is shared by the class and never emptied,
-/// so every test uses fresh ids.
+/// No compiler checks the partial unique index's SQL filter; these tests do. The database is
+/// never emptied, so every test uses fresh ids.
 /// </summary>
 public sealed class OrdersSchemaTests(OrdersDatabase database) : IClassFixture<OrdersDatabase>
 {
@@ -23,7 +22,6 @@ public sealed class OrdersSchemaTests(OrdersDatabase database) : IClassFixture<O
         Assert.Empty(await context.Database.GetPendingMigrationsAsync());
     }
 
-    /// <summary>Two pending orders for one client at one event are impossible at the database.</summary>
     [Fact]
     public async Task SecondPendingOrder_ForSameClientAndEvent_ShouldBeRefused()
     {
@@ -42,7 +40,6 @@ public sealed class OrdersSchemaTests(OrdersDatabase database) : IClassFixture<O
         await Assert.ThrowsAsync<DbUpdateException>(() => second.SaveChangesAsync());
     }
 
-    /// <summary>Once an order has ended, the client may open another for the same event.</summary>
     [Theory]
     [InlineData(OrderStatus.Confirmed)]
     [InlineData(OrderStatus.Cancelled)]
@@ -67,7 +64,6 @@ public sealed class OrdersSchemaTests(OrdersDatabase database) : IClassFixture<O
         Assert.Equal(2, await second.Orders.CountAsync(order => order.ClientId == clientId));
     }
 
-    /// <summary>The cap is per event, so the same client may check out at two shows at once.</summary>
     [Fact]
     public async Task PendingOrders_ForDifferentEvents_ShouldBeAllowed()
     {
@@ -83,7 +79,6 @@ public sealed class OrdersSchemaTests(OrdersDatabase database) : IClassFixture<O
         Assert.Equal(2, await context.Orders.CountAsync(order => order.ClientId == clientId));
     }
 
-    /// <summary>Confirm and cancel racing one row: the second writer loses rather than overwrites.</summary>
     [Fact]
     public async Task ConcurrentWrites_ToOneOrder_ShouldBeRefusedForTheLoser()
     {

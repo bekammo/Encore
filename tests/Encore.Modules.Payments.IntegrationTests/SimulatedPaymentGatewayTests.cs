@@ -3,11 +3,7 @@ using Microsoft.Extensions.Options;
 
 namespace Encore.Modules.Payments.IntegrationTests;
 
-/// <summary>
-/// The simulated gateway: it honours idempotency keys, a seeded run is reproducible, and its
-/// decisions outlive the process. Integration tests because its memory is a table; zero
-/// latency throughout. The ledger is emptied before each test, since tests reuse keys.
-/// </summary>
+/// <summary>The gateway's memory is a table, emptied before each test because tests reuse keys.</summary>
 public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
     : IClassFixture<PaymentsDatabase>, IAsyncLifetime
 {
@@ -16,43 +12,9 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
 
     private readonly PaymentsDatabase _database = database;
 
-    /// <summary>Empties the ledger, so every test starts with a gateway that has answered nothing.</summary>
     public Task InitializeAsync() => _database.ResetAsync();
 
-    /// <inheritdoc />
     public Task DisposeAsync() => Task.CompletedTask;
-
-    private SimulatedPaymentGateway Gateway(
-        double declineRate = 0,
-        double timeoutRate = 0,
-        double lostRequestRate = 0.5,
-        int? seed = null) =>
-        Configured(declineRate, timeoutRate, lostRequestRate, seed).Gateway;
-
-    /// <summary>
-    /// The gateway and the options it reads, so a test can change conditions between calls (for
-    /// example, time out the authorisation, then answer the lookup).
-    /// </summary>
-    private (SimulatedPaymentGateway Gateway, PaymentSimulationOptions Options) Configured(
-        double declineRate = 0,
-        double timeoutRate = 0,
-        double lostRequestRate = 0.5,
-        int? seed = null)
-    {
-        var options = new PaymentSimulationOptions
-        {
-            DeclineRate = declineRate,
-            TimeoutRate = timeoutRate,
-            LostRequestRate = lostRequestRate,
-            MinLatency = TimeSpan.Zero,
-            MaxLatency = TimeSpan.Zero,
-            Seed = seed
-        };
-
-        return (
-            new SimulatedPaymentGateway(_database.Scopes, Options.Create(options), TimeProvider.System),
-            options);
-    }
 
     // -- Outcomes ---------------------------------------------------------
 
@@ -74,7 +36,6 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
         Assert.Null(reference);
     }
 
-    /// <summary>A timeout outranks a decline.</summary>
     [Fact]
     public async Task Authorize_WhenAlwaysTimingOut_ShouldTimeOutEvenIfAlsoAlwaysDeclining()
     {
@@ -85,7 +46,6 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
         Assert.Null(reference);
     }
 
-    /// <summary>Capture and void are never declined: a known simplification.</summary>
     [Fact]
     public async Task CaptureAndVoid_WhenAlwaysDeclining_ShouldStillSucceed()
     {
@@ -106,9 +66,7 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
 
     // -- Idempotency ------------------------------------------------------
 
-    /// <summary>
-    /// Fifty authorisations under one key at a 50% decline rate all agree. Unseeded on purpose.
-    /// </summary>
+    /// <summary>At a 50% decline rate, fifty agreeing answers cannot be luck: the key decides.</summary>
     [Fact]
     public async Task Authorize_WithTheSameKey_ShouldAlwaysGiveTheSameAnswer()
     {
@@ -156,10 +114,6 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
 
     // -- Surviving the process --------------------------------------------
 
-    /// <summary>
-    /// A second gateway instance over the same database knows what the first decided, so a
-    /// restart cannot turn held funds into NotFound.
-    /// </summary>
     [Fact]
     public async Task LookUp_FromAnInstanceThatNeverAuthorised_ShouldStillReportTheHold()
     {
@@ -167,7 +121,6 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
         var (outcome, reference) = await authorising.AuthorizeAsync("key-1", Amount, Currency);
         Assert.Equal(GatewayOutcome.Succeeded, outcome);
 
-        // A restart, or a second process: same database, no shared memory.
         var restarted = Gateway();
 
         var (record, found) = await restarted.LookUpAsync("key-1");
@@ -176,7 +129,6 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
         Assert.Equal(reference, found);
     }
 
-    /// <summary>A restarted gateway does not re-roll a decline.</summary>
     [Fact]
     public async Task Authorize_FromAnotherInstance_ShouldRepeatTheRecordedAnswer()
     {
@@ -189,7 +141,6 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
         Assert.Equal(GatewayOutcome.Declined, again);
     }
 
-    /// <summary>A request that never arrived leaves no record, so NotFound stays meaningful.</summary>
     [Fact]
     public async Task Authorize_WhenTheRequestWasLost_ShouldLeaveNothingForAnotherInstanceToFind()
     {
@@ -200,7 +151,6 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
         Assert.Equal(GatewayRecord.NotFound, record);
     }
 
-    /// <summary>Concurrent authorisations under one key: the loser reads back the winner's answer.</summary>
     [Fact]
     public async Task Authorize_ConcurrentlyUnderOneKey_ShouldAgreeOnOneAnswer()
     {
@@ -214,7 +164,7 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
 
     // -- Reproducibility --------------------------------------------------
 
-    /// <summary>A seeded gateway replays; the ledger is emptied between runs so this proves the seed.</summary>
+    /// <summary>The ledger is emptied between runs, so the replay comes from the seed.</summary>
     [Fact]
     public async Task Authorize_WithTheSameSeed_ShouldProduceTheSameSequence()
     {
@@ -227,7 +177,6 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
         Assert.Equal(first, again);
     }
 
-    /// <summary>An unseeded gateway does not replay.</summary>
     [Fact]
     public async Task Authorize_WithoutASeed_ShouldNotProduceTheSameSequence()
     {
@@ -242,7 +191,6 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
 
     // -- Latency ----------------------------------------------------------
 
-    /// <summary>A maximum latency below the minimum clamps up instead of throwing.</summary>
     [Fact]
     public async Task Authorize_WhenMaxLatencyIsBelowMin_ShouldNotThrow()
     {
@@ -262,10 +210,6 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
 
     // -- Lookup -----------------------------------------------------------
 
-    /// <summary>
-    /// A timeout is either a lost request (NotFound on lookup) or a lost answer (the decision on
-    /// lookup). Both must be producible.
-    /// </summary>
     [Fact]
     public async Task LookUp_AfterAnAuthorisationThatArrived_ShouldReportTheHold()
     {
@@ -295,7 +239,6 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
         Assert.Null(reference);
     }
 
-    /// <summary>A refusal whose answer was lost is found as Declined.</summary>
     [Fact]
     public async Task LookUp_AfterADeclineThatWasNotHeard_ShouldReportTheDecline()
     {
@@ -331,7 +274,6 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
         Assert.Null(reference);
     }
 
-    /// <summary>A lookup that gets no answer is Unknown, never NotFound.</summary>
     [Fact]
     public async Task LookUp_WhenTheGatewayDoesNotAnswer_ShouldReportUnknownRatherThanNotFound()
     {
@@ -341,7 +283,6 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
         Assert.Null(reference);
     }
 
-    /// <summary>A lookup records nothing.</summary>
     [Fact]
     public async Task LookUp_ShouldDecideNothing()
     {
@@ -362,6 +303,36 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
     [InlineData("   ")]
     public async Task LookUp_WithoutAKey_ShouldThrow(string key) =>
         await Assert.ThrowsAsync<ArgumentException>(() => Gateway().LookUpAsync(key));
+
+    // -- Helpers ----------------------------------------------------------
+
+    private SimulatedPaymentGateway Gateway(
+        double declineRate = 0,
+        double timeoutRate = 0,
+        double lostRequestRate = 0.5,
+        int? seed = null) =>
+        Configured(declineRate, timeoutRate, lostRequestRate, seed).Gateway;
+
+    private (SimulatedPaymentGateway Gateway, PaymentSimulationOptions Options) Configured(
+        double declineRate = 0,
+        double timeoutRate = 0,
+        double lostRequestRate = 0.5,
+        int? seed = null)
+    {
+        var options = new PaymentSimulationOptions
+        {
+            DeclineRate = declineRate,
+            TimeoutRate = timeoutRate,
+            LostRequestRate = lostRequestRate,
+            MinLatency = TimeSpan.Zero,
+            MaxLatency = TimeSpan.Zero,
+            Seed = seed
+        };
+
+        return (
+            new SimulatedPaymentGateway(_database.Scopes, Options.Create(options), TimeProvider.System),
+            options);
+    }
 
     private static async Task<IReadOnlyList<GatewayOutcome>> SequenceAsync(SimulatedPaymentGateway gateway)
     {

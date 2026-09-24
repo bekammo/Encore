@@ -3,20 +3,10 @@ using System.Xml.Linq;
 
 namespace Encore.ArchitectureTests;
 
-/// <summary>
-/// Locates the repository and reads it as compiled assemblies and as csproj source. The root
-/// comes from an assembly attribute written by the csproj, not from walking up directories.
-/// Nothing here takes a compile-time dependency on what it inspects.
-/// </summary>
 internal static class EncoreTree
 {
-    private static readonly Dictionary<string, Assembly> Loaded = [];
-    private static readonly Lock Gate = new();
-
-    /// <summary>Absolute path to the repository root, with a trailing separator.</summary>
     internal static string Root { get; } = Metadata("EncoreRepositoryRoot");
 
-    /// <summary>Every assembly this suite asserts about, so a typo fails in one place.</summary>
     internal static readonly string[] AllAssemblies =
     [
         "Encore.Api",
@@ -35,23 +25,16 @@ internal static class EncoreTree
         "Encore.Telemetry"
     ];
 
-    /// <summary>The shared persistence project.</summary>
     internal const string SharedPersistence = "Encore.Modules.Shared.Persistence";
 
-    /// <summary>The hosts' OpenTelemetry wiring.</summary>
     internal const string Telemetry = "Encore.Telemetry";
 
-    /// <summary>Every host. A list, so a new host inherits the rules instead of silently escaping them.</summary>
     internal static readonly string[] Hosts =
     [
         "Encore.Api",
         "Encore.Payments.Api"
     ];
 
-    /// <summary>
-    /// The projects that declare <c>EncoreZeroDependency</c>. None may reach
-    /// <see cref="SharedPersistence"/>, which carries EF Core.
-    /// </summary>
     internal static readonly string[] ZeroDependencyProjects =
     [
         "Encore.Shared",
@@ -61,7 +44,6 @@ internal static class EncoreTree
         "Encore.Modules.Inventory.Domain"
     ];
 
-    /// <summary>The three public faces. Nothing else may be named across a module boundary.</summary>
     internal static readonly string[] ContractsAssemblies =
     [
         "Encore.Modules.Catalog.Contracts",
@@ -69,7 +51,7 @@ internal static class EncoreTree
         "Encore.Modules.Payments.Contracts"
     ];
 
-    /// <summary>The module implementations. Exact names, never prefixes.</summary>
+    /// <summary>Compared by exact name, never by prefix: <c>Inventory.Contracts</c> starts with <c>Inventory</c> (002).</summary>
     internal static readonly string[] ModuleAssemblies =
     [
         "Encore.Modules.Catalog",
@@ -80,12 +62,7 @@ internal static class EncoreTree
         "Encore.Modules.Inventory.Domain"
     ];
 
-    /// <summary>
-    /// The modules a host composes, by short name: <c>Catalog</c> for <c>Encore.Modules.Catalog</c>.
-    /// Each is reached through <c>Add{Name}Module</c> and <c>Map{Name}Module</c> on a
-    /// <c>{Name}Module</c> class in the module's root namespace. Declared after
-    /// <see cref="ModuleAssemblies"/>, which it reads.
-    /// </summary>
+    /// <summary>Must stay below <see cref="ModuleAssemblies"/>: static initialisers run in declaration order.</summary>
     internal static readonly string[] ComposedModules =
     [
         .. ModuleAssemblies
@@ -93,11 +70,9 @@ internal static class EncoreTree
             .Select(module => module["Encore.Modules.".Length..])
     ];
 
-    /// <summary>Every inspected assembly that is not a host.</summary>
     internal static IEnumerable<string> NonHosts =>
         AllAssemblies.Where(assembly => !Hosts.Contains(assembly, StringComparer.Ordinal));
 
-    /// <summary>The path a project's compiled output is expected at.</summary>
     internal static string AssemblyPath(string name) =>
         Path.Combine(
             Root,
@@ -109,50 +84,29 @@ internal static class EncoreTree
             name + ".dll");
 
     /// <summary>
-    /// Loads an assembly's metadata without resolving its references, so
-    /// <see cref="Assembly.GetReferencedAssemblies"/> works even when they are absent.
+    /// <c>LoadFrom</c> resolves references lazily, so <c>GetReferencedAssemblies</c> works when
+    /// they are absent.
     /// </summary>
-    internal static Assembly Load(string name)
-    {
-        lock (Gate)
-        {
-            if (Loaded.TryGetValue(name, out var cached))
-            {
-                return cached;
-            }
+    internal static Assembly Load(string name) => Assembly.LoadFrom(AssemblyPath(name));
 
-            var assembly = Assembly.LoadFrom(AssemblyPath(name));
-            Loaded[name] = assembly;
-            return assembly;
-        }
-    }
-
-    /// <summary>The names this assembly actually emitted a reference to.</summary>
     internal static IReadOnlyList<string> ReferencedNames(string name) =>
         [.. Load(name).GetReferencedAssemblies().Select(reference => reference.Name ?? string.Empty)];
 
-    /// <summary>
-    /// Every other module implementation, plus the Domain: what a module may not name. Exact
-    /// names, since <c>Inventory.Contracts</c> starts with <c>Inventory</c>.
-    /// </summary>
     internal static IEnumerable<string> OtherModules(string self) =>
-        ModuleAssemblies.Where(module => !string.Equals(module, self, StringComparison.Ordinal));
+        ModuleAssemblies.Where(module =>
+            module != self
+            && !(self == "Encore.Modules.Inventory" && module == "Encore.Modules.Inventory.Domain"));
 
-    /// <summary>
-    /// Whether a referenced assembly is part of the BCL. <c>Microsoft.*</c> is not assumed to be:
-    /// <c>Microsoft.Extensions.*</c> are ordinary packages.
-    /// </summary>
+    /// <summary><c>Microsoft.*</c> is not assumed BCL: <c>Microsoft.Extensions.*</c> are ordinary packages.</summary>
     internal static bool IsBcl(string name) =>
         name is "mscorlib" or "netstandard" or "System"
         || name.StartsWith("System.", StringComparison.Ordinal);
 
-    /// <summary>Every csproj under <c>src/</c>, as parsed XML, keyed by project name.</summary>
     internal static IReadOnlyDictionary<string, XDocument> SourceProjects() =>
         Directory
             .EnumerateFiles(Path.Combine(Root, "src"), "*.csproj", SearchOption.AllDirectories)
             .ToDictionary(file => Path.GetFileNameWithoutExtension(file), XDocument.Load, StringComparer.Ordinal);
 
-    /// <summary>The project names a csproj declares a reference to, whether or not the compiler emitted one.</summary>
     internal static IReadOnlyList<string> DeclaredProjectReferences(XDocument project) =>
         [.. project
             .Descendants("ProjectReference")

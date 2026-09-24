@@ -1,7 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Schema tests against real Postgres via Testcontainers. -->
-
   <PropertyGroup>
     <IsPackable>false</IsPackable>
   </PropertyGroup>

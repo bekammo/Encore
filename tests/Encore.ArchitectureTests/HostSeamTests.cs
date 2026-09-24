@@ -5,25 +5,15 @@ using System.Text.RegularExpressions;
 namespace Encore.ArchitectureTests;
 
 /// <summary>
-/// A host reaches each module through exactly one seam, <c>Add{Module}Module</c> and
-/// <c>Map{Module}Module</c> on the module's <c>{Module}Module</c> class, and knows nothing
-/// else. Checked in source, which sees what is written, and in the compiled host, which sees
-/// every type and member the compiler resolved, however it was spelled.
+/// The seam is checked in source and in the compiled host, which also sees <c>var</c>,
+/// <c>typeof</c> and generic arguments.
 /// </summary>
-public partial class HostSeamTests
+public sealed partial class HostSeamTests
 {
-    /// <summary>
-    /// Seams beyond the Add/Map pair, each a deliberate opt-in: the service API that
-    /// <c>Encore.Payments.Api</c> mounts for Orders (008, 018).
-    /// </summary>
+    // Opt-ins beyond Add/Map: the service API Encore.Payments.Api mounts for Orders (008, 018).
     private static readonly string[] ExtraSeams = ["MapPaymentsServiceApi"];
 
-    /// <summary>
-    /// The only module namespaces a host imports are the modules' root namespaces, where the
-    /// seam classes live. Written anywhere else, in code or in a string, <c>Encore.Modules</c>
-    /// is a host reaching past a seam: a sub-namespace, a contracts assembly, an alias, a
-    /// <c>using static</c> or a fully qualified name.
-    /// </summary>
+    /// <summary>Outside a root-namespace <c>using</c>, any <c>Encore.Modules</c> fails, in code or in a string.</summary>
     [Theory]
     [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]
     public void Host_ShouldImportOnlyTheModulesRootNamespaces(string host)
@@ -65,13 +55,6 @@ public partial class HostSeamTests
             $"{host} may import a module's root namespace, where its seam class lives, and nothing else from Encore.Modules. Found: {string.Join("; ", found)}");
     }
 
-    /// <summary>
-    /// Every type declared in a module project, and every extension method, is off limits to a
-    /// host except the seam: the <c>{Module}Module</c> classes, <c>Add{Module}Module</c>,
-    /// <c>Map{Module}Module</c> and <see cref="ExtraSeams"/>. So <c>EfSeatRepository</c>, a
-    /// command handler or <c>CheckoutService</c> cannot appear in a host, even in a module's
-    /// root namespace.
-    /// </summary>
     [Theory]
     [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]
     public void Host_ShouldNameNothingFromAModuleButTheSeam(string host)
@@ -100,12 +83,6 @@ public partial class HostSeamTests
             $"{host} knows a module only through its Add/Map seam; this names something the module declares behind it. Found: {string.Join("; ", found)}");
     }
 
-    /// <summary>
-    /// The compiled half of the rule above, and the precise one: every type the host's
-    /// assembly references from a module, contracts or shared persistence assembly is a
-    /// <c>{Module}Module</c> seam class, and every member it calls on one is a seam method.
-    /// Sees what text cannot: <c>var</c>, <c>typeof</c>, generic arguments.
-    /// </summary>
     [Theory]
     [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]
     public void CompiledHost_ShouldReferenceNothingFromAModuleButTheSeam(string host)
@@ -160,10 +137,6 @@ public partial class HostSeamTests
             $"{host} was compiled against something a module keeps behind its seam. Found: {string.Join("; ", found)}");
     }
 
-    /// <summary>
-    /// Sanity: the derivations find what they must, so the tests above cannot pass vacuously,
-    /// and every extra seam still exists, so a rename cannot leave a stale allowance behind.
-    /// </summary>
     [Fact]
     public void TheSeamAndWhatItHidesShouldBeFound()
     {
@@ -175,7 +148,7 @@ public partial class HostSeamTests
         Assert.Contains("HoldSeatCommandHandler", types);
         Assert.Contains("CheckoutService", types);
 
-        foreach (var seam in EncoreTree.ComposedModules.Select(module => $"{module}Module"))
+        foreach (var seam in SeamTypes())
         {
             Assert.Contains(seam, types);
         }
@@ -186,7 +159,6 @@ public partial class HostSeamTests
         }
     }
 
-    /// <summary>Sanity: every host composes at least one module through the seam.</summary>
     [Theory]
     [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]
     public void Host_ShouldComposeAtLeastOneModule(string host)
@@ -202,7 +174,7 @@ public partial class HostSeamTests
         Assert.NotEmpty(called);
     }
 
-    /// <summary><c>using Encore.Modules.Catalog;</c>, optionally global. No alias, no <c>static</c>.</summary>
+    // Deliberately misses an alias and a using static, so both are reported.
     [GeneratedRegex(@"^\s*(?:global\s+)?using\s+(?<namespace>[\w.]+)\s*;\s*$")]
     private static partial Regex UsingDirectivePattern();
 
@@ -218,7 +190,6 @@ public partial class HostSeamTests
             .. ExtraSeams
         ];
 
-    /// <summary>The assembly a type reference resolves to, through any enclosing types.</summary>
     private static string? AssemblyOf(MetadataReader reader, TypeReferenceHandle handle)
     {
         var scope = reader.GetTypeReference(handle).ResolutionScope;
@@ -233,7 +204,6 @@ public partial class HostSeamTests
             : null;
     }
 
-    /// <summary><c>Namespace.Type</c>, or <c>Namespace.Outer+Nested</c>.</summary>
     private static string FullName(MetadataReader reader, TypeReferenceHandle handle)
     {
         var type = reader.GetTypeReference(handle);

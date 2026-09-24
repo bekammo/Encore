@@ -1,8 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The HTTP mapping and the strangler switch, with no database. CheckoutService needs a
-       real database and is tested in the integration suite. -->
-
   <PropertyGroup>
     <IsPackable>false</IsPackable>
   </PropertyGroup>

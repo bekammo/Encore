@@ -9,7 +9,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Encore.Modules.Orders;
 
-/// <summary>The Orders module's composition seam.</summary>
 public static class OrdersModule
 {
     public static IServiceCollection AddOrdersModule(
@@ -21,12 +20,10 @@ public static class OrdersModule
                 configuration.GetConnectionString("Orders")
                 ?? throw new InvalidOperationException("Missing connection string 'Orders'.")));
 
-        // TryAdd: other modules register the same clock.
         services.TryAddSingleton(TimeProvider.System);
 
         services.AddScoped<CheckoutService>();
 
-        // Off unless the run profile asks for it.
         if (configuration.GetValue<bool>("Orders:MigrateOnStartup"))
         {
             services.AddModuleMigrator<OrdersDbContext>("Orders");
@@ -38,9 +35,6 @@ public static class OrdersModule
         return services;
     }
 
-    /// <summary>
-    /// Registers the sweep that finishes orders still owed their capture (025).
-    /// </summary>
     private static void AddCaptureSweep(IServiceCollection services, IConfiguration configuration)
     {
         var section = configuration.GetSection(CaptureSweepOptions.SectionName);
@@ -62,12 +56,8 @@ public static class OrdersModule
         }
     }
 
-    /// <summary>
-    /// Chooses how Orders reaches Payments. With no <c>Orders:Payments:BaseAddress</c>,
-    /// Orders uses the in-process adapter registered by Payments; with one, this replaces
-    /// it with the HTTP client. Payments registers with TryAdd, so the result does not
-    /// depend on registration order. No retry policy: a timeout is already a handled state.
-    /// </summary>
+    // The strangler switch (018): Replace wins over Payments' TryAdd in either registration
+    // order. No retry policy: a timeout is already a handled state.
     private static void AddPaymentsClient(IServiceCollection services, IConfiguration configuration)
     {
         var baseAddress = configuration["Orders:Payments:BaseAddress"];

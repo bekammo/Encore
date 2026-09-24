@@ -5,10 +5,9 @@ using Encore.Modules.Inventory.Contracts.Events;
 namespace Encore.Modules.Inventory.UnitTests;
 
 /// <summary>
-/// The wire shape of every published contract, pinned to a checked-in payload. Rows already in
-/// the outbox were written in this shape, so changing it is a new version, not an edit.
+/// Outbox rows were written in these shapes: changing one is a new version, not an edit.
 /// </summary>
-public class PublishedContractTests
+public sealed class PublishedContractTests
 {
     private static readonly Guid SeatId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid EventId = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -31,25 +30,18 @@ public class PublishedContractTests
         }
     };
 
-    /// <summary>Inventory writes exactly the pinned payload.</summary>
     [Theory]
     [MemberData(nameof(Contracts))]
     public void Publishing_ShouldWriteThePinnedPayload(object contract, string payload) =>
-        Assert.Equal(payload, JsonSerializer.Serialize(contract, contract.GetType(), SeatEventPublication.SerializerOptions));
+        Assert.Equal(
+            payload,
+            JsonSerializer.Serialize(contract, contract.GetType(), SeatEventPublication.SerializerOptions));
 
-    /// <summary>
-    /// A consumer holding only the contracts assembly, reading with default options, gets the
-    /// same record back: the wire names travel with the contract, not with Inventory's options.
-    /// </summary>
     [Theory]
     [MemberData(nameof(Contracts))]
     public void Reading_WithoutInventorysOptions_ShouldGiveBackTheSameContract(object contract, string payload) =>
         Assert.Equal(contract, JsonSerializer.Deserialize(payload, contract.GetType()));
 
-    /// <summary>
-    /// A row missing a member fails to read, so it is dead-lettered where someone can see it,
-    /// instead of reaching a handler as <c>Guid.Empty</c> and being marked delivered.
-    /// </summary>
     [Theory]
     [MemberData(nameof(Contracts))]
     public void Reading_APayloadMissingAMember_ShouldFailRatherThanDefaultIt(object contract, string payload)

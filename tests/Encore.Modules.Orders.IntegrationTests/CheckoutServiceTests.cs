@@ -8,11 +8,7 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Orders.IntegrationTests;
 
-/// <summary>
-/// Checkout, confirm and cancel against real Postgres, with Catalog, Inventory and Payments
-/// faked at their contracts. The database is shared by the class and never emptied, so rows
-/// accumulate and every test uses fresh ids.
-/// </summary>
+/// <summary>The database is never emptied, so every test uses fresh ids.</summary>
 public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixture<OrdersDatabase>
 {
     private static readonly DateTime OnSale = new(2026, 1, 1, 9, 0, 0, DateTimeKind.Utc);
@@ -50,16 +46,16 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(Now, order.PlacedAt);
         Assert.Equal(2, order.Lines.Count);
 
-        // The earliest of the two, because the order needs both seats.
         Assert.Equal(Now.AddMinutes(4), order.HoldsExpireAt);
 
         await using var reader = new OrdersDbContext(_options);
-        var stored = await reader.Orders.Include(o => o.Lines).SingleAsync(o => o.Id == order.Id);
+        var stored = await reader.Orders
+            .Include(candidate => candidate.Lines)
+            .SingleAsync(candidate => candidate.Id == order.Id);
         Assert.Equal(2, stored.Lines.Count);
         Assert.All(stored.Lines, line => Assert.Equal(UnitPrice, line.UnitPrice));
     }
 
-    /// <summary>A partial checkout writes nothing and releases nothing.</summary>
     [Fact]
     public async Task Checkout_WhenASeatIsRefused_ShouldWriteNothingAndReleaseNothing()
     {
@@ -78,14 +74,12 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(CheckoutOutcome.SeatsUnavailable, result.Outcome);
         Assert.Null(result.Order);
 
-        // Nothing given back: the seat that was held is still the client's.
         Assert.Empty(seats.Releases);
 
         await using var reader = new OrdersDbContext(_options);
         Assert.False(await reader.Orders.AnyAsync(order => order.ClientId == clientId));
     }
 
-    /// <summary>Every seat is attempted, so the client learns about all refusals at once.</summary>
     [Fact]
     public async Task Checkout_WhenSeatsAreRefused_ShouldReportEveryOne()
     {
@@ -125,7 +119,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Empty(seats.Holds);
     }
 
-    /// <summary>A repeated seat id is refused, not collapsed.</summary>
     [Fact]
     public async Task Checkout_WithADuplicateSeat_ShouldBeRefusedWithoutHolding()
     {
@@ -141,7 +134,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Empty(seats.Holds);
     }
 
-    /// <summary>Duplicates are judged before the cap.</summary>
     [Fact]
     public async Task Checkout_WithDuplicatesBeyondTheCap_ShouldReportTheDuplicateNotTheCap()
     {
@@ -158,7 +150,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(CheckoutOutcome.DuplicateSeat, result.Outcome);
     }
 
-    /// <summary>The cap is read from the published contract.</summary>
     [Fact]
     public async Task Checkout_BeyondTheCap_ShouldBeRefusedWithoutHolding()
     {
@@ -191,7 +182,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Empty(seats.Holds);
     }
 
-    /// <summary>Orders enforces the on-sale time Catalog states.</summary>
     [Fact]
     public async Task Checkout_BeforeTheEventGoesOnSale_ShouldBeRefusedWithoutHolding()
     {
@@ -209,7 +199,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Empty(seats.Holds);
     }
 
-    /// <summary>Sales stay open after the show starts: the gate is a lower bound only.</summary>
     [Fact]
     public async Task Checkout_AfterTheShowHasStarted_ShouldStillBeAllowed()
     {
@@ -229,7 +218,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(CheckoutOutcome.Created, result.Outcome);
     }
 
-    /// <summary>No on-sale time means on sale now.</summary>
     [Fact]
     public async Task Checkout_WhenTheEventHasNoSaleWindow_ShouldBeAllowed()
     {
@@ -270,12 +258,10 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         await using var another = new OrdersDbContext(_options);
         var result = await ServiceFor(another, seats).CheckoutAsync(clientId, eventId, [second]);
 
-        // Named, so a client whose first 201 was lost can still confirm or cancel it.
         Assert.Equal(CheckoutOutcome.CheckoutAlreadyOpen, result.Outcome);
         Assert.Equal(opened.Order!.Id, result.OpenOrderId);
     }
 
-    /// <summary>The one-open-checkout index is scoped to the client and the event together.</summary>
     [Fact]
     public async Task Checkout_WhenTheOpenCheckoutIsForAnotherEvent_ShouldBeAllowed()
     {
@@ -300,10 +286,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
 
     // -- Confirm ----------------------------------------------------------
 
-    /// <summary>
-    /// Orders never judges hold expiry itself: with the clock far past <c>HoldsExpireAt</c> and
-    /// Inventory reporting a sale, the order confirms.
-    /// </summary>
     [Fact]
     public async Task Confirm_WhenHoldsLapsed_ShouldAskInventoryRatherThanItsOwnClock()
     {
@@ -314,7 +296,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
 
         await using var context = new OrdersDbContext(_options);
 
-        // An hour after every hold on this order lapsed.
         var result = await ServiceFor(context, seats, at: Now.AddHours(1))
             .ConfirmAsync(clientId, order.Id);
 
@@ -335,20 +316,14 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(OrderStatus.Confirmed, result.Order!.Status);
 
         await using var reader = new OrdersDbContext(_options);
-        var stored = await reader.Orders.SingleAsync(o => o.Id == order.Id);
+        var stored = await reader.Orders.SingleAsync(candidate => candidate.Id == order.Id);
 
         Assert.Equal(OrderStatus.Confirmed, stored.Status);
         Assert.Equal(Now, stored.ClosedAt);
         Assert.Equal(Now, stored.SoldAt);
-
-        // Cleared because it describes an order that can still be completed.
         Assert.Null(stored.HoldsExpireAt);
     }
 
-    /// <summary>
-    /// The sale is recorded before the capture is asked for, so a confirm that dies while the
-    /// gateway is answering leaves an order anyone can see is owed its money.
-    /// </summary>
     [Fact]
     public async Task Confirm_WhileTheCaptureIsInFlight_ShouldAlreadyShowTheOrderAwaitingCapture()
     {
@@ -373,7 +348,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Null(duringCapture.ClosedAt);
     }
 
-    /// <summary>Nothing sold and every refusal an expiry ends the order Expired.</summary>
     [Fact]
     public async Task Confirm_WhenEveryHoldHasLapsed_ShouldExpireTheOrder()
     {
@@ -389,9 +363,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(OrderStatus.Expired, result.Order!.Status);
     }
 
-    /// <summary>
-    /// One hold lapsed, one live: the seats are sold together, so nothing sells.
-    /// </summary>
     [Fact]
     public async Task Confirm_WhenOneHoldHasLapsed_ShouldSellTheSeatsTogetherAndExpireTheOrder()
     {
@@ -408,11 +379,9 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         var sale = Assert.Single(seats.Sells);
         Assert.Equal(order.Lines.Select(line => line.SeatId).Order(), sale.SeatIds.Order());
 
-        // Every refusal was an expiry, so this is the ordinary ending; the live seat never sold.
         Assert.Equal(OrderStatus.Expired, result.Order!.Status);
     }
 
-    /// <summary>A refusal other than expiry ends the order Failed, even with nothing sold.</summary>
     [Fact]
     public async Task Confirm_WhenARefusalIsNotExpiry_ShouldFailRatherThanExpire()
     {
@@ -427,7 +396,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(OrderStatus.Failed, result.Order!.Status);
     }
 
-    /// <summary>A retried confirm is not told its completed order failed.</summary>
     [Fact]
     public async Task Confirm_WhenAlreadyConfirmed_ShouldSucceedWithoutAskingAgain()
     {
@@ -463,7 +431,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
 
     // -- Confirm: the money -----------------------------------------------
 
-    /// <summary>No seat is sold until the money is secured.</summary>
     [Theory]
     [InlineData(AuthorizePaymentStatus.Declined, OrderActionOutcome.PaymentDeclined)]
     [InlineData(AuthorizePaymentStatus.TimedOut, OrderActionOutcome.PaymentTimedOut)]
@@ -486,7 +453,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Empty(seats.Sells);
         Assert.Empty(payments.Captures);
 
-        // The holds are still live, so a decline does not end the order.
         await using var reader = new OrdersDbContext(_options);
         var stored = await reader.Orders.SingleAsync(candidate => candidate.Id == order.Id);
         Assert.Equal(OrderStatus.Pending, stored.Status);
@@ -513,7 +479,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(Currency, authorized.Currency);
     }
 
-    /// <summary>A sale that does not complete voids the authorisation, so nothing is charged.</summary>
     [Theory]
     [InlineData(SellSeatStatus.HoldExpired, OrderStatus.Expired)]
     [InlineData(SellSeatStatus.AlreadySold, OrderStatus.Failed)]
@@ -536,7 +501,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Empty(payments.Captures);
     }
 
-    /// <summary>A non-expiry refusal: nothing sold, order Failed, nothing charged.</summary>
     [Fact]
     public async Task Confirm_WhenOneSeatIsNoLongerTheirs_ShouldFailAndChargeNothing()
     {
@@ -556,7 +520,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Empty(payments.Captures);
     }
 
-    /// <summary>Seats sold but the capture unanswered: AwaitingCapture, not closed.</summary>
     [Fact]
     public async Task Confirm_WhenTheCaptureGoesUnanswered_ShouldAwaitCaptureRatherThanFail()
     {
@@ -576,7 +539,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Empty(payments.Voids);
     }
 
-    /// <summary>The next confirm retries only the capture.</summary>
     [Fact]
     public async Task Confirm_WhenRetriedAfterAnUnansweredCapture_ShouldCaptureAndConfirm()
     {
@@ -607,7 +569,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(2, payments.Captures.Count);
     }
 
-    /// <summary>Seats sold with no authorisation behind them ends Failed.</summary>
     [Fact]
     public async Task Confirm_WhenTheCaptureFindsNothingHeld_ShouldFailTheOrder()
     {
@@ -623,7 +584,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(OrderStatus.Failed, result.Order!.Status);
     }
 
-    /// <summary>An earlier confirm that captured but did not record the order is healed by carrying on.</summary>
     [Fact]
     public async Task Confirm_WhenTheMoneyWasAlreadyTaken_ShouldCarryOnAndConfirm()
     {
@@ -645,7 +605,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
 
     // -- Cancel -----------------------------------------------------------
 
-    /// <summary>Cancelling ends the order and releases the seats and the money.</summary>
     [Fact]
     public async Task Cancel_ShouldEndTheOrderAndHandBackTheSeatsAndTheMoney()
     {
@@ -670,9 +629,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Single(payments.Voids);
     }
 
-    /// <summary>
-    /// A confirm of this order has sold the seats: the cancel touches neither the money nor the order.
-    /// </summary>
     [Fact]
     public async Task Cancel_WhenAConfirmHasSoldTheSeats_ShouldLeaveTheMoneyAndTheOrderAlone()
     {
@@ -694,7 +650,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(OrderStatus.Pending, stored.Status);
     }
 
-    /// <summary>A seat sold to someone else does not stop the cancellation; the money goes back.</summary>
     [Fact]
     public async Task Cancel_WhenASeatWasSoldToSomebodyElse_ShouldStillCancelAndVoid()
     {
@@ -714,9 +669,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Single(payments.Voids);
     }
 
-    /// <summary>
-    /// Defensive: if Payments says the money was taken, no cancellation is written over it.
-    /// </summary>
     [Fact]
     public async Task Cancel_WhenTheMoneyHasAlreadyBeenTaken_ShouldSayLostRace()
     {
@@ -773,7 +725,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(OrderStatus.Confirmed, result.Order!.Status);
     }
 
-    /// <summary>Ending an order frees the client to open another for the same event.</summary>
     [Fact]
     public async Task Checkout_AfterCancelling_ShouldBeAllowedAgain()
     {
@@ -807,8 +758,8 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
     // -- Confirm and cancel together --------------------------------------
 
     /// <summary>
-    /// A cancel runs between the confirm's sale and its capture. The confirm has recorded the
-    /// sale, so the cancel finds the order awaiting capture, and nothing is released or voided.
+    /// The confirm has already recorded the sale, so the cancel finds the order awaiting capture
+    /// and releases and voids nothing.
     /// </summary>
     [Fact]
     public async Task Cancel_BetweenAConfirmsSaleAndItsCapture_ShouldLeaveTheSaleToBePaidFor()
@@ -829,7 +780,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         await using var context = new OrdersDbContext(_options);
         var confirm = await ServiceFor(context, seats, payments: payments).ConfirmAsync(clientId, order.Id);
 
-        // Sold seats and taken money go together.
         Assert.All(seats.Seats.Values, seat => Assert.Equal(SeatState.Sold, seat));
         Assert.Equal(MoneyState.Captured, payments.Money);
 
@@ -841,10 +791,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(OrderStatus.Confirmed, stored.Status);
     }
 
-    /// <summary>
-    /// A cancel in the moment after the sale and before the confirm records it still finds the
-    /// order pending. Its seats answer sold-to-you, so it backs off and voids nothing (012).
-    /// </summary>
     [Fact]
     public async Task Cancel_BeforeAConfirmRecordsItsSale_ShouldBackOffAndLeaveTheMoney()
     {
@@ -871,10 +817,7 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(OrderActionOutcome.Completed, confirm.Outcome);
     }
 
-    /// <summary>
-    /// A cancel between the authorisation and the sale: the seats go back first, the sale finds
-    /// nothing, and both sides release the money.
-    /// </summary>
+    /// <summary>The seats go back first, so the sale finds nothing and both sides void (012).</summary>
     [Fact]
     public async Task Cancel_BetweenAConfirmsAuthorisationAndItsSale_ShouldLeaveNothingSoldAndNothingTaken()
     {
@@ -905,10 +848,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(OrderStatus.Cancelled, stored.Status);
     }
 
-    /// <summary>
-    /// The client hangs up once the money is held. The confirm still sells and captures:
-    /// stopping there would leave an authorisation that nothing ever voids.
-    /// </summary>
     [Fact]
     public async Task Confirm_WhenTheClientHangsUpAfterTheAuthorisation_ShouldStillFinish()
     {
@@ -934,10 +873,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(OrderStatus.Confirmed, stored.Status);
     }
 
-    /// <summary>
-    /// The client hangs up once the seats are back. The cancel still releases the money:
-    /// released seats with funds still held is what a cancel exists to prevent.
-    /// </summary>
     [Fact]
     public async Task Cancel_WhenTheClientHangsUpAfterTheSeatsGoBack_ShouldStillReleaseTheMoney()
     {
@@ -969,7 +904,7 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
     private CheckoutService ServiceFor(
         OrdersDbContext context,
         ISeatReservations seats,
-        FakeEventPricing? pricing = null,
+        IEventPricing? pricing = null,
         DateTime? at = null,
         IOrderPayments? payments = null) =>
         new(
@@ -979,7 +914,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
             payments ?? new FakeOrderPayments(),
             new FakeTimeProvider(at ?? Now));
 
-    /// <summary>A committed, detached pending order with the given number of seats.</summary>
     private async Task<Order> AnOpenOrderAsync(Guid clientId, int seatCount)
     {
         var seats = new FakeSeatReservations();
@@ -996,7 +930,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         return result.Order!;
     }
 
-    /// <summary>Catalog faked at its contract: priced and on sale unless a test says otherwise.</summary>
     private sealed class FakeEventPricing : IEventPricing
     {
         public EventPricingResponse Response { get; set; } =
@@ -1008,7 +941,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
             Task.FromResult(Response);
     }
 
-    /// <summary>Inventory faked at its contract. One refusing seat means none sell.</summary>
     private sealed class FakeSeatReservations : ISeatReservations
     {
         public Dictionary<Guid, DateTime> HoldsExpiringAt { get; } = [];
@@ -1017,7 +949,7 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
 
         public Dictionary<Guid, SellSeatStatus> SellRefusals { get; } = [];
 
-        /// <summary>How a seat with no entry in <see cref="SellRefusals"/> answers; null sells it.</summary>
+        // Answer for a seat not in SellRefusals; null sells it.
         public SellSeatStatus? DefaultSell { get; set; }
 
         public Dictionary<Guid, ReleaseSeatStatus> ReleaseAnswers { get; } = [];
@@ -1058,7 +990,9 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
             Sells.Add(request);
 
             var refusals = request.SeatIds
-                .Select(seatId => (SeatId: seatId, Refusal: SellRefusals.TryGetValue(seatId, out var refusal) ? refusal : DefaultSell))
+                .Select(seatId => (
+                    SeatId: seatId,
+                    Refusal: SellRefusals.TryGetValue(seatId, out var refusal) ? refusal : DefaultSell))
                 .Where(answer => answer.Refusal is not null)
                 .Select(answer => new SellSeatResponse(answer.SeatId, answer.Refusal!.Value))
                 .ToList();
@@ -1081,7 +1015,6 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         }
     }
 
-    /// <summary>Payments faked at its contract; each answer can be changed between calls.</summary>
     private sealed class FakeOrderPayments : IOrderPayments
     {
         public AuthorizePaymentStatus AuthorizeWith { get; set; } = AuthorizePaymentStatus.Authorized;
@@ -1136,22 +1069,20 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Captured
     }
 
-    /// <summary>
-    /// Inventory as state for one order, so a cancel can run between two of a confirm's steps
-    /// and the ending can be read off the seats. Honours the token, as Npgsql would.
-    /// </summary>
+    // State rather than canned answers, so a cancel can run between a confirm's steps. Honours
+    // the token, as Npgsql would.
     private sealed class StatefulSeatReservations(Order order) : ISeatReservations
     {
         public Dictionary<Guid, SeatState> Seats { get; } =
             order.Lines.ToDictionary(line => line.SeatId, _ => SeatState.Held);
 
-        /// <summary>Runs once, before the next sale looks at any seat.</summary>
+        // Runs once, before the next sale looks at any seat.
         public Func<Task>? BeforeSell { get; set; }
 
-        /// <summary>Runs once, after the next sale has sold every seat.</summary>
+        // Runs once, after the next sale has sold every seat.
         public Func<Task>? AfterSell { get; set; }
 
-        /// <summary>Runs after every release, once the seats are back.</summary>
+        // Runs after every release, once the seats are back.
         public Action? AfterRelease { get; set; }
 
         public Task<HoldSeatsResponse> HoldAsync(
@@ -1220,18 +1151,15 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         }
     }
 
-    /// <summary>
-    /// Payments as state: one attempt that a void releases and a capture takes. Honours the
-    /// token, as the HTTP client would.
-    /// </summary>
+    // Honours the token, as the HTTP client would.
     private sealed class StatefulOrderPayments : IOrderPayments
     {
         public MoneyState Money { get; private set; } = MoneyState.Nothing;
 
-        /// <summary>Runs once, before the next capture looks at the money.</summary>
+        // Runs once, before the next capture looks at the money.
         public Func<Task>? BeforeCapture { get; set; }
 
-        /// <summary>Runs after every authorisation, once the money is held.</summary>
+        // Runs after every authorisation, once the money is held.
         public Action? AfterAuthorize { get; set; }
 
         public Task<AuthorizePaymentResponse> AuthorizeAsync(
@@ -1242,7 +1170,9 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
 
             if (Money is MoneyState.Captured)
             {
-                return Task.FromResult(new AuthorizePaymentResponse(AuthorizePaymentStatus.AlreadyCaptured, Guid.NewGuid()));
+                return Task.FromResult(new AuthorizePaymentResponse(
+                    AuthorizePaymentStatus.AlreadyCaptured,
+                    Guid.NewGuid()));
             }
 
             Money = MoneyState.Authorized;

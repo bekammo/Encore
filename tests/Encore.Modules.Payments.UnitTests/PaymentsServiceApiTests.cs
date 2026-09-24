@@ -3,13 +3,12 @@ using Encore.Modules.Payments.Contracts;
 namespace Encore.Modules.Payments.UnitTests;
 
 /// <summary>
-/// The service token's header name. Client and filter share the constant, so this is not about
-/// them agreeing: the hand-written OpenAPI document spells the name again, and a Payments
-/// service deployed on its own reads what is on the wire.
+/// Client and filter share the constant, but openapi.json spells the name again and a separately
+/// deployed Payments service reads what is on the wire.
 /// </summary>
-public class PaymentsServiceApiTests
+public sealed class PaymentsServiceApiTests
 {
     [Fact]
-    public void TheServiceTokenHeaderShouldKeepItsWireName() =>
+    public void ServiceTokenHeader_ShouldKeepItsWireName() =>
         Assert.Equal("X-Service-Token", PaymentsServiceApi.ServiceTokenHeader);
 }

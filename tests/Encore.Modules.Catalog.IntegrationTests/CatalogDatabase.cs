@@ -4,10 +4,7 @@ using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Catalog.IntegrationTests;
 
-/// <summary>
-/// One Postgres per test class, migrated once. Nothing empties it between tests, so rows
-/// accumulate across the class and every test works on fresh ids.
-/// </summary>
+/// <summary>Never emptied: rows accumulate across a class, so every test uses fresh ids.</summary>
 public sealed class CatalogDatabase : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
@@ -16,13 +13,15 @@ public sealed class CatalogDatabase : IAsyncLifetime
         .WithPassword("encore")
         .Build();
 
-    /// <summary>Options for a context on the migrated database.</summary>
     public DbContextOptions<CatalogDbContext> Options { get; private set; } = null!;
 
-    /// <inheritdoc />
+    public string ConnectionString { get; private set; } = null!;
+
     public async Task InitializeAsync()
     {
         await _postgres.StartAsync();
+
+        ConnectionString = _postgres.GetConnectionString();
 
         Options = new DbContextOptionsBuilder<CatalogDbContext>()
             .UseCatalogNpgsql(_postgres.GetConnectionString())
@@ -30,10 +29,9 @@ public sealed class CatalogDatabase : IAsyncLifetime
 
         await using var context = new CatalogDbContext(Options);
 
-        // Migrate rather than EnsureCreated, so the real migration is exercised.
+        // Migrate rather than EnsureCreated, so the real migrations are exercised.
         await context.Database.MigrateAsync();
     }
 
-    /// <inheritdoc />
     public async Task DisposeAsync() => await _postgres.DisposeAsync();
 }

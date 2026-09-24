@@ -10,19 +10,6 @@ using Microsoft.Extensions.Options;
 
 namespace Encore.Modules.Payments.Data;
 
-/// <summary>
-/// Finds authorisations the gateway never answered, asks the gateway what happened, and
-/// settles them on the answer.
-/// </summary>
-/// <remarks>
-/// Without it a timed-out attempt holds the order's live slot, and possibly the customer's
-/// funds, indefinitely. An attempt left pending by a crash between the gateway call and its
-/// save is the same case, so it is claimed as timed out first. It never authorises; its only
-/// outside write is releasing funds it finds held. Each row stays locked from the lookup to
-/// the save, so a confirm that retries it meanwhile waits and then loses on <c>xmin</c>,
-/// instead of re-authorising funds this has just released. A Postgres advisory lock per sweep
-/// keeps two instances from duplicating work. Nothing depends on it running.
-/// </remarks>
 internal sealed class PaymentReconciler(
     IServiceScopeFactory scopeFactory,
     SimulatedPaymentGateway gateway,
@@ -30,13 +17,15 @@ internal sealed class PaymentReconciler(
     TimeProvider timeProvider,
     ILogger<PaymentReconciler> logger) : BackgroundService
 {
+    /// <summary>Arbitrary, but no other job's advisory lock in the same database may use it.</summary>
+    internal const long LeaseKey = 3_811_030_057;
+
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
     private readonly SimulatedPaymentGateway _gateway = gateway;
     private readonly PaymentReconciliationOptions _options = options.Value;
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<PaymentReconciler> _logger = logger;
 
-    /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
@@ -60,8 +49,8 @@ internal sealed class PaymentReconciler(
                 _logger.LogError(ex, "Reconciliation sweep failed. Retrying after {PollInterval}.", _options.PollInterval);
             }
 
-            // Always sleep, even after a full batch: unresolved rows are still first in
-            // line, and asking again straight away would only hammer the gateway.
+            // Sleep even after a full batch: unresolved rows stay first in line, and asking again
+            // at once would only hammer the gateway (014).
             try
             {
                 await Task.Delay(_options.PollInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
@@ -75,17 +64,6 @@ internal sealed class PaymentReconciler(
         _logger.LogInformation("Payment reconciler stopped.");
     }
 
-    /// <summary>
-    /// This job's key in Postgres's advisory-lock namespace. Arbitrary but unique.
-    /// </summary>
-    internal const long LeaseKey = 3_811_030_057;
-
-    /// <summary>
-    /// Sweeps one batch under a transaction-scoped advisory lock, which is released even if
-    /// the process dies. Another instance holding it means this batch is redundant, so it
-    /// returns 0. Internal so tests can drive one sweep.
-    /// </summary>
-    /// <returns>How many were settled.</returns>
     internal async Task<int> ReconcileBatchAsync(CancellationToken cancellationToken)
     {
         using var leaseScope = _scopeFactory.CreateScope();
@@ -110,12 +88,6 @@ internal sealed class PaymentReconciler(
 
         var cutoff = _timeProvider.GetUtcNow().UtcDateTime - _options.MinimumAge;
         var candidates = await CandidatesAsync(cutoff, cancellationToken).ConfigureAwait(false);
-
-        if (candidates.Count is 0)
-        {
-            return 0;
-        }
-
         var settled = 0;
 
         foreach (var id in candidates)
@@ -131,19 +103,11 @@ internal sealed class PaymentReconciler(
         return settled;
     }
 
-    /// <summary>
-    /// Attempts the gateway may have decided without this system hearing the answer: timed
-    /// out, or still pending since before <paramref name="cutoff"/>, which only a crash
-    /// between the gateway call and its save leaves behind. The readiness check counts these too.
-    /// </summary>
     internal static Expression<Func<Payment, bool>> Overdue(DateTime cutoff) =>
         payment => (payment.Status == PaymentStatus.TimedOut && payment.ResolvedAt <= cutoff)
             || (payment.Status == PaymentStatus.Pending && payment.AttemptedAt <= cutoff);
 
-    /// <summary>
-    /// Overdue attempts, oldest first. Each is then settled in its own scope and
-    /// transaction, so one lost race does not affect the rest.
-    /// </summary>
+    // Ids only: each row is settled in its own transaction, so one lost race spoils no other.
     private async Task<List<Guid>> CandidatesAsync(DateTime cutoff, CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();
@@ -159,8 +123,6 @@ internal sealed class PaymentReconciler(
             .ConfigureAwait(false);
     }
 
-    /// <summary>Asks the gateway about one attempt and records what it says.</summary>
-    /// <returns>Whether the attempt was settled.</returns>
     private async Task<bool> ReconcileAsync(Guid paymentId, DateTime cutoff, CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();
@@ -170,7 +132,8 @@ internal sealed class PaymentReconciler(
             .BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        // Held until the commit, across both gateway calls.
+        // Held across both gateway calls until the commit (022): a confirm retrying this row waits,
+        // then loses on xmin, instead of re-authorising funds just released.
         await context.Database
             .ExecuteSqlAsync(
                 $"""SELECT 1 FROM payments.payments WHERE "Id" = {paymentId} FOR UPDATE""",
@@ -188,10 +151,9 @@ internal sealed class PaymentReconciler(
             return false;
         }
 
-        // Stamped after the slow gateway calls.
         DateTime Now() => _timeProvider.GetUtcNow().UtcDateTime;
 
-        // A pending row this old lost its answer to a crash: from here it is a timeout.
+        // Pending this long means a crash lost the answer: claim it as timed out (022).
         if (payment.Status is PaymentStatus.Pending)
         {
             payment.TimeOut(Now());
@@ -203,7 +165,7 @@ internal sealed class PaymentReconciler(
 
         switch (record)
         {
-            // Still no answer: nothing learned. A claimed pending row is still saved as timed out.
+            // Nothing learned, but a claimed pending row is still saved as timed out.
             case GatewayRecord.Unknown:
                 _logger.LogDebug(
                     "Payment {PaymentId} is still unresolved: the gateway did not answer the lookup.",
@@ -212,11 +174,11 @@ internal sealed class PaymentReconciler(
                 return false;
 
             case GatewayRecord.Authorized:
-                // Funds are held that no order will use: release them.
+                // Released, not recorded as Authorized: no order will capture it (014).
                 if (await _gateway.VoidAsync(reference!, cancellationToken).ConfigureAwait(false)
                     is GatewayOutcome.TimedOut)
                 {
-                    // Leave it timed out: an Authorized row nobody captures would be a worse orphan.
+                    // Left timed out, so a later sweep finds the hold and voids it again.
                     _logger.LogWarning(
                         "Payment {PaymentId} is holding funds under {GatewayReference}, but the void got no answer. Leaving it timed out.",
                         payment.Id,
@@ -252,10 +214,7 @@ internal sealed class PaymentReconciler(
         return true;
     }
 
-    /// <summary>
-    /// Saves what the sweep decided and releases the row. Not cancellable: by now the gateway
-    /// may have acted on it.
-    /// </summary>
+    // Not cancellable: by now the gateway may have acted on the row (022).
     private static async Task CommitAsync(PaymentsDbContext context, IDbContextTransaction transaction)
     {
         await context.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);

@@ -3,13 +3,8 @@ using Microsoft.Extensions.Logging;
 
 namespace Encore.Modules.Inventory.UnitTests;
 
-/// <summary>
-/// The Redis lock logs an outage at its edges: one warning when it starts, one line when it
-/// ends, nothing at the default level in between.
-/// </summary>
-public class LockOutageLogTests
+public sealed class LockOutageLogTests
 {
-    /// <summary>Any exception will do; which types count as an outage is the adapter's call.</summary>
     private static readonly Exception Down = new TimeoutException("No connection is active/available.");
 
     [Fact]
@@ -26,7 +21,6 @@ public class LockOutageLogTests
         Assert.Contains(nameof(TimeoutException), entry.Message, StringComparison.Ordinal);
     }
 
-    /// <summary>Thousands of refusals produce one warning.</summary>
     [Fact]
     public void Refused_Repeatedly_ShouldWarnOnceAndLogTheRestAtDebugWithoutTheException()
     {
@@ -92,7 +86,6 @@ public class LockOutageLogTests
         Assert.Empty(logger.Entries);
     }
 
-    /// <summary>A second outage gets its own warning and its own count.</summary>
     [Fact]
     public void Refused_AfterRecovering_ShouldWarnAgain()
     {

@@ -5,13 +5,9 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
-/// <summary>
-/// The sale under contention, against real Postgres and with no Redis lock: the <c>xmin</c>
-/// token alone must prevent a double sale.
-/// </summary>
+/// <summary>No lock: <c>xmin</c> alone prevents a double sale (004).</summary>
 public sealed class ConcurrentSellTests(InventoryDatabase database) : IClassFixture<InventoryDatabase>
 {
-    /// <summary>How many times one impatient client submits the checkout form.</summary>
     private const int ConcurrentSubmissions = 50;
 
     private readonly Guid _eventId = Guid.NewGuid();
@@ -22,24 +18,16 @@ public sealed class ConcurrentSellTests(InventoryDatabase database) : IClassFixt
 
     private enum Outcome
     {
-        /// <summary>This attempt wrote the row.</summary>
         Won,
-
-        /// <summary>Lost the optimistic-concurrency race on the write.</summary>
         LostRace,
-
-        /// <summary>The aggregate refused before any write was attempted.</summary>
         Refused,
-
-        /// <summary>Failed in a way this test does not sanction.</summary>
         Unexpected
     }
 
-    /// <summary>Truncated to microseconds, the resolution Postgres stores.</summary>
+    // Truncated to microseconds to survive the Postgres round trip.
     private static DateTime Truncate(DateTime value) =>
-        new(value.Ticks / 10 * 10, DateTimeKind.Utc);
+        new(value.Ticks - value.Ticks % TimeSpan.TicksPerMicrosecond, DateTimeKind.Utc);
 
-    /// <summary>Creates a seat already held by <paramref name="clientId"/> at <paramref name="heldAt"/>.</summary>
     private async Task<Guid> SeedHeldSeatAsync(Guid clientId, DateTime heldAt)
     {
         var seatId = Guid.NewGuid();
@@ -55,7 +43,6 @@ public sealed class ConcurrentSellTests(InventoryDatabase database) : IClassFixt
         return seatId;
     }
 
-    /// <summary>One client, fifty simultaneous submissions, one seat: exactly one write lands.</summary>
     [Fact]
     public async Task Sell_WhenOneClientSubmitsCheckoutManyTimes_ShouldWriteTheSaleExactlyOnce()
     {
@@ -81,14 +68,14 @@ public sealed class ConcurrentSellTests(InventoryDatabase database) : IClassFixt
         var unexpected = new List<Exception>();
         var startGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var attempts = sessions.Select(async session =>
+        async Task<Outcome> AttemptAsync(Action transition, EfSeatRepository repository, Seat seat)
         {
             await startGate.Task;
 
             try
             {
-                session.Seat.Sell(_clientA, sellingAt);
-                await session.Repository.SaveAsync(session.Seat);
+                transition();
+                await repository.SaveAsync(seat);
                 return Outcome.Won;
             }
             catch (ConcurrentSeatModificationException)
@@ -108,7 +95,14 @@ public sealed class ConcurrentSellTests(InventoryDatabase database) : IClassFixt
 
                 return Outcome.Unexpected;
             }
-        }).ToArray();
+        }
+
+        var attempts = sessions
+            .Select(session => AttemptAsync(
+                () => session.Seat.Sell(_clientA, sellingAt),
+                session.Repository,
+                session.Seat))
+            .ToArray();
 
         startGate.SetResult();
         var outcomes = await Task.WhenAll(attempts);
@@ -120,10 +114,10 @@ public sealed class ConcurrentSellTests(InventoryDatabase database) : IClassFixt
 
         Assert.True(
             unexpected.Count == 0,
-            $"Attempts failed in unsanctioned ways: {string.Join(" | ", unexpected.Select(e => e.GetType().Name + ": " + e.Message))}");
+            $"Attempts failed in unsanctioned ways: {string.Join(" | ", unexpected.Select(exception => exception.GetType().Name + ": " + exception.Message))}");
 
-        Assert.Equal(1, outcomes.Count(o => o == Outcome.Won));
-        Assert.Equal(ConcurrentSubmissions - 1, outcomes.Count(o => o == Outcome.LostRace));
+        Assert.Equal(1, outcomes.Count(outcome => outcome == Outcome.Won));
+        Assert.Equal(ConcurrentSubmissions - 1, outcomes.Count(outcome => outcome == Outcome.LostRace));
 
         await using var verification = new InventoryDbContext(_options);
         var persisted = await verification.Seats.SingleAsync(seat => seat.Id == seatId);
@@ -133,11 +127,7 @@ public sealed class ConcurrentSellTests(InventoryDatabase database) : IClassFixt
         Assert.Null(persisted.HoldExpiresAt);
     }
 
-    /// <summary>
-    /// A hold lapsing at the instant its owner checks out while another client reclaims it. Both
-    /// are legal transitions; only the row version can separate them, and the seat must end up
-    /// one coherent state.
-    /// </summary>
+    /// <summary>Sale and reclaim are both legal at their own clocks; only <c>xmin</c> separates them.</summary>
     [Fact]
     public async Task Sell_WhenRacingAReclaimOfTheExpiringHold_ExactlyOneShouldWin()
     {
@@ -190,19 +180,21 @@ public sealed class ConcurrentSellTests(InventoryDatabase database) : IClassFixt
         }
 
         var sale = AttemptAsync(() => sellerSeat!.Sell(_clientA, sellingAt), sellerRepository, sellerSeat!);
-        var reclaim = AttemptAsync(() => reclaimerSeat!.Hold(_clientB, reclaimingAt), reclaimerRepository, reclaimerSeat!);
+        var reclaim = AttemptAsync(
+            () => reclaimerSeat!.Hold(_clientB, reclaimingAt),
+            reclaimerRepository,
+            reclaimerSeat!);
 
         startGate.SetResult();
         var outcomes = await Task.WhenAll(sale, reclaim);
 
         Assert.True(
             unexpected.Count == 0,
-            $"Attempts failed in unsanctioned ways: {string.Join(" | ", unexpected.Select(e => e.GetType().Name + ": " + e.Message))}");
+            $"Attempts failed in unsanctioned ways: {string.Join(" | ", unexpected.Select(exception => exception.GetType().Name + ": " + exception.Message))}");
 
-        Assert.Equal(1, outcomes.Count(o => o == Outcome.Won));
-        Assert.Equal(1, outcomes.Count(o => o == Outcome.LostRace));
+        Assert.Equal(1, outcomes.Count(outcome => outcome == Outcome.Won));
+        Assert.Equal(1, outcomes.Count(outcome => outcome == Outcome.LostRace));
 
-        // Whichever won, the row reads as one coherent state.
         await using var verification = new InventoryDbContext(_options);
         var persisted = await verification.Seats.SingleAsync(seat => seat.Id == seatId);
 

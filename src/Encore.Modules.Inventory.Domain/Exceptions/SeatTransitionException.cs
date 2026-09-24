@@ -1,8 +1,8 @@
 namespace Encore.Modules.Inventory.Domain.Exceptions;
 
 /// <summary>
-/// A seat refused a transition. One type with a closed <see cref="SeatTransitionReason"/>,
-/// so callers switch on the reason rather than on exception types.
+/// One type with a closed <see cref="SeatTransitionReason"/>, so callers switch on the reason
+/// rather than on exception types (003).
 /// </summary>
 public sealed class SeatTransitionException : Exception
 {

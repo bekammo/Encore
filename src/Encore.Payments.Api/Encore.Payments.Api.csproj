@@ -1,15 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
-  <!-- The Payments host: the one module, served on its own so Orders can reach it over HTTP. -->
-
-  <!-- No packages of its own (ENCORE001), as for Encore.Api. -->
   <PropertyGroup>
     <EncoreNoDirectPackages>true</EncoreNoDirectPackages>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Payments\Encore.Modules.Payments.csproj" />
-    <!-- Declared explicitly: this host uses IReadinessCheck directly. -->
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
     <ProjectReference Include="..\Encore.Telemetry\Encore.Telemetry.csproj" />
   </ItemGroup>

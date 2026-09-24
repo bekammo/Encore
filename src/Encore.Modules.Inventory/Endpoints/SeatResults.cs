@@ -1,16 +1,11 @@
 using Encore.Modules.Inventory.Application;
+using Encore.Modules.Inventory.Contracts;
 using Microsoft.AspNetCore.Http;
 
 namespace Encore.Modules.Inventory.Endpoints;
 
-/// <summary>
-/// Maps use-case outcomes to HTTP responses. Refusals about the state of the world are
-/// 409 with a machine-readable <c>reason</c>; only a missing seat is 404. Every switch is
-/// exhaustive, so a new outcome breaks the build.
-/// </summary>
 internal static class SeatResults
 {
-    /// <summary>Maps the outcome of a hold.</summary>
     public static IResult ForHold(Guid seatId, HoldSeatResult result, PathString path) =>
         result.Outcome switch
         {
@@ -28,10 +23,10 @@ internal static class SeatResults
             HoldSeatOutcome.HoldCapReached => Conflict(
                 path,
                 "hold_cap_reached",
-                $"You may hold at most {HoldSeatCommandHandler.MaxHoldsPerClientPerEvent} seats "
+                $"You may hold at most {SeatReservationLimits.MaxHoldsPerClientPerEvent} seats "
                 + "at this event at once. Release one or complete checkout first.",
                 retriable: true,
-                limit: HoldSeatCommandHandler.MaxHoldsPerClientPerEvent),
+                limit: SeatReservationLimits.MaxHoldsPerClientPerEvent),
 
             HoldSeatOutcome.LostRace => Conflict(
                 path, "lost_race", "The seat changed while your request was in flight.", retriable: true),
@@ -43,7 +38,6 @@ internal static class SeatResults
                 retriable: true)
         };
 
-    /// <summary>Maps the outcome of a sale.</summary>
     public static IResult ForSell(Guid seatId, SellSeatOutcome outcome, PathString path) =>
         outcome switch
         {
@@ -67,7 +61,6 @@ internal static class SeatResults
                 path, "lost_race", "The seat changed while your request was in flight.", retriable: true)
         };
 
-    /// <summary>Maps the outcome of a release.</summary>
     public static IResult ForRelease(Guid seatId, ReleaseSeatOutcome outcome, PathString path) =>
         outcome switch
         {
@@ -88,9 +81,6 @@ internal static class SeatResults
                 path, "lost_race", "The seat changed while your request was in flight.", retriable: true)
         };
 
-    /// <summary>
-    /// A missing seat and a seat under another event get the same answer, so ids cannot be probed.
-    /// </summary>
     private static IResult NotFound(PathString path) =>
         TypedResults.Problem(
             detail: "No such seat at this event.",
@@ -110,7 +100,7 @@ internal static class SeatResults
         {
             ["reason"] = reason,
 
-            // Whether trying again could succeed: later, or after a new hold or a different card.
+            // Whether trying again could succeed: later, or after a new hold.
             ["retriable"] = retriable
         };
 

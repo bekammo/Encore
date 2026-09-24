@@ -4,10 +4,8 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace Encore.Modules.Catalog.Data;
 
-/// <summary>Maps <see cref="Venue"/> to the <c>catalog.venues</c> table.</summary>
 public sealed class VenueConfiguration : IEntityTypeConfiguration<Venue>
 {
-    /// <inheritdoc />
     public void Configure(EntityTypeBuilder<Venue> builder)
     {
         builder.ToTable("venues");

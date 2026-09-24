@@ -1,12 +1,12 @@
 using Encore.Modules.Inventory.Application;
+using Encore.Modules.Inventory.Contracts;
 using Encore.Modules.Inventory.Endpoints;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 
 namespace Encore.Modules.Inventory.UnitTests;
 
-/// <summary>The outcome-to-HTTP mapping, tested without a host.</summary>
-public class SeatResultsTests
+public sealed class SeatResultsTests
 {
     private static readonly Guid SeatId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly DateTime Expiry = new(2026, 1, 1, 12, 5, 0, DateTimeKind.Utc);
@@ -56,7 +56,6 @@ public class SeatResultsTests
         Assert.Equal(expectedReason, ReasonOf(result));
     }
 
-    /// <summary>The cap refusal states the limit.</summary>
     [Fact]
     public void ForHold_WhenCapReached_ShouldReportTheLimit()
     {
@@ -64,11 +63,10 @@ public class SeatResultsTests
 
         var problem = Assert.IsType<ProblemHttpResult>(result);
         Assert.Equal(
-            HoldSeatCommandHandler.MaxHoldsPerClientPerEvent,
+            SeatReservationLimits.MaxHoldsPerClientPerEvent,
             Assert.IsType<int>(problem.ProblemDetails.Extensions["limit"]));
     }
 
-    /// <summary>Whether repeating the identical request could succeed.</summary>
     [Theory]
     [InlineData(HoldSeatOutcome.AlreadyHeld, true)]
     [InlineData(HoldSeatOutcome.LostRace, true)]
@@ -143,7 +141,6 @@ public class SeatResultsTests
 
     // -- Nothing is unmapped ----------------------------------------------
 
-    /// <summary>Every outcome has a response, so a new one cannot reach a client unmapped.</summary>
     [Fact]
     public void EveryOutcome_ShouldMapToAResponse()
     {

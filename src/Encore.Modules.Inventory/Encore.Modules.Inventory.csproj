@@ -1,13 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The outside of the hexagon: ports, adapters and use cases. The only Inventory
-       project allowed to reference infrastructure packages. -->
-
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
-  <!-- Tests reach internals such as the HTTP result mapping and one dispatcher tick. -->
   <ItemGroup>
     <InternalsVisibleTo Include="Encore.Modules.Inventory.UnitTests" />
     <InternalsVisibleTo Include="Encore.Modules.Inventory.IntegrationTests" />
@@ -29,7 +25,6 @@
     <PackageReference Include="StackExchange.Redis" Version="3.2.1" />
   </ItemGroup>
 
-  <!-- Shared startup migrator and Npgsql wiring. It names no module. -->
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Shared.Persistence\Encore.Modules.Shared.Persistence.csproj" />
   </ItemGroup>

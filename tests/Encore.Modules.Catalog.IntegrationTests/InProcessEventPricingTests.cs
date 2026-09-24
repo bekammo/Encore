@@ -5,10 +5,6 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Catalog.IntegrationTests;
 
-/// <summary>
-/// The <see cref="IEventPricing"/> adapter against real Postgres: a missing event is a status,
-/// a found one carries every field, and the sale window survives as UTC.
-/// </summary>
 public sealed class InProcessEventPricingTests(CatalogDatabase database) : IClassFixture<CatalogDatabase>
 {
     private static readonly DateTime StartsAt = new(2026, 7, 1, 19, 30, 0, DateTimeKind.Utc);
@@ -33,7 +29,6 @@ public sealed class InProcessEventPricingTests(CatalogDatabase database) : IClas
         Assert.Equal(StartsAt, response.StartsAt);
     }
 
-    /// <summary>A missing event is an ordinary answer, not an exception.</summary>
     [Fact]
     public async Task Get_WhenEventMissing_ShouldReportNotFoundRatherThanThrow()
     {
@@ -47,7 +42,6 @@ public sealed class InProcessEventPricingTests(CatalogDatabase database) : IClas
         Assert.Null(response.Currency);
     }
 
-    /// <summary>A null on-sale time is carried through as null.</summary>
     [Fact]
     public async Task Get_WhenNoOnSaleDate_ShouldReportNull()
     {

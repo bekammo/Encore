@@ -1,16 +1,13 @@
 using Encore.Modules.Inventory.Application;
 using Encore.Modules.Inventory.Domain;
+using Encore.Modules.Inventory.Domain.Events;
 using Encore.Modules.Inventory.Domain.Exceptions;
 using Encore.Modules.Inventory.Ports;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Inventory.UnitTests;
 
-/// <summary>
-/// The release use case. Almost everything is a success: a client who asks not to hold a seat
-/// gets that state whether or not they held it.
-/// </summary>
-public class ReleaseSeatCommandHandlerTests
+public sealed class ReleaseSeatCommandHandlerTests
 {
     private static readonly Guid SeatId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid EventId = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -19,23 +16,14 @@ public class ReleaseSeatCommandHandlerTests
 
     private static readonly DateTime T0 = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
 
-    /// <summary>Inside the 5-minute hold taken at <see cref="T0"/>.</summary>
     private static readonly DateTime WithinHold = T0.AddMinutes(4);
-
-    /// <summary>After it has lapsed.</summary>
     private static readonly DateTime AfterHold = T0.AddMinutes(6);
 
     private static ReleaseSeatCommand Command => new(EventId, SeatId, ClientA);
 
     private static Seat AvailableSeat() => Seat.Create(SeatId, EventId);
 
-    private static Seat SeatHeldBy(Guid clientId)
-    {
-        var seat = AvailableSeat();
-        seat.Hold(clientId, T0);
-        seat.ClearDomainEvents();
-        return seat;
-    }
+    private static Seat SeatHeldBy(Guid clientId) => HeldBy(AvailableSeat(), clientId);
 
     private static Seat SeatSoldTo(Guid clientId)
     {
@@ -45,9 +33,11 @@ public class ReleaseSeatCommandHandlerTests
         return seat;
     }
 
-    private static Seat AnotherSeatHeldBy(Guid clientId)
+    private static Seat AnotherSeatHeldBy(Guid clientId) =>
+        HeldBy(Seat.Create(Guid.NewGuid(), EventId), clientId);
+
+    private static Seat HeldBy(Seat seat, Guid clientId)
     {
-        var seat = Seat.Create(Guid.NewGuid(), EventId);
         seat.Hold(clientId, T0);
         seat.ClearDomainEvents();
         return seat;
@@ -93,8 +83,8 @@ public class ReleaseSeatCommandHandlerTests
 
         await HandlerFor(seats).HandleAsync(Command);
 
-        var released = Assert.IsType<Domain.Events.SeatReleased>(Assert.Single(seat.DomainEvents));
-        Assert.Equal(Domain.Events.SeatReleaseReason.Cancelled, released.Reason);
+        var released = Assert.IsType<SeatReleased>(Assert.Single(seat.DomainEvents));
+        Assert.Equal(SeatReleaseReason.Cancelled, released.Reason);
         Assert.Equal(ClientA, released.ClientId);
     }
 
@@ -121,7 +111,6 @@ public class ReleaseSeatCommandHandlerTests
         Assert.Empty(seat.DomainEvents);
     }
 
-    /// <summary>The hold lapsed while the request was in flight: still a success.</summary>
     [Fact]
     public async Task Handle_WhenOwnHoldHasAlreadyLapsed_ShouldReturnReleased()
     {
@@ -145,7 +134,6 @@ public class ReleaseSeatCommandHandlerTests
         Assert.Equal(0, seats.SaveCalls);
     }
 
-    /// <summary>A sale is not undone by asking to release the seat.</summary>
     [Fact]
     public async Task Handle_WhenSeatIsSoldToSomebodyElse_ShouldReturnAlreadySold()
     {
@@ -157,7 +145,6 @@ public class ReleaseSeatCommandHandlerTests
         Assert.Equal(0, seats.SaveCalls);
     }
 
-    /// <summary>Sold to this client: a cancel racing its own confirm reads this and backs off.</summary>
     [Fact]
     public async Task Handle_WhenSeatIsSoldToThisClient_ShouldReturnSoldToYou()
     {
@@ -202,7 +189,7 @@ public class ReleaseSeatCommandHandlerTests
         var result = await HandlerFor(seats).HandleAsync(Command);
 
         Assert.Equal(ReleaseSeatOutcome.Released, result);
-        Assert.Equal(2, seats.GetByIdCalls);
+        Assert.Equal(2, seats.LoadCalls);
     }
 
     [Fact]
@@ -219,10 +206,7 @@ public class ReleaseSeatCommandHandlerTests
         Assert.Equal(2, seats.SaveCalls);
     }
 
-    /// <summary>
-    /// After the second loss nothing else would reload the seats, so the handler does: a
-    /// release that exists only in memory must not reach a later save (011).
-    /// </summary>
+    /// <summary>A release that exists only in memory must not reach a later save (011).</summary>
     [Fact]
     public async Task Handle_WhenBothAttemptsLoseTheRace_ShouldReloadWhatItChanged()
     {
@@ -233,12 +217,11 @@ public class ReleaseSeatCommandHandlerTests
 
         await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(3, seats.GetByIdCalls);
+        Assert.Equal(3, seats.LoadCalls);
     }
 
-    // -- Batches ------------------------------------------------------------
+    // -- Batches ----------------------------------------------------------
 
-    /// <summary>Every seat goes back in one write; one that cannot does not keep the others held.</summary>
     [Fact]
     public async Task HandleBatch_WhenOneSeatIsNotTheirs_ShouldStillReleaseTheOthersInOneSave()
     {

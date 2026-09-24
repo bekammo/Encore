@@ -6,13 +6,9 @@ using Microsoft.Extensions.Logging;
 namespace Encore.Modules.Shared.Persistence;
 
 /// <summary>
-/// Applies one module's pending migrations while the host starts, for local development.
-/// Registered only when <c>{Module}:MigrateOnStartup</c> is set; deployments migrate explicitly.
-/// </summary>
-/// <remarks>
-/// Runs in <see cref="StartingAsync"/>, which the host calls before any <c>StartAsync</c>,
+/// Migrates in <see cref="StartingAsync"/>, which the host calls before any <c>StartAsync</c>,
 /// so the schema exists before Kestrel accepts a request.
-/// </remarks>
+/// </summary>
 public sealed class ModuleMigrator<TContext>(
     string moduleName,
     IServiceScopeFactory scopeFactory,
@@ -23,10 +19,8 @@ public sealed class ModuleMigrator<TContext>(
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
     private readonly ILogger<ModuleMigrator<TContext>> _logger = logger;
 
-    /// <inheritdoc />
     public async Task StartingAsync(CancellationToken cancellationToken)
     {
-        // The context is scoped; a hosted service is a singleton.
         using var scope = _scopeFactory.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<TContext>();
 
@@ -52,18 +46,13 @@ public sealed class ModuleMigrator<TContext>(
         _logger.LogInformation("{Module} schema updated.", _moduleName);
     }
 
-    /// <inheritdoc />
     public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-    /// <inheritdoc />
     public Task StartedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-    /// <inheritdoc />
     public Task StoppingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-    /// <inheritdoc />
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-    /// <inheritdoc />
     public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

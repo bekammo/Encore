@@ -6,15 +6,10 @@ using StackExchange.Redis;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
-/// <summary>
-/// The Redis lock adapter against real Redis and against no Redis at all. The container is
-/// shared by the class; every test locks resources of its own.
-/// </summary>
 public sealed class RedisDistributedLockTests(InventoryRedis redis) : IClassFixture<InventoryRedis>
 {
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5);
 
-    /// <summary>A lock per test, over the class's connection.</summary>
     private readonly RedisDistributedLock _lock =
         new(redis.Connection, NullLogger<RedisDistributedLock>.Instance);
 
@@ -51,7 +46,6 @@ public sealed class RedisDistributedLockTests(InventoryRedis redis) : IClassFixt
         Assert.Equal(LockOutcome.Acquired, (await _lock.TryAcquireAsync(resource, Ttl)).Outcome);
     }
 
-    /// <summary>A stalled holder whose lock expired and was taken cannot free the new owner's lock.</summary>
     [Fact]
     public async Task Release_WhenNotTheOwner_ShouldNotFreeSomebodyElsesLock()
     {
@@ -60,14 +54,10 @@ public sealed class RedisDistributedLockTests(InventoryRedis redis) : IClassFixt
 
         Assert.False(await _lock.ReleaseAsync(resource, "a-token-that-was-never-ours"));
 
-        // Still held by the original owner.
         Assert.Equal(LockOutcome.HeldByAnother, (await _lock.TryAcquireAsync(resource, Ttl)).Outcome);
     }
 
-    /// <summary>
-    /// An unreachable Redis is reported as Unavailable, not thrown. Points at a closed port, so
-    /// the shared container is not disturbed.
-    /// </summary>
+    /// <summary>Points at a closed port, so the shared container is not disturbed.</summary>
     [Fact]
     public async Task TryAcquire_WhenRedisIsUnreachable_ShouldReportUnavailableRatherThanThrow()
     {
@@ -99,7 +89,6 @@ public sealed class RedisDistributedLockTests(InventoryRedis redis) : IClassFixt
         Assert.False(await deadLock.ReleaseAsync(NewResource(), "token"));
     }
 
-    /// <summary>An outage logs one warning, not one per attempt.</summary>
     [Fact]
     public async Task TryAcquire_WhenRedisStaysUnreachable_ShouldWarnOnceForTheWholeOutage()
     {

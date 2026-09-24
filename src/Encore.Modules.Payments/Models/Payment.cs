@@ -1,19 +1,12 @@
 namespace Encore.Modules.Payments.Models;
 
 /// <summary>
-/// An attempt to charge for an order, and how it turned out. Owns which transition is
-/// legal from which state.
+/// Factory and guarded transitions because a payment has rules decidable from its own row, yet
+/// it stays in the flat module with no ports or domain assembly (013).
 /// </summary>
-/// <remarks>
-/// Factory construction and guarded transitions, because a payment has rules decidable from
-/// its own row: only an authorised payment may be captured, captured is terminal, and the
-/// amount never changes. It stays in the flat module with no ports or domain assembly. The
-/// real guard against a double charge is the partial unique index in
-/// <c>PaymentConfiguration</c>. Time is always passed in, and must be UTC.
-/// </remarks>
 public sealed class Payment
 {
-    /// <summary>For EF Core materialisation only.</summary>
+    // EF Core materialisation only.
     private Payment()
     {
     }
@@ -37,11 +30,6 @@ public sealed class Payment
         AttemptedAt = utcNow;
     }
 
-    /// <summary>
-    /// Begins an attempt. Every payment starts <see cref="PaymentStatus.Pending"/>. Invalid
-    /// arguments throw BCL exceptions: they are caller bugs, not refusals.
-    /// </summary>
-    /// <param name="idempotencyKey">How the gateway recognises a repeat. Kept for the life of the row.</param>
     public static Payment Create(
         Guid id,
         Guid orderId,
@@ -87,40 +75,32 @@ public sealed class Payment
 
     public Guid Id { get; private set; }
 
-    /// <summary>The order being paid for. At most one live attempt per order.</summary>
     public Guid OrderId { get; private set; }
 
-    /// <summary>Who is paying: the claimed <c>X-Client-Id</c>.</summary>
     public Guid ClientId { get; private set; }
 
-    /// <summary>What is owed, fixed when the attempt began.</summary>
     public decimal Amount { get; private set; }
 
     public string Currency { get; private set; } = string.Empty;
 
     public PaymentStatus Status { get; private set; }
 
-    /// <summary>How the gateway recognises a repeat. Survives <see cref="Retry"/>.</summary>
     public string IdempotencyKey { get; private set; } = string.Empty;
 
-    /// <summary>The gateway's handle on the authorisation, once there is one.</summary>
     public string? GatewayReference { get; private set; }
 
+    /// <summary>When the gateway was last asked, or when it granted the authorisation.</summary>
     public DateTime AttemptedAt { get; private set; }
 
-    /// <summary>
-    /// When the attempt got its answer: an ending, or a timeout. A timed-out attempt still has
-    /// moves left, and the reconciler ages it by this. Null while pending or authorised.
-    /// </summary>
+    /// <summary>Set by a timeout or an ending; null while pending or authorised.</summary>
     public DateTime? ResolvedAt { get; private set; }
 
-    /// <summary>Concurrency token (<c>xmin</c>). A confirm and a cancel can race this row.</summary>
     public uint RowVersion { get; private set; }
 
     /// <summary>
-    /// Statuses in which the attempt might hold or have taken money. <see cref="PaymentStatus.TimedOut"/>
-    /// is included: no answer may mean yes. The unique index's filter is built from this list,
-    /// so a change to it is a model change that needs a migration.
+    /// Statuses that might hold or have taken money, so <see cref="PaymentStatus.TimedOut"/> is in:
+    /// no answer may mean yes (013). The unique index's filter is built from this list, so a
+    /// change to it needs a migration.
     /// </summary>
     public static IReadOnlyList<PaymentStatus> LiveStatuses { get; } =
     [
@@ -130,10 +110,8 @@ public sealed class Payment
         PaymentStatus.TimedOut
     ];
 
-    /// <summary>Whether this attempt might hold or have taken money. Not mapped.</summary>
     public bool IsLive => LiveStatuses.Contains(Status);
 
-    /// <summary>The gateway is holding the funds. Not an ending: a capture or void is still owed.</summary>
     /// <exception cref="PaymentTransitionException">The attempt is no longer pending.</exception>
     public void Authorize(string gatewayReference, DateTime utcNow)
     {
@@ -146,7 +124,6 @@ public sealed class Payment
         AttemptedAt = utcNow;
     }
 
-    /// <summary>The gateway refused. Terminal.</summary>
     /// <exception cref="PaymentTransitionException">The attempt is no longer pending.</exception>
     public void Decline(DateTime utcNow)
     {
@@ -158,8 +135,7 @@ public sealed class Payment
     }
 
     /// <summary>
-    /// The authorisation got no answer. Only authorisations reach this; a capture that
-    /// times out stays <see cref="PaymentStatus.Authorized"/>.
+    /// Authorisations only: a timed-out capture stays <see cref="PaymentStatus.Authorized"/> (014).
     /// </summary>
     /// <exception cref="PaymentTransitionException">The attempt is no longer pending.</exception>
     public void TimeOut(DateTime utcNow)
@@ -171,10 +147,6 @@ public sealed class Payment
         ResolvedAt = utcNow;
     }
 
-    /// <summary>
-    /// Re-opens a timed-out attempt on the same row, so the gateway is asked again under the
-    /// same key rather than authorising twice.
-    /// </summary>
     /// <exception cref="PaymentTransitionException">The attempt did get an answer.</exception>
     public void Retry(DateTime utcNow)
     {
@@ -187,9 +159,8 @@ public sealed class Payment
     }
 
     /// <summary>
-    /// Asks again about an attempt that was recorded but never answered, under the same key.
-    /// Restamps <see cref="AttemptedAt"/>, so the reconciler sees a live attempt rather than
-    /// one a crash abandoned, and the save is a write that <c>xmin</c> can order.
+    /// Restamps <see cref="AttemptedAt"/>, so the reconciler does not take a live attempt for one
+    /// a crash left behind (022).
     /// </summary>
     /// <exception cref="PaymentTransitionException">The attempt is no longer pending.</exception>
     public void Resume(DateTime utcNow)
@@ -200,7 +171,6 @@ public sealed class Payment
         AttemptedAt = utcNow;
     }
 
-    /// <summary>Takes the authorised money. Terminal and idempotent.</summary>
     /// <exception cref="PaymentTransitionException">There is no live authorisation.</exception>
     public void Capture(DateTime utcNow)
     {
@@ -217,7 +187,6 @@ public sealed class Payment
         ResolvedAt = utcNow;
     }
 
-    /// <summary>Releases an authorisation without taking the money. Terminal and idempotent.</summary>
     /// <exception cref="PaymentTransitionException">
     /// The money has been taken, or there was never an authorisation.
     /// </exception>
@@ -241,9 +210,11 @@ public sealed class Payment
         ResolvedAt = utcNow;
     }
 
+    // Looked-up answers get their own transitions (014), so the ordinary path cannot write one
+    // it never received.
+
     /// <summary>
-    /// Reconciliation: the timed-out authorisation did land, and its funds have now been
-    /// released. Called only after the release succeeded, so no unowned authorisation is left.
+    /// Only once the gateway has released the funds, so no unowned authorisation is left.
     /// </summary>
     /// <exception cref="PaymentTransitionException">The attempt is not timed out.</exception>
     public void ResolveAsVoided(string gatewayReference, DateTime utcNow)
@@ -257,7 +228,6 @@ public sealed class Payment
         ResolvedAt = utcNow;
     }
 
-    /// <summary>Reconciliation: the timed-out authorisation reached the gateway and was refused.</summary>
     /// <exception cref="PaymentTransitionException">The attempt is not timed out.</exception>
     public void ResolveAsDeclined(DateTime utcNow)
     {
@@ -268,10 +238,6 @@ public sealed class Payment
         ResolvedAt = utcNow;
     }
 
-    /// <summary>
-    /// Reconciliation: the gateway has no record, so the request never arrived. Frees the
-    /// order's live-attempt slot.
-    /// </summary>
     /// <exception cref="PaymentTransitionException">The attempt is not timed out.</exception>
     public void ResolveAsAbandoned(DateTime utcNow)
     {
@@ -282,7 +248,6 @@ public sealed class Payment
         ResolvedAt = utcNow;
     }
 
-    /// <summary>Every transition requires a UTC instant; <c>Local</c> and <c>Unspecified</c> are refused.</summary>
     private static void GuardUtc(DateTime utcNow)
     {
         if (utcNow.Kind is not DateTimeKind.Utc)
@@ -309,7 +274,6 @@ public sealed class Payment
         }
     }
 
-    /// <summary>For <see cref="Retry"/> and the reconciliation transitions: only an unanswered attempt qualifies.</summary>
     private void GuardTimedOut()
     {
         if (Status is not PaymentStatus.TimedOut)

@@ -1,7 +1,7 @@
 <Project>
 
-  <!-- Repo-wide build rules. A project opts in by property rather than being selected by
-       name, so a rename cannot silently change what is checked:
+  <!-- A project opts in by property, not by name, so a rename cannot silently change what is
+       checked:
 
          EncoreZeroDependency   - all three rules, for projects allowed only the BCL.
          EncoreNoDirectPackages - ENCORE001 only, for hosts: they get ASP.NET Core from the
@@ -13,11 +13,10 @@
           Condition="'$(EncoreZeroDependency)' == 'true' or '$(EncoreNoDirectPackages)' == 'true'">
     <Error Condition="@(PackageReference->Count()) &gt; 0"
            Code="ENCORE001"
-           Text="$(MSBuildProjectName) must have zero PackageReference items. Found: @(PackageReference->'%(Identity)', ', '). Put the dependency behind a port in Encore.Modules.Inventory/Ports and implement it in Adapters." />
+           Text="$(MSBuildProjectName) must have zero PackageReference items. Found: @(PackageReference->'%(Identity)', ', '). Move the dependency to a project that is allowed packages." />
   </Target>
 
-  <!-- ENCORE002: no FrameworkReference other than the implicit Microsoft.NETCore.App. A
-       framework reference brings a whole platform with no PackageReference to show for it. -->
+  <!-- ENCORE002: no FrameworkReference but the implicit Microsoft.NETCore.App. -->
   <Target Name="EncoreEnforceNoFrameworkReferences"
           BeforeTargets="CoreCompile"
           Condition="'$(EncoreZeroDependency)' == 'true'">
@@ -30,10 +29,10 @@
            Text="$(MSBuildProjectName) must declare no FrameworkReference other than Microsoft.NETCore.App. Found: @(_EncoreForbiddenFrameworkReference->'%(Identity)', ', '). A framework reference carries a whole platform surface with no PackageReference to show for it, so ENCORE001 cannot see it." />
   </Target>
 
-  <!-- ENCORE003: nothing outside the BCL in the resolved reference closure, which catches
-       packages arriving transitively through a ProjectReference. BCL assemblies carry
-       NuGetPackageId Microsoft.NETCore.App.Ref, packages carry their own id, and project
-       outputs carry none. Runs before CoreCompile, so design-time builds are unaffected. -->
+  <!-- ENCORE003: nothing outside the BCL in the resolved reference closure. BCL assemblies
+       carry NuGetPackageId Microsoft.NETCore.App.Ref, packages carry their own id, project
+       outputs carry none. The FrameworkReferenceName clause is a backstop for an SDK that
+       reports the BCL under another package id. -->
   <Target Name="EncoreEnforceReferenceClosure"
           BeforeTargets="CoreCompile"
           DependsOnTargets="ResolveReferences"

@@ -1,7 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The one-live-attempt index and the adapter that relies on it need real Postgres. The
-       reconciler's lease is a Postgres advisory lock, so no Redis. No in-memory provider. -->
+  <!-- Real Postgres, never the in-memory provider: the one-live-attempt index is the guard (013). -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>

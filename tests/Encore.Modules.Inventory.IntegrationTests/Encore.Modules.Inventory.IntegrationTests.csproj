@@ -1,7 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Adapter tests against real Postgres and Redis via Testcontainers. -->
-
   <PropertyGroup>
     <IsPackable>false</IsPackable>
   </PropertyGroup>

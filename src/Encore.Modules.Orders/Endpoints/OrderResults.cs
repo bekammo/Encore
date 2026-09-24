@@ -4,14 +4,8 @@ using Microsoft.AspNetCore.Http;
 
 namespace Encore.Modules.Orders.Endpoints;
 
-/// <summary>
-/// Maps service outcomes to HTTP responses. Refusals about the state of the world are 409;
-/// a missing order is 404; a request wrong on its own terms (such as more seats than the
-/// published cap) is 400. Every switch is exhaustive.
-/// </summary>
 internal static class OrderResults
 {
-    /// <summary>Maps the outcome of a checkout.</summary>
     public static IResult ForCheckout(CheckoutResult result, PathString path) =>
         result.Outcome switch
         {
@@ -27,6 +21,7 @@ internal static class OrderResults
                 "duplicate_seat",
                 "The same seat was asked for more than once. A seat can be bought exactly once."),
 
+            // 400, not 409 like hold_cap_reached: no state of the world makes this succeed (008).
             CheckoutOutcome.TooManySeats => Invalid(
                 path,
                 "too_many_seats",
@@ -34,10 +29,10 @@ internal static class OrderResults
                 + "at this event at once.",
                 limit: SeatReservationLimits.MaxHoldsPerClientPerEvent),
 
+            // 409, not 404: the route exists; the event named in the body does not (008).
             CheckoutOutcome.EventNotFound => Conflict(
                 path, "event_not_found", "No event with that id.", retriable: false),
 
-            // Becomes possible on its own once the sale opens.
             CheckoutOutcome.NotOnSale => Conflict(
                 path, "not_on_sale", "Tickets for this event are not on sale yet.", retriable: true),
 
@@ -46,7 +41,6 @@ internal static class OrderResults
             CheckoutOutcome.SeatsUnavailable => SeatsUnavailable(result.Refusals!, path)
         };
 
-    /// <summary>Maps the outcome of a confirm.</summary>
     public static IResult ForConfirm(OrderActionResult result, PathString path) =>
         result.Outcome switch
         {
@@ -54,7 +48,6 @@ internal static class OrderResults
             _ => ForFailedAction(result, path)
         };
 
-    /// <summary>Maps the outcome of a cancel.</summary>
     public static IResult ForCancel(OrderActionResult result, PathString path) =>
         result.Outcome switch
         {
@@ -62,10 +55,9 @@ internal static class OrderResults
             _ => ForFailedAction(result, path)
         };
 
-    /// <summary>Renders an order that was read rather than acted on.</summary>
     public static IResult ForRead(Order order) => TypedResults.Ok(OrderResponse.From(order));
 
-    /// <summary>The order is not there, or is not this client's. Deliberately the same answer.</summary>
+    /// <summary>Also the answer for another client's order, so ids cannot be probed.</summary>
     public static IResult NotFound(PathString path) =>
         TypedResults.Problem(
             detail: "No such order.",
@@ -74,9 +66,6 @@ internal static class OrderResults
             instance: path,
             extensions: new Dictionary<string, object?> { ["reason"] = "order_not_found" });
 
-    /// <summary>
-    /// A confirm ran; the ending is on the order.
-    /// </summary>
     private static IResult ForEnding(Order order, PathString path) =>
         order.Status switch
         {
@@ -85,7 +74,6 @@ internal static class OrderResults
             // 200: the customer has every seat; only the capture is outstanding.
             OrderStatus.AwaitingCapture => TypedResults.Ok(OrderResponse.From(order)),
 
-            // Not retriable: the holds are gone; a new checkout is a different request.
             OrderStatus.Expired => Conflict(
                 path,
                 "holds_expired",
@@ -98,12 +86,10 @@ internal static class OrderResults
                 "This order could not be completed and needs to be looked at.",
                 retriable: false),
 
-            // Confirm never leaves an order Pending or Cancelled; this would be a bug.
             OrderStatus.Pending or OrderStatus.Cancelled => throw new ArgumentOutOfRangeException(
-                nameof(order), order.Status, "A completed action left the order in a non-terminal status.")
+                nameof(order), order.Status, "A confirm never leaves an order Pending or Cancelled.")
         };
 
-    /// <summary>The shared refusals of confirm and cancel.</summary>
     private static IResult ForFailedAction(OrderActionResult result, PathString path) =>
         result.Outcome switch
         {
@@ -122,7 +108,6 @@ internal static class OrderResults
                 "Another request for this order got there first. Try again to see how it ended.",
                 retriable: true),
 
-            // Retriable with a different card: the order and its holds are untouched.
             OrderActionOutcome.PaymentDeclined => Conflict(
                 path,
                 "payment_declined",
@@ -140,10 +125,6 @@ internal static class OrderResults
                 nameof(result), result.Outcome, "Completed is not a failed action.")
         };
 
-    /// <summary>
-    /// One or more seats could not be held, so nothing was written. The top-level
-    /// <c>retriable</c> is true only if every per-seat refusal is.
-    /// </summary>
     private static IResult SeatsUnavailable(IReadOnlyList<HoldSeatResponse> refusals, PathString path)
     {
         var seats = refusals
@@ -169,9 +150,7 @@ internal static class OrderResults
             });
     }
 
-    /// <summary>
-    /// Inventory's status as a reason string, in Inventory's own vocabulary.
-    /// </summary>
+    // The reason strings Inventory's seat endpoints return, so a client reads one vocabulary.
     private static string ReasonFor(HoldSeatStatus status) =>
         status switch
         {
@@ -189,13 +168,11 @@ internal static class OrderResults
     private static bool IsRetriable(HoldSeatStatus status) =>
         status switch
         {
-            // Holds lapse, the cap frees up, and races are transient.
             HoldSeatStatus.AlreadyHeld => true,
             HoldSeatStatus.LostRace => true,
             HoldSeatStatus.HoldCapReached => true,
             HoldSeatStatus.ConcurrentRequestInFlight => true,
 
-            // Sold is terminal, and a seat that does not exist will not start to.
             HoldSeatStatus.AlreadySold => false,
             HoldSeatStatus.SeatNotFound => false,
 
@@ -203,10 +180,8 @@ internal static class OrderResults
                 nameof(status), status, "A held seat is not a refusal.")
         };
 
-    /// <summary>
-    /// Names the open checkout in <c>orderId</c>: nothing else lists a client's orders, so a
-    /// client whose 201 was lost could otherwise never confirm or cancel it.
-    /// </summary>
+    // Names the open checkout in orderId: nothing else lists a client's orders, so a client whose
+    // 201 was lost could not otherwise confirm or cancel it.
     private static IResult AlreadyOpen(Guid? openOrderId, PathString path) =>
         TypedResults.Problem(
             detail: "You already have an open checkout for this event. Confirm or cancel it first.",
@@ -232,9 +207,6 @@ internal static class OrderResults
                 ["retriable"] = retriable
             });
 
-    /// <summary>
-    /// The request is wrong on its own terms. Carries a <c>reason</c> like the 409s.
-    /// </summary>
     private static IResult Invalid(PathString path, string reason, string detail, int? limit = null)
     {
         var extensions = new Dictionary<string, object?> { ["reason"] = reason };

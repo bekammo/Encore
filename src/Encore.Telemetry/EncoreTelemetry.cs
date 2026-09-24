@@ -9,25 +9,20 @@ using OpenTelemetry.Trace;
 namespace Encore.Telemetry;
 
 /// <summary>
-/// Traces, metrics and logs over OTLP, for a host. Off unless an OTLP endpoint is configured,
-/// so a run that did not ask for telemetry measures a system without it.
+/// Off unless <c>OTEL_EXPORTER_OTLP_ENDPOINT</c> is set, so a run that did not ask for
+/// telemetry measures a system without it (021).
 /// </summary>
 public static class EncoreTelemetry
 {
-    /// <summary>The standard OTLP variable; its presence is the switch.</summary>
-    public const string EndpointKey = "OTEL_EXPORTER_OTLP_ENDPOINT";
+    private const string EndpointKey = "OTEL_EXPORTER_OTLP_ENDPOINT";
 
     private const string MetricExportIntervalKey = "OTEL_METRIC_EXPORT_INTERVAL";
 
-    /// <summary>
-    /// Every module's source and meter. A wildcard, so this project never names a module.
-    /// </summary>
+    // A wildcard, so this project never names a module (021).
     private const string EncoreInstruments = "Encore.*";
 
-    /// <summary>Npgsql emits its own source and meter; no instrumentation package needed.</summary>
+    // Npgsql and the runtime emit their own telemetry; no instrumentation package needed.
     private const string Npgsql = "Npgsql";
-
-    /// <summary>The runtime's built-in meter: GC, thread pool, exceptions.</summary>
     private const string Runtime = "System.Runtime";
 
     public static IHostApplicationBuilder AddEncoreTelemetry(
@@ -42,7 +37,6 @@ public static class EncoreTelemetry
         }
 
         // A flash sale lasts a minute; the SDK's 60 s default would give a dashboard one point.
-        // The standard variable still wins when set.
         if (builder.Configuration[MetricExportIntervalKey] is null)
         {
             builder.Services.Configure<MetricReaderOptions>(options =>
@@ -52,9 +46,7 @@ public static class EncoreTelemetry
         builder.AddOpenTelemetry()
             .ConfigureResource(resource => resource.AddService(serviceName))
             .WithTracing(tracing => tracing
-                // Parent-based: a span under a kept parent is kept; a root is judged alone.
                 .SetSampler(new ParentBasedSampler(new DropUnparentedClientSpans()))
-                // Probes would outnumber requests; they say nothing a trace can explain.
                 .AddAspNetCoreInstrumentation(options =>
                     options.Filter = context => !context.Request.Path.StartsWithSegments("/health"))
                 .AddHttpClientInstrumentation()

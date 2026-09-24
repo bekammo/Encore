@@ -4,13 +4,10 @@ using Encore.Telemetry;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// As in Encore.Api: off unless OTEL_EXPORTER_OTLP_ENDPOINT is set.
 builder.AddEncoreTelemetry("encore-payments");
 
-// Problem details for every response, as in Encore.Api.
 builder.Services.AddProblemDetails();
 
-// One module, composed through the same seam the monolith uses.
 builder.Services.AddPaymentsModule(builder.Configuration);
 
 var app = builder.Build();
@@ -18,10 +15,9 @@ var app = builder.Build();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 
-// Liveness only.
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
-// Readiness, as in Encore.Api. Copied because hosts may not reference each other.
+// A copy of Encore.Api's readiness endpoint: hosts may not reference each other.
 app.MapGet("/health/ready", async (
     IEnumerable<IReadinessCheck> checks,
     CancellationToken cancellationToken) =>
@@ -48,10 +44,7 @@ app.MapGet("/health/ready", async (
         : Results.Json(body, statusCode: StatusCodes.Status503ServiceUnavailable);
 });
 
-// The customer-facing read-only routes.
 app.MapPaymentsModule();
-
-// The service API Orders calls. Throws at startup if Payments:ServiceToken is unset.
 app.MapPaymentsServiceApi(builder.Configuration);
 
 app.Run();

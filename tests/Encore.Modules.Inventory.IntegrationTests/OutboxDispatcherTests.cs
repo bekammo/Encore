@@ -12,21 +12,14 @@ using Microsoft.Extensions.Options;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
-/// <summary>
-/// Delivery: at-least-once, in id order, one dispatcher per row, bounded retries. Uses a real
-/// DI container, since scope management and handler resolution are the dispatcher's job, and
-/// drives one tick at a time rather than waiting on the hosted service. A tick claims whatever
-/// is due, so the shared database is emptied before each test.
-/// </summary>
+/// <summary>A tick claims whatever is due, so the database is emptied before each test.</summary>
 public sealed class OutboxDispatcherTests(InventoryDatabase database)
     : IClassFixture<InventoryDatabase>, IAsyncLifetime
 {
     private readonly InventoryDatabase _database = database;
 
-    /// <summary>Empties the outbox the previous test left.</summary>
     public Task InitializeAsync() => _database.ResetAsync();
 
-    /// <inheritdoc />
     public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
@@ -76,11 +69,7 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         Assert.Single(handler.Delivered);
     }
 
-    /// <summary>
-    /// A tick claims by due time, then id, which is the order the unprocessed index keeps.
-    /// Rows due in the order they were written reach handlers in that order. It is a property
-    /// of the claim, not a promise to consumers (024).
-    /// </summary>
+    /// <summary>A property of the claim, not a promise to consumers (024).</summary>
     [Fact]
     public async Task Dispatch_ShouldClaimInDueOrder()
     {
@@ -102,7 +91,6 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
             handler.Delivered.Select(delivery => delivery.SeatId).ToArray());
     }
 
-    /// <summary>A throwing handler leaves the message undelivered, counted and scheduled for later.</summary>
     [Fact]
     public async Task Dispatch_WhenTheHandlerThrows_ShouldRecordTheFailureAndBackOff()
     {
@@ -120,11 +108,9 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         Assert.NotNull(stored.LastError);
         Assert.Contains("handler refused", stored.LastError, StringComparison.Ordinal);
 
-        // Backed off, so the next tick does not immediately retry it.
         Assert.True(stored.NextAttemptAt > stored.OccurredAt);
     }
 
-    /// <summary>A failing message does not block the ones behind it.</summary>
     [Fact]
     public async Task Dispatch_WhenOneMessageFails_ShouldStillDeliverTheRest()
     {
@@ -134,7 +120,7 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         await SeedSoldAsync(poison);
         await SeedSoldAsync(good);
 
-        var handler = new RecordingHandler { FailFor = poison };
+        var handler = new RecordingHandler { FailForSeat = poison };
         await using var host = Host(handler);
 
         Assert.Equal(2, await host.Dispatcher.DispatchBatchAsync(CancellationToken.None));
@@ -146,7 +132,6 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         Assert.NotNull(messages[1].ProcessedAt);
     }
 
-    /// <summary>A handler that overruns its deadline fails like any other, and the tick carries on.</summary>
     [Fact]
     public async Task Dispatch_WhenAHandlerOverrunsItsDeadline_ShouldFailThatMessageAndCarryOn()
     {
@@ -164,7 +149,6 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
 
         Assert.Equal(1, await host.Dispatcher.DispatchBatchAsync(CancellationToken.None));
 
-        // The tick took the deadline, not the stall.
         Assert.True(
             started.Elapsed < TimeSpan.FromSeconds(10),
             $"The tick waited {started.Elapsed} on a handler it had given 100ms.");
@@ -176,10 +160,6 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         Assert.Empty(handler.Delivered);
     }
 
-    /// <summary>
-    /// When the tick's budget runs out it commits what it delivered; the rest are untouched, not
-    /// counted as attempts.
-    /// </summary>
     [Fact]
     public async Task Dispatch_WhenTheBatchBudgetRunsOut_ShouldLeaveTheRestForTheNextTick()
     {
@@ -206,18 +186,12 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         Assert.Single(afterFirst, message => message.ProcessedAt is not null);
         Assert.Equal(2, afterFirst.Count(message => message.ProcessedAt is null && message.Attempts == 0));
 
-        // Untouched, so the next tick claims them normally.
         await using var patient = Host(new RecordingHandler());
 
         Assert.Equal(2, await patient.Dispatcher.DispatchBatchAsync(CancellationToken.None));
         Assert.All(await MessagesAsync(), message => Assert.NotNull(message.ProcessedAt));
     }
 
-    /// <summary>
-    /// Each message is delivered in its own scope. A shared one let a handler's failed insert,
-    /// still tracked by its scoped context, be written by the next message's save, and a
-    /// duplicate of that row then passed for the next message being handled.
-    /// </summary>
     [Fact]
     public async Task Dispatch_ShouldDeliverEachMessageInItsOwnScope()
     {
@@ -236,7 +210,6 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         Assert.Equal(2, seen.Distinct().Count());
     }
 
-    /// <summary>Past its attempt budget a message becomes a dead letter: kept, no longer claimed.</summary>
     [Fact]
     public async Task Dispatch_WhenAMessageExhaustsItsAttempts_ShouldStopClaimingIt()
     {
@@ -244,7 +217,6 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
 
         var handler = new RecordingHandler { Fail = true };
 
-        // Two attempts and no backoff, so the budget is reachable in a test.
         await using var host = Host(
             handler,
             options =>
@@ -257,7 +229,6 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         Assert.Equal(1, await host.Dispatcher.DispatchBatchAsync(CancellationToken.None));
         Assert.Equal(1, await host.Dispatcher.DispatchBatchAsync(CancellationToken.None));
 
-        // Budget spent: no longer claimable.
         Assert.Equal(0, await host.Dispatcher.DispatchBatchAsync(CancellationToken.None));
 
         var stored = Assert.Single(await MessagesAsync());
@@ -267,7 +238,6 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         Assert.Equal(2, handler.Delivered.Count + handler.Failures);
     }
 
-    /// <summary>Two dispatchers over one table deliver each message exactly once (SKIP LOCKED).</summary>
     [Fact]
     public async Task Dispatch_WhenTwoDispatchersRunTogether_ShouldDeliverEachMessageOnce()
     {
@@ -303,7 +273,6 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         gate.SetResult();
         var claimed = await Task.WhenAll(runs);
 
-        // Nothing delivered twice, and together they covered the batch.
         var seatIds = handler.Delivered.Select(delivery => delivery.SeatId).ToList();
 
         Assert.Equal(seatIds.Count, seatIds.Distinct().Count());
@@ -313,7 +282,6 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         Assert.Equal(seatIds.Count, processed);
     }
 
-    /// <summary>Writes one SeatSold outbox row directly; the drain is tested separately.</summary>
     private async Task<Guid> SeedSoldAsync(Guid seatId)
     {
         var occurredAt = DateTime.UtcNow;
@@ -345,7 +313,6 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
             .ToListAsync();
     }
 
-    /// <summary>The same handler instance for the dispatcher and the assertions.</summary>
     private DispatcherHost Host(
         IIntegrationEventHandler<SeatSoldV1> handler,
         Action<OutboxOptions>? configure = null) =>
@@ -385,7 +352,6 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         public ValueTask DisposeAsync() => provider.DisposeAsync();
     }
 
-    /// <summary>A scoped handler that records which instance served each message.</summary>
     private sealed class ScopedHandler(ConcurrentQueue<ScopedHandler> seen) : IIntegrationEventHandler<SeatSoldV1>
     {
         public Task HandleAsync(SeatSoldV1 integrationEvent, Guid messageId, CancellationToken cancellationToken)
@@ -395,19 +361,16 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         }
     }
 
-    /// <summary>A hand-written, thread-safe recording handler.</summary>
+    // Thread-safe: the two-dispatcher test shares one instance.
     private sealed class RecordingHandler : IIntegrationEventHandler<SeatSoldV1>
     {
         private readonly ConcurrentQueue<Delivery> _delivered = new();
         private int _failures;
 
-        /// <summary>Refuse everything.</summary>
         internal bool Fail { get; init; }
 
-        /// <summary>Refuse only the message about this seat.</summary>
-        internal Guid? FailFor { get; init; }
+        internal Guid? FailForSeat { get; init; }
 
-        /// <summary>How long to take before answering, simulating a blocked consumer.</summary>
         internal TimeSpan Stall { get; init; }
 
         internal IReadOnlyList<Delivery> Delivered => [.. _delivered];
@@ -425,7 +388,7 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
                 await Task.Delay(Stall, cancellationToken);
             }
 
-            if (Fail || FailFor == integrationEvent.SeatId)
+            if (Fail || FailForSeat == integrationEvent.SeatId)
             {
                 Interlocked.Increment(ref _failures);
 
@@ -435,7 +398,6 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
             _delivered.Enqueue(new Delivery(messageId, integrationEvent));
         }
 
-        /// <summary>The payload and the message id, which is the deduplication key.</summary>
         internal sealed record Delivery(Guid MessageId, SeatSoldV1 Event)
         {
             internal Guid SeatId => Event.SeatId;

@@ -6,21 +6,15 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Encore.Modules.Inventory.Adapters.Messaging;
 
 /// <summary>
-/// Maps a published event name to code that deserialises the payload and calls every
-/// registered handler. No reflection at dispatch time and no MediatR: each entry is a
-/// delegate closed over its type when registered.
+/// No reflection at dispatch time: each entry is a delegate closed over its type at
+/// registration, so the compiler checks that payload and handler agree (016). An unknown name
+/// throws rather than being skipped, so the message dead-letters visibly.
 /// </summary>
-/// <remarks>
-/// An unknown name throws rather than being skipped, so the message is retried and
-/// dead-lettered visibly instead of silently marked delivered.
-/// </remarks>
 internal sealed class OutboxEventCatalog
 {
     private readonly Dictionary<string, Func<IServiceProvider, OutboxMessage, CancellationToken, Task>> _dispatchers =
         new(StringComparer.Ordinal);
 
-    /// <summary>Registers the payload type published under <paramref name="eventType"/>.</summary>
-    /// <typeparam name="TEvent">The contract record from <c>Inventory.Contracts</c>.</typeparam>
     internal OutboxEventCatalog Register<TEvent>(string eventType)
     {
         _dispatchers[eventType] = static async (provider, message, cancellationToken) =>
@@ -35,7 +29,7 @@ internal sealed class OutboxEventCatalog
                     $"Outbox message {message.MessageId} ('{message.EventType}') deserialised to null.");
             }
 
-            // An event may have any number of consumers.
+            // Any number of consumers, including none: an event nobody handles is marked delivered (024).
             var handlers = provider.GetServices<IIntegrationEventHandler<TEvent>>();
 
             // Sequential: if one throws, the message is retried and every handler runs again.
@@ -49,8 +43,6 @@ internal sealed class OutboxEventCatalog
         return this;
     }
 
-    /// <summary>Delivers one message to its handlers.</summary>
-    /// <exception cref="NotSupportedException">Nothing is registered for the message's type.</exception>
     internal Task DispatchAsync(
         IServiceProvider provider,
         OutboxMessage message,

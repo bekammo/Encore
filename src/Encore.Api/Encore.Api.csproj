@@ -1,9 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
-  <!-- The host: composes the modules through their Add*/Map* seams and nothing else. -->
-
-  <!-- No packages of its own (ENCORE001). ASP.NET Core and EF Core arriving through the
-       Web SDK and the modules is what a host is for. -->
   <PropertyGroup>
     <EncoreNoDirectPackages>true</EncoreNoDirectPackages>
   </PropertyGroup>

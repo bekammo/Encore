@@ -1,14 +1,7 @@
 namespace Encore.Modules.Inventory.Application;
 
-/// <summary>
-/// The one precondition every seat batch shares.
-/// </summary>
 internal static class SeatBatch
 {
-    /// <summary>
-    /// Refuses an empty batch or one naming a seat twice.
-    /// </summary>
-    /// <remarks>A caller bug, so it throws; a repeated seat would count twice against the cap.</remarks>
     public static void EnsureValid(IReadOnlyList<Guid> seatIds)
     {
         ArgumentNullException.ThrowIfNull(seatIds);
