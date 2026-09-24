@@ -4,10 +4,6 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Catalog.IntegrationTests;
 
-/// <summary>
-/// Catalog's mapping against real Postgres: money keeps its precision and timestamps come back
-/// as the same UTC instant.
-/// </summary>
 public sealed class CatalogSchemaTests(CatalogDatabase database) : IClassFixture<CatalogDatabase>
 {
     private readonly DbContextOptions<CatalogDbContext> _options = database.Options;
@@ -20,7 +16,6 @@ public sealed class CatalogSchemaTests(CatalogDatabase database) : IClassFixture
         Assert.Empty(await context.Database.GetPendingMigrationsAsync());
     }
 
-    /// <summary>A four-decimal price survives the round trip exactly.</summary>
     [Fact]
     public async Task Price_ShouldRoundTripWithoutLosingPrecision()
     {
@@ -33,13 +28,12 @@ public sealed class CatalogSchemaTests(CatalogDatabase database) : IClassFixture
         }
 
         await using var read = new CatalogDbContext(_options);
-        var stored = await read.Events.SingleAsync(e => e.Id == eventId);
+        var stored = await read.Events.SingleAsync(show => show.Id == eventId);
 
         Assert.Equal(123.4567m, stored.Price);
         Assert.Equal("GBP", stored.Currency);
     }
 
-    /// <summary>Timestamps come back as the same instant, still UTC.</summary>
     [Fact]
     public async Task Timestamps_ShouldRoundTripAsUtc()
     {
@@ -49,16 +43,16 @@ public sealed class CatalogSchemaTests(CatalogDatabase database) : IClassFixture
 
         await using (var write = new CatalogDbContext(_options))
         {
-            var @event = NewEvent(eventId, price: 50m);
-            @event.StartsAt = startsAt;
-            @event.OnSaleAt = onSaleAt;
+            var show = NewEvent(eventId, price: 50m);
+            show.StartsAt = startsAt;
+            show.OnSaleAt = onSaleAt;
 
-            write.Events.Add(@event);
+            write.Events.Add(show);
             await write.SaveChangesAsync();
         }
 
         await using var read = new CatalogDbContext(_options);
-        var stored = await read.Events.SingleAsync(e => e.Id == eventId);
+        var stored = await read.Events.SingleAsync(show => show.Id == eventId);
 
         Assert.Equal(startsAt, stored.StartsAt);
         Assert.Equal(DateTimeKind.Utc, stored.StartsAt.Kind);
@@ -66,7 +60,6 @@ public sealed class CatalogSchemaTests(CatalogDatabase database) : IClassFixture
         Assert.Equal(DateTimeKind.Utc, stored.OnSaleAt!.Value.Kind);
     }
 
-    /// <summary>A null on-sale time stays null.</summary>
     [Fact]
     public async Task OnSaleAt_ShouldBeNullable()
     {
@@ -74,16 +67,16 @@ public sealed class CatalogSchemaTests(CatalogDatabase database) : IClassFixture
 
         await using (var write = new CatalogDbContext(_options))
         {
-            var @event = NewEvent(eventId, price: 50m);
-            @event.OnSaleAt = null;
+            var show = NewEvent(eventId, price: 50m);
+            show.OnSaleAt = null;
 
-            write.Events.Add(@event);
+            write.Events.Add(show);
             await write.SaveChangesAsync();
         }
 
         await using var read = new CatalogDbContext(_options);
 
-        Assert.Null((await read.Events.SingleAsync(e => e.Id == eventId)).OnSaleAt);
+        Assert.Null((await read.Events.SingleAsync(show => show.Id == eventId)).OnSaleAt);
     }
 
     [Fact]
@@ -105,7 +98,7 @@ public sealed class CatalogSchemaTests(CatalogDatabase database) : IClassFixture
         }
 
         await using var read = new CatalogDbContext(_options);
-        var stored = await read.Venues.SingleAsync(v => v.Id == venueId);
+        var stored = await read.Venues.SingleAsync(venue => venue.Id == venueId);
 
         Assert.Equal("Royal Albert Hall", stored.Name);
         Assert.Equal(5272, stored.Capacity);

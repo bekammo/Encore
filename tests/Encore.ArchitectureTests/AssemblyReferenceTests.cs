@@ -2,11 +2,8 @@ using System.Reflection;
 
 namespace Encore.ArchitectureTests;
 
-/// <summary>
-/// What the compiled assemblies actually reference, read from their metadata. This half sees
-/// transitive reach; <see cref="ProjectGraphTests"/> sees declared references.
-/// </summary>
-public class AssemblyReferenceTests
+/// <summary>Reads compiled metadata, which sees transitive reach a csproj does not declare (002).</summary>
+public sealed class AssemblyReferenceTests
 {
     /// <summary>A typo in a name reads as one clear "not found" rather than many failures.</summary>
     [Fact]
@@ -22,10 +19,7 @@ public class AssemblyReferenceTests
             $"Expected compiled output for every project under src/, but could not find: {string.Join("; ", missing)}");
     }
 
-    /// <summary>
-    /// The Domain references nothing outside the BCL and <c>Encore.Shared</c>, checked on the
-    /// compiled output after the build rules.
-    /// </summary>
+    /// <summary>A backstop to the ENCORE00x build rules (002).</summary>
     [Fact]
     public void InventoryDomain_ShouldReferenceNothingButEncoreSharedAndTheBcl()
     {
@@ -39,9 +33,7 @@ public class AssemblyReferenceTests
             $"Encore.Modules.Inventory.Domain may reference Encore.Shared and the BCL only. Found: {string.Join(", ", foreign)}");
     }
 
-    /// <summary>
-    /// Redundant with the test above, kept for a failure message that names the rule.
-    /// </summary>
+    /// <summary>Redundant with the test above, kept for a failure message that names the rule.</summary>
     [Fact]
     public void InventoryDomain_ShouldReferenceNoInfrastructureAssembly()
     {
@@ -58,11 +50,8 @@ public class AssemblyReferenceTests
             $"The domain must reference zero infrastructure — EF Core, Npgsql, Redis and ASP.NET Core live on the far side of the ports. Found: {string.Join(", ", leaked)}");
     }
 
-    /// <summary>The contracts assemblies reference nothing outside the BCL.</summary>
     [Theory]
-    [InlineData("Encore.Modules.Catalog.Contracts")]
-    [InlineData("Encore.Modules.Inventory.Contracts")]
-    [InlineData("Encore.Modules.Payments.Contracts")]
+    [MemberData(nameof(TheoryRows.ContractsAssemblies), MemberType = typeof(TheoryRows))]
     public void ContractsAssembly_ShouldReferenceNothingButTheBcl(string assembly)
     {
         var foreign = EncoreTree
@@ -75,17 +64,11 @@ public class AssemblyReferenceTests
             $"{assembly} is a public face: a consumer takes a dependency on it and nothing else, so it may reference only the BCL. Found: {string.Join(", ", foreign)}");
     }
 
-    /// <summary>A module may reach another module only through its contracts assembly.</summary>
     [Theory]
     [MemberData(nameof(TheoryRows.ComposedModuleAssemblies), MemberType = typeof(TheoryRows))]
     public void Module_ShouldReachOtherModulesOnlyThroughContracts(string module)
     {
-        // Inventory is allowed its own domain assembly; every other module
-        // implementation, and everyone else's domain, is off limits.
-        var forbidden = EncoreTree
-            .OtherModules(module)
-            .Where(other => !(module == "Encore.Modules.Inventory" && other == "Encore.Modules.Inventory.Domain"))
-            .ToHashSet(StringComparer.Ordinal);
+        var forbidden = EncoreTree.OtherModules(module).ToHashSet(StringComparer.Ordinal);
 
         var reached = EncoreTree
             .ReferencedNames(module)
@@ -97,10 +80,6 @@ public class AssemblyReferenceTests
             $"{module} may name another module only through its .Contracts assembly. Found: {string.Join(", ", reached)}");
     }
 
-    /// <summary>
-    /// The hosts compose the modules; nothing composes a host. Every host, checked from every
-    /// assembly that is not one.
-    /// </summary>
     [Theory]
     [MemberData(nameof(TheoryRows.NonHosts), MemberType = typeof(TheoryRows))]
     public void NothingShouldReferenceAHost(string assembly)
@@ -115,7 +94,6 @@ public class AssemblyReferenceTests
             $"{assembly} references a host; a host composes modules and nothing may depend on one. Found: {string.Join(", ", named)}");
     }
 
-    /// <summary>A host owns no business logic and talks to no database directly.</summary>
     [Theory]
     [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]
     public void Host_ShouldNameNoPersistenceOrCacheAssembly(string host)
@@ -132,18 +110,11 @@ public class AssemblyReferenceTests
             $"{host} composes modules and runs the web server; persistence and caching belong behind a module's seam. Found: {string.Join(", ", leaked)}");
     }
 
-    /// <summary>
-    /// The host list matches the projects that use the Web SDK, so a new host cannot silently
-    /// escape the rules above.
-    /// </summary>
     [Fact]
     public void TheHostListShouldMatchTheProjectsUsingTheWebSdk()
     {
         var webProjects = EncoreTree.SourceProjects()
-            .Where(project => string.Equals(
-                (string?)project.Value.Root?.Attribute("Sdk"),
-                "Microsoft.NET.Sdk.Web",
-                StringComparison.Ordinal))
+            .Where(project => (string?)project.Value.Root?.Attribute("Sdk") == "Microsoft.NET.Sdk.Web")
             .Select(project => project.Key)
             .Order(StringComparer.Ordinal)
             .ToList();
@@ -151,7 +122,6 @@ public class AssemblyReferenceTests
         Assert.Equal(EncoreTree.Hosts.Order(StringComparer.Ordinal), webProjects);
     }
 
-    /// <summary>The shared persistence project may not name a module or a contracts assembly.</summary>
     [Fact]
     public void SharedPersistence_ShouldNameNoModuleOrContractsAssembly()
     {
@@ -170,8 +140,8 @@ public class AssemblyReferenceTests
     }
 
     /// <summary>
-    /// The telemetry project may not name a module, a contracts assembly or the shared persistence
-    /// project. Module instruments are subscribed by wildcard.
+    /// Instruments are subscribed by wildcard, so the telemetry project needs no module, nor
+    /// <c>Encore.Shared</c> (021).
     /// </summary>
     [Fact]
     public void Telemetry_ShouldNameNoModuleContractsOrPersistenceAssembly()
@@ -192,13 +162,9 @@ public class AssemblyReferenceTests
             $"{EncoreTree.Telemetry} knows what an exporter is and may not know that a module exists. Found: {string.Join(", ", named)}");
     }
 
-    /// <summary>
-    /// Nothing but a host emits a reference to the telemetry project or to OpenTelemetry: no
-    /// module, contracts assembly, the Domain, <c>Encore.Shared</c> or the shared persistence project.
-    /// </summary>
     [Theory]
     [MemberData(nameof(TheoryRows.Composed), MemberType = typeof(TheoryRows))]
-    public void Module_ShouldNameNoTelemetryAssembly(string assembly)
+    public void ComposedAssembly_ShouldNameNoTelemetryAssembly(string assembly)
     {
         var leaked = EncoreTree
             .ReferencedNames(assembly)
@@ -210,36 +176,33 @@ public class AssemblyReferenceTests
             $"{assembly} emits through System.Diagnostics; exporters belong to the host. Found: {string.Join(", ", leaked)}");
     }
 
-    /// <summary>No host names the shared persistence project: each module registers its own migrator.</summary>
+    /// <summary>Each module registers its own migrator (017).</summary>
     [Theory]
     [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]
     public void Host_ShouldNotNameTheSharedPersistenceAssembly(string host) =>
         Assert.DoesNotContain(EncoreTree.SharedPersistence, EncoreTree.ReferencedNames(host));
 
-    /// <summary>Every type in the Domain assembly lives in the Domain namespace.</summary>
     [Fact]
     public void InventoryDomain_ShouldDeclareEveryTypeInItsOwnNamespace()
     {
         var assembly = EncoreTree.Load("Encore.Modules.Inventory.Domain");
 
-        Type?[] types;
+        Type[] types;
 
         try
         {
             types = assembly.GetTypes();
         }
-        catch (ReflectionTypeLoadException exception)
+        catch (ReflectionTypeLoadException ex)
         {
-            // Report a load problem as such, then carry on.
             Assert.Fail(
                 "Could not load every type in the domain assembly: "
-                + string.Join(" | ", exception.LoaderExceptions.Select(e => e?.Message)));
+                + string.Join(" | ", ex.LoaderExceptions.Select(loaderException => loaderException?.Message)));
             return;
         }
 
         var strays = types
-            .Where(type => type is not null)
-            .Select(type => type!.Namespace)
+            .Select(type => type.Namespace)
             .Where(ns => ns is not null && !ns.StartsWith("Encore.Modules.Inventory.Domain", StringComparison.Ordinal))
             .Distinct(StringComparer.Ordinal)
             .ToList();

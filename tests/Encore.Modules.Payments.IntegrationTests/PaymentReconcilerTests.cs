@@ -11,15 +11,13 @@ using Microsoft.Extensions.Time.Testing;
 namespace Encore.Modules.Payments.IntegrationTests;
 
 /// <summary>
-/// The reconciler: what it settles timed-out attempts to, what it leaves alone, and how it
-/// frees the order to be paid for again. Timed-out rows are produced by the real adapter and
-/// gateway, with the gateway's options changed between the authorisation and the lookup. One
-/// sweep is driven directly per test. A sweep visits every unresolved attempt, so the shared
-/// database is emptied before each test.
+/// Rows come from the real adapter and gateway, with the gateway's options changed between the
+/// authorisation and the lookup. A sweep visits every unresolved attempt, so the database is
+/// emptied before each test.
 /// </summary>
 /// <remarks>
-/// Not covered: a lookup that finds funds held and then fails to release them. Forcing it would
-/// need a simulator knob that exists only for this test.
+/// Not covered: a lookup that finds funds held, then a failed release. Forcing it would need a
+/// simulator knob that exists only for this test.
 /// </remarks>
 public sealed class PaymentReconcilerTests(PaymentsDatabase database)
     : IClassFixture<PaymentsDatabase>, IAsyncLifetime
@@ -29,26 +27,19 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
 
     private static readonly DateTime T0 = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
 
-    /// <summary>Comfortably past <see cref="PaymentReconciliationOptions.MinimumAge"/>.</summary>
+    // Comfortably past PaymentReconciliationOptions.MinimumAge.
     private static readonly DateTime Afterwards = T0.AddMinutes(10);
 
     private readonly PaymentsDatabase _database = database;
 
     private readonly DbContextOptions<PaymentsDbContext> _options = database.Options;
 
-    /// <summary>How the gateway reaches its ledger table.</summary>
     private readonly IServiceScopeFactory _scopes = database.Scopes;
 
-    /// <summary>Empties the attempts and the ledger the previous test left.</summary>
     public Task InitializeAsync() => _database.ResetAsync();
 
-    /// <inheritdoc />
     public Task DisposeAsync() => Task.CompletedTask;
 
-    /// <summary>
-    /// The authorisation landed but its answer was lost: funds are held, so the reconciler
-    /// releases them.
-    /// </summary>
     [Fact]
     public async Task Reconcile_WhenTheAuthorisationLanded_ShouldReleaseTheFunds()
     {
@@ -58,9 +49,9 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         await AuthorizeAsync(gateway, orderId, clientId);
 
         gateway.Options.TimeoutRate = 0;
-        await using var host = Host(gateway);
+        var reconciler = Reconciler(gateway);
 
-        Assert.Equal(1, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(1, await reconciler.ReconcileBatchAsync(CancellationToken.None));
 
         var payment = await ReadAsync(orderId);
         Assert.Equal(PaymentStatus.Voided, payment.Status);
@@ -69,7 +60,6 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         Assert.False(payment.IsLive);
     }
 
-    /// <summary>The request never arrived: nothing held, the attempt is Abandoned.</summary>
     [Fact]
     public async Task Reconcile_WhenTheRequestNeverArrived_ShouldAbandonTheAttempt()
     {
@@ -79,9 +69,9 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         await AuthorizeAsync(gateway, orderId, clientId);
 
         gateway.Options.TimeoutRate = 0;
-        await using var host = Host(gateway);
+        var reconciler = Reconciler(gateway);
 
-        Assert.Equal(1, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(1, await reconciler.ReconcileBatchAsync(CancellationToken.None));
 
         var payment = await ReadAsync(orderId);
         Assert.Equal(PaymentStatus.Abandoned, payment.Status);
@@ -89,7 +79,6 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         Assert.False(payment.IsLive);
     }
 
-    /// <summary>A refusal whose answer was lost is settled as Declined.</summary>
     [Fact]
     public async Task Reconcile_WhenTheGatewayHadAlreadyRefused_ShouldRecordTheDecline()
     {
@@ -99,16 +88,16 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         await AuthorizeAsync(gateway, orderId, clientId);
 
         gateway.Options.TimeoutRate = 0;
-        await using var host = Host(gateway);
+        var reconciler = Reconciler(gateway);
 
-        Assert.Equal(1, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(1, await reconciler.ReconcileBatchAsync(CancellationToken.None));
 
         var payment = await ReadAsync(orderId);
         Assert.Equal(PaymentStatus.Declined, payment.Status);
         Assert.False(payment.IsLive);
     }
 
-    /// <summary>A lookup with no answer writes nothing.</summary>
+    /// <summary>Unknown is not NotFound: nothing is written and the attempt stays live (014).</summary>
     [Fact]
     public async Task Reconcile_WhenTheLookupGetsNoAnswer_ShouldLeaveTheAttemptUnresolved()
     {
@@ -118,16 +107,15 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         await AuthorizeAsync(gateway, orderId, clientId);
 
         // TimeoutRate stays at 1, so the lookup hangs up too.
-        await using var host = Host(gateway);
+        var reconciler = Reconciler(gateway);
 
-        Assert.Equal(0, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(0, await reconciler.ReconcileBatchAsync(CancellationToken.None));
 
         var payment = await ReadAsync(orderId);
         Assert.Equal(PaymentStatus.TimedOut, payment.Status);
         Assert.True(payment.IsLive);
     }
 
-    /// <summary>An attempt younger than MinimumAge is left for the confirm that may still retry it.</summary>
     [Fact]
     public async Task Reconcile_WhenTheAttemptIsTooYoung_ShouldLeaveItAlone()
     {
@@ -137,14 +125,13 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         await AuthorizeAsync(gateway, orderId, clientId);
 
         gateway.Options.TimeoutRate = 0;
-        await using var host = Host(gateway, at: T0.AddMinutes(1));
+        var reconciler = Reconciler(gateway, at: T0.AddMinutes(1));
 
-        Assert.Equal(0, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(0, await reconciler.ReconcileBatchAsync(CancellationToken.None));
 
         Assert.Equal(PaymentStatus.TimedOut, (await ReadAsync(orderId)).Status);
     }
 
-    /// <summary>An authorisation that was answered is not the reconciler's business.</summary>
     [Fact]
     public async Task Reconcile_ShouldNotTouchAnAttemptThatGotAnAnswer()
     {
@@ -155,13 +142,12 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         await AuthorizeAsync(gateway, orderId, clientId);
         Assert.Equal(PaymentStatus.Authorized, (await ReadAsync(orderId)).Status);
 
-        await using var host = Host(gateway);
+        var reconciler = Reconciler(gateway);
 
-        Assert.Equal(0, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(0, await reconciler.ReconcileBatchAsync(CancellationToken.None));
         Assert.Equal(PaymentStatus.Authorized, (await ReadAsync(orderId)).Status);
     }
 
-    /// <summary>Settling a timed-out attempt frees the order's live slot for a new attempt.</summary>
     [Fact]
     public async Task Reconcile_ShouldLetTheOrderBePaidForAgain()
     {
@@ -171,8 +157,8 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         await AuthorizeAsync(gateway, orderId, clientId);
 
         gateway.Options.TimeoutRate = 0;
-        await using var host = Host(gateway);
-        await host.Reconciler.ReconcileBatchAsync(CancellationToken.None);
+        var reconciler = Reconciler(gateway);
+        await reconciler.ReconcileBatchAsync(CancellationToken.None);
 
         var second = await AuthorizeAsync(gateway, orderId, clientId);
 
@@ -189,7 +175,6 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         Assert.Equal(PaymentStatus.Authorized, live.Status);
     }
 
-    /// <summary>A settled attempt is not asked about again.</summary>
     [Fact]
     public async Task Reconcile_ShouldNotRevisitAnAttemptItHasSettled()
     {
@@ -199,21 +184,20 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         await AuthorizeAsync(gateway, orderId, clientId);
 
         gateway.Options.TimeoutRate = 0;
-        await using var host = Host(gateway);
+        var reconciler = Reconciler(gateway);
 
-        Assert.Equal(1, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
-        Assert.Equal(0, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(1, await reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(0, await reconciler.ReconcileBatchAsync(CancellationToken.None));
     }
 
     [Fact]
     public async Task Reconcile_WhenThereIsNothingToDo_ShouldSettleNothing()
     {
-        await using var host = Host(Gateway());
+        var reconciler = Reconciler(Gateway());
 
-        Assert.Equal(0, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(0, await reconciler.ReconcileBatchAsync(CancellationToken.None));
     }
 
-    /// <summary>The batch caps gateway calls per sweep; the oldest attempts go first.</summary>
     [Fact]
     public async Task Reconcile_ShouldSettleNoMoreThanOneBatch()
     {
@@ -226,17 +210,13 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         }
 
         gateway.Options.TimeoutRate = 0;
-        await using var host = Host(gateway, configure: options => options.BatchSize = 2);
+        var reconciler = Reconciler(gateway, configure: options => options.BatchSize = 2);
 
-        Assert.Equal(2, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
-        Assert.Equal(1, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
-        Assert.Equal(0, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(2, await reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(1, await reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(0, await reconciler.ReconcileBatchAsync(CancellationToken.None));
     }
 
-    /// <summary>
-    /// While another connection holds the advisory lock, a sweep does nothing; once it is
-    /// released, the next sweep does the work.
-    /// </summary>
     [Fact]
     public async Task Reconcile_WhenAnotherInstanceHoldsTheLease_ShouldSettleNothing()
     {
@@ -246,7 +226,7 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         await AuthorizeAsync(gateway, orderId, clientId);
 
         gateway.Options.TimeoutRate = 0;
-        await using var host = Host(gateway);
+        var reconciler = Reconciler(gateway);
 
         await using (var holderContext = new PaymentsDbContext(_options))
         await using (var holderTransaction = await holderContext.Database.BeginTransactionAsync())
@@ -255,7 +235,7 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
                 .SqlQuery<bool>($"SELECT pg_try_advisory_xact_lock({PaymentReconciler.LeaseKey}) AS \"Value\"")
                 .SingleAsync();
 
-            Assert.Equal(0, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+            Assert.Equal(0, await reconciler.ReconcileBatchAsync(CancellationToken.None));
 
             var stillTimedOut = await ReadAsync(orderId);
             Assert.Equal(PaymentStatus.TimedOut, stillTimedOut.Status);
@@ -263,14 +243,13 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         }
 
         // The holder's transaction ended, releasing the lease.
-        Assert.Equal(1, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(1, await reconciler.ReconcileBatchAsync(CancellationToken.None));
         Assert.Equal(PaymentStatus.Abandoned, (await ReadAsync(orderId)).Status);
     }
 
     /// <summary>
-    /// A confirm that retries the attempt while the sweep is between its lookup and its void
-    /// waits for the row, then loses. It never revives an authorisation the sweep is
-    /// releasing, and the next confirm pays under a fresh key.
+    /// A confirm retrying between the sweep's lookup and its void waits for the row, then loses:
+    /// it never revives an authorisation being released. The next confirm pays under a fresh key.
     /// </summary>
     [Fact]
     public async Task Reconcile_WhenAConfirmRetriesMidSweep_ShouldHoldItOffUntilTheFundsAreReleased()
@@ -283,9 +262,9 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         // Slow enough that the retry below lands inside the sweep's lookup.
         gateway.Options.TimeoutRate = 0;
         gateway.Options.MinLatency = gateway.Options.MaxLatency = TimeSpan.FromSeconds(1);
-        await using var host = Host(gateway);
+        var reconciler = Reconciler(gateway);
 
-        var sweep = host.Reconciler.ReconcileBatchAsync(CancellationToken.None);
+        var sweep = reconciler.ReconcileBatchAsync(CancellationToken.None);
         await Task.Delay(TimeSpan.FromMilliseconds(300));
 
         var retried = await AuthorizeAsync(gateway, orderId, clientId);
@@ -301,10 +280,6 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         Assert.Equal(2, (await ReadAllAsync(orderId)).Select(attempt => attempt.IdempotencyKey).Distinct().Count());
     }
 
-    /// <summary>
-    /// A crash between the gateway call and its save leaves the attempt pending. If the
-    /// gateway did decide it, the funds are found and released like any timed-out attempt.
-    /// </summary>
     [Fact]
     public async Task Reconcile_WhenACrashLeftAnAttemptPending_ShouldReleaseWhatTheGatewayHeld()
     {
@@ -314,9 +289,9 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         await CrashedAttemptAsync(gateway, orderId, clientId, landed: true);
 
         gateway.Options.TimeoutRate = 0;
-        await using var host = Host(gateway);
+        var reconciler = Reconciler(gateway);
 
-        Assert.Equal(1, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(1, await reconciler.ReconcileBatchAsync(CancellationToken.None));
 
         var payment = await ReadAsync(orderId);
         Assert.Equal(PaymentStatus.Voided, payment.Status);
@@ -324,7 +299,6 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         Assert.False(payment.IsLive);
     }
 
-    /// <summary>A crashed attempt the gateway never saw frees the order's live slot.</summary>
     [Fact]
     public async Task Reconcile_WhenACrashLeftAnAttemptPendingThatNeverArrived_ShouldAbandonIt()
     {
@@ -334,16 +308,12 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         await CrashedAttemptAsync(gateway, orderId, clientId, landed: false);
 
         gateway.Options.TimeoutRate = 0;
-        await using var host = Host(gateway);
+        var reconciler = Reconciler(gateway);
 
-        Assert.Equal(1, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(1, await reconciler.ReconcileBatchAsync(CancellationToken.None));
         Assert.Equal(PaymentStatus.Abandoned, (await ReadAsync(orderId)).Status);
     }
 
-    /// <summary>
-    /// A crashed attempt whose lookup gets no answer is still claimed as timed out, so it is
-    /// counted and asked about again.
-    /// </summary>
     [Fact]
     public async Task Reconcile_WhenACrashedAttemptsLookupGetsNoAnswer_ShouldRecordItAsTimedOut()
     {
@@ -352,16 +322,15 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
 
         await CrashedAttemptAsync(gateway, orderId, clientId, landed: false);
 
-        await using var host = Host(gateway);
+        var reconciler = Reconciler(gateway);
 
-        Assert.Equal(0, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(0, await reconciler.ReconcileBatchAsync(CancellationToken.None));
 
         var payment = await ReadAsync(orderId);
         Assert.Equal(PaymentStatus.TimedOut, payment.Status);
         Assert.Equal(Afterwards, payment.ResolvedAt);
     }
 
-    /// <summary>A pending attempt younger than MinimumAge may still be in flight, so it is left alone.</summary>
     [Fact]
     public async Task Reconcile_WhenAPendingAttemptIsRecent_ShouldLeaveItToItsConfirm()
     {
@@ -371,20 +340,17 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         await CrashedAttemptAsync(gateway, orderId, clientId, landed: false);
 
         gateway.Options.TimeoutRate = 0;
-        await using var host = Host(gateway, at: T0.AddMinutes(1));
+        var reconciler = Reconciler(gateway, at: T0.AddMinutes(1));
 
-        Assert.Equal(0, await host.Reconciler.ReconcileBatchAsync(CancellationToken.None));
+        Assert.Equal(0, await reconciler.ReconcileBatchAsync(CancellationToken.None));
         Assert.Equal(PaymentStatus.Pending, (await ReadAsync(orderId)).Status);
     }
 
-    // -- Scaffolding ------------------------------------------------------
+    // -- Helpers ----------------------------------------------------------
 
     private static (Guid OrderId, Guid ClientId) NewOrder() => (Guid.NewGuid(), Guid.NewGuid());
 
-    /// <summary>
-    /// An attempt as a crash leaves it: recorded pending at <see cref="T0"/> and never answered.
-    /// When <paramref name="landed"/>, the gateway did receive it and decided.
-    /// </summary>
+    // As a crash leaves it: recorded Pending, never answered. Landed: the gateway did decide it.
     private async Task CrashedAttemptAsync(TestGateway gateway, Guid orderId, Guid clientId, bool landed)
     {
         var paymentId = Guid.NewGuid();
@@ -402,7 +368,6 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         }
     }
 
-    /// <summary>A gateway that hangs up on every call, with its options so a test can change that.</summary>
     private TestGateway Gateway(double declineRate = 0, double lostRequestRate = 0.5)
     {
         var options = new PaymentSimulationOptions
@@ -419,7 +384,6 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
             options);
     }
 
-    /// <summary>Drives the real adapter, so the row is produced the way rows are.</summary>
     private async Task<AuthorizePaymentResponse> AuthorizeAsync(
         TestGateway gateway,
         Guid orderId,
@@ -433,7 +397,7 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
             new AuthorizePaymentRequest(orderId, clientId, Amount, Currency));
     }
 
-    private ReconcilerHost Host(
+    private PaymentReconciler Reconciler(
         TestGateway gateway,
         DateTime? at = null,
         Action<PaymentReconciliationOptions>? configure = null)
@@ -441,23 +405,14 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         var options = new PaymentReconciliationOptions();
         configure?.Invoke(options);
 
-        var services = new ServiceCollection();
-
-        services.AddDbContext<PaymentsDbContext>(builder => builder.UsePaymentsNpgsql(_database.ConnectionString));
-
-        var provider = services.BuildServiceProvider();
-
-        var reconciler = new PaymentReconciler(
-            provider.GetRequiredService<IServiceScopeFactory>(),
+        return new PaymentReconciler(
+            _scopes,
             gateway.Gateway,
             Options.Create(options),
             new FakeTimeProvider(at ?? Afterwards),
             NullLogger<PaymentReconciler>.Instance);
-
-        return new ReconcilerHost(provider, reconciler);
     }
 
-    /// <summary>The one attempt against this order.</summary>
     private async Task<Payment> ReadAsync(Guid orderId)
     {
         await using var context = new PaymentsDbContext(_options);
@@ -467,10 +422,7 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
             .SingleAsync(payment => payment.OrderId == orderId);
     }
 
-    /// <summary>
-    /// Every attempt against this order, unordered: both rows share an AttemptedAt, so tests
-    /// assert on the set.
-    /// </summary>
+    // Unordered: both rows share an AttemptedAt, so tests assert on the set.
     private async Task<IReadOnlyList<Payment>> ReadAllAsync(Guid orderId)
     {
         await using var context = new PaymentsDbContext(_options);
@@ -482,12 +434,4 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
     }
 
     private sealed record TestGateway(SimulatedPaymentGateway Gateway, PaymentSimulationOptions Options);
-
-    private sealed class ReconcilerHost(ServiceProvider provider, PaymentReconciler reconciler)
-        : IAsyncDisposable
-    {
-        internal PaymentReconciler Reconciler { get; } = reconciler;
-
-        public ValueTask DisposeAsync() => provider.DisposeAsync();
-    }
 }

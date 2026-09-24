@@ -5,20 +5,15 @@ using Npgsql;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// The advisory lock keeps the port's contract: try without waiting, one holder, released only
-/// by its token, and a holder's session ending frees it.
+/// Most tests leave "client:1" held by a session nothing closes, so each test first ends every
+/// session holding an advisory lock and takes a data source of its own.
 /// </summary>
-/// <remarks>
-/// The container is shared by the class. Most tests leave "client:1" held by a session nothing
-/// will close, so each test first ends every session holding an advisory lock and then takes a
-/// data source of its own.
-/// </remarks>
 public sealed class PostgresAdvisoryLockTests(InventoryDatabase database)
     : IClassFixture<InventoryDatabase>, IAsyncLifetime
 {
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5);
 
-    /// <summary>Waits up to five seconds for each backend to exit, so its locks are gone on return.</summary>
+    // The 5000 waits up to 5s for each backend to exit, so its locks are gone on return.
     private const string EndLockHoldersSql = """
         SELECT pg_terminate_backend(pid, 5000)
         FROM (SELECT DISTINCT pid FROM pg_locks WHERE locktype = 'advisory') AS holders
@@ -28,7 +23,6 @@ public sealed class PostgresAdvisoryLockTests(InventoryDatabase database)
 
     private NpgsqlDataSource _dataSource = null!;
 
-    /// <summary>Ends the sessions earlier tests left holding locks, then opens this test's data source.</summary>
     public async Task InitializeAsync()
     {
         _dataSource = NpgsqlDataSource.Create(_database.ConnectionString);
@@ -39,7 +33,6 @@ public sealed class PostgresAdvisoryLockTests(InventoryDatabase database)
         await endHolders.ExecuteNonQueryAsync();
     }
 
-    /// <inheritdoc />
     public async Task DisposeAsync() => await _dataSource.DisposeAsync();
 
     [Fact]
@@ -87,7 +80,6 @@ public sealed class PostgresAdvisoryLockTests(InventoryDatabase database)
         Assert.Equal(LockOutcome.HeldByAnother, (await advisory.TryAcquireAsync("client:1", Ttl)).Outcome);
     }
 
-    /// <summary>A holder whose session dies frees the lock, which is what a TTL stands in for.</summary>
     [Fact]
     public async Task TryAcquire_AfterTheHoldersSessionEnds_ShouldSucceed()
     {
@@ -95,9 +87,7 @@ public sealed class PostgresAdvisoryLockTests(InventoryDatabase database)
         await advisory.TryAcquireAsync("client:1", Ttl);
 
         await using (var admin = await _dataSource.OpenConnectionAsync())
-        await using (var kill = new NpgsqlCommand(
-            "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory'",
-            admin))
+        await using (var kill = new NpgsqlCommand(EndLockHoldersSql, admin))
         {
             await kill.ExecuteNonQueryAsync();
         }

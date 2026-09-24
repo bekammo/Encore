@@ -6,10 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Encore.Modules.Notifications.IntegrationTests;
 
-/// <summary>
-/// The SeatSold consumer records a sale and survives redelivery. Against real Postgres, because
-/// the guard is a unique index, not handler code.
-/// </summary>
+/// <summary>Real Postgres: the redelivery guard is a unique index, not handler code (016).</summary>
 public sealed class SeatSoldNotifierTests(NotificationsDatabase database) : IClassFixture<NotificationsDatabase>
 {
     private readonly DbContextOptions<NotificationsDbContext> _options = database.Options;
@@ -32,12 +29,10 @@ public sealed class SeatSoldNotifierTests(NotificationsDatabase database) : ICla
         Assert.Equal(sold.SeatId, notification.SeatId);
         Assert.Equal(NotificationKind.SeatSold, notification.Kind);
 
-        // Copied from the event, so the row says when the sale happened, not when it was delivered.
         Assert.Equal(sold.OccurredAt, notification.OccurredAt);
         Assert.True(notification.CreatedAt >= sold.OccurredAt);
     }
 
-    /// <summary>A redelivered message records nothing new.</summary>
     [Fact]
     public async Task Handle_WhenTheSameMessageArrivesTwice_ShouldRecordOneNotification()
     {
@@ -54,7 +49,6 @@ public sealed class SeatSoldNotifierTests(NotificationsDatabase database) : ICla
         Assert.Single(await ForMessageAsync(messageId));
     }
 
-    /// <summary>Two different events about one seat are two notifications: the key is the message.</summary>
     [Fact]
     public async Task Handle_WhenTwoMessagesDescribeOneSeat_ShouldRecordBoth()
     {
@@ -76,10 +70,7 @@ public sealed class SeatSoldNotifierTests(NotificationsDatabase database) : ICla
         Assert.Single(await ForMessageAsync(second));
     }
 
-    /// <summary>
-    /// Two simultaneous deliveries of one message produce one row. A read-then-write check would
-    /// fail this.
-    /// </summary>
+    /// <summary>A read-then-write check would fail this.</summary>
     [Fact]
     public async Task Handle_WhenTwoDeliveriesRace_ShouldRecordOneNotification()
     {
@@ -121,7 +112,7 @@ public sealed class SeatSoldNotifierTests(NotificationsDatabase database) : ICla
             .ToListAsync();
     }
 
-    /// <summary>Truncated to microseconds, the resolution Postgres stores.</summary>
+    // Postgres keeps microseconds, so OccurredAt would not round-trip equal without this.
     private static DateTime Truncated(DateTime value) =>
-        new(value.Ticks - (value.Ticks % TimeSpan.TicksPerMicrosecond), DateTimeKind.Utc);
+        new(value.Ticks - value.Ticks % TimeSpan.TicksPerMicrosecond, DateTimeKind.Utc);
 }

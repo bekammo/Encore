@@ -9,9 +9,8 @@ using Microsoft.EntityFrameworkCore;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// The drain: every domain event a seat raises becomes exactly one outbox row, in the same
-/// transaction as the seat. Against real Postgres, with no dispatcher involved. One test reads
-/// the whole outbox, so the shared database is emptied before each test.
+/// Every event a seat raises becomes exactly one outbox row, in the seat's transaction (015).
+/// One test reads the whole outbox, so the database is emptied before each test.
 /// </summary>
 public sealed class OutboxDrainTests(InventoryDatabase database)
     : IClassFixture<InventoryDatabase>, IAsyncLifetime
@@ -22,16 +21,14 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
 
     private readonly DbContextOptions<InventoryDbContext> _options = database.Options;
 
-    /// <summary>Empties the seats and the outbox the previous test left.</summary>
     public Task InitializeAsync() => _database.ResetAsync();
 
-    /// <inheritdoc />
     public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
     public async Task Hold_ShouldWriteTheRaisedEventAsAnOutboxRow()
     {
-        var seatId = await SeatAsync();
+        var seatId = await SeedAvailableAsync();
         var clientId = Guid.NewGuid();
         var utcNow = Now();
 
@@ -52,7 +49,6 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         Assert.Equal(0, message.Attempts);
         Assert.NotEqual(Guid.Empty, message.MessageId);
 
-        // The payload is the published contract, not the domain record.
         var payload = JsonSerializer.Deserialize<SeatHeldV1>(
             message.Payload,
             SeatEventPublication.SerializerOptions);
@@ -64,11 +60,10 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         Assert.Equal(utcNow + Seat.HoldDuration, payload.HoldExpiresAt);
     }
 
-    /// <summary>A save inside a traced operation records that trace, so delivery can link back to it.</summary>
     [Fact]
     public async Task Hold_InsideATracedOperation_ShouldRecordItsTraceParent()
     {
-        var seatId = await SeatAsync();
+        var seatId = await SeedAvailableAsync();
 
         using (var operation = new Activity("hold").Start())
         {
@@ -82,7 +77,7 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
     [Fact]
     public async Task Hold_OutsideATrace_ShouldRecordNoTraceParent()
     {
-        var seatId = await SeatAsync();
+        var seatId = await SeedAvailableAsync();
 
         Assert.Null(Activity.Current);
         await HoldAsync(seatId);
@@ -90,11 +85,10 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         Assert.Null(Assert.Single(await MessagesForAsync(seatId)).TraceParent);
     }
 
-    /// <summary>A reclaim writes SeatReleased before SeatHeld, with adjacent ids from one save.</summary>
     [Fact]
     public async Task Hold_WhenReclaimingALapsedHold_ShouldWriteReleasedBeforeHeld()
     {
-        var seatId = await SeatAsync();
+        var seatId = await SeedAvailableAsync();
         var first = Guid.NewGuid();
         var second = Guid.NewGuid();
         var utcNow = Now();
@@ -108,7 +102,6 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
             await seats.SaveAsync(seat);
         }
 
-        // Past the hold window, so the next hold reclaims.
         var afterExpiry = utcNow + Seat.HoldDuration + TimeSpan.FromSeconds(1);
 
         await using (var context = new InventoryDbContext(_options))
@@ -127,7 +120,7 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         Assert.Equal(InventoryEventTypes.SeatReleased, messages[1].EventType);
         Assert.Equal(InventoryEventTypes.SeatHeld, messages[2].EventType);
 
-        // Ascending ids, so a reader in id order sees the reclaim as it happened.
+        // One save's events in raised order: table order, not a delivery promise (024).
         Assert.True(messages[1].Id < messages[2].Id);
 
         var released = JsonSerializer.Deserialize<SeatReleasedV1>(
@@ -140,8 +133,8 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
     }
 
     /// <summary>
-    /// Four holds through one context write four rows, not ten: the drain clears each seat's
-    /// events after its save.
+    /// Later saves on one context still track the earlier seats: four rows, not ten, because the
+    /// drain clears each seat's events after its save (015).
     /// </summary>
     [Fact]
     public async Task Hold_WhenSeveralSeatsAreHeldOnOneContext_ShouldWriteEachEventExactlyOnce()
@@ -150,13 +143,12 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
 
         for (var i = 0; i < 4; i++)
         {
-            seatIds.Add(await SeatAsync());
+            seatIds.Add(await SeedAvailableAsync());
         }
 
         var clientId = Guid.NewGuid();
         var utcNow = Now();
 
-        // One context for all four, exactly as a checkout has.
         await using (var context = new InventoryDbContext(_options))
         {
             var seats = new EfSeatRepository(context);
@@ -179,7 +171,6 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         Assert.Equal(4, messages.Count);
         Assert.All(messages, message => Assert.Equal(InventoryEventTypes.SeatHeld, message.EventType));
 
-        // One per seat, and four distinct message ids rather than one repeated.
         var payloads = messages
             .Select(message => JsonSerializer.Deserialize<SeatHeldV1>(
                 message.Payload,
@@ -190,17 +181,15 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         Assert.Equal(4, messages.Select(message => message.MessageId).Distinct().Count());
     }
 
-    /// <summary>A rejected save writes nothing at all.</summary>
     [Fact]
     public async Task Save_WhenTheWriteIsRejected_ShouldWriteNoOutboxRow()
     {
-        var seatId = await SeatAsync();
+        var seatId = await SeedAvailableAsync();
         var utcNow = Now();
 
         await using var loser = new InventoryDbContext(_options);
         var loserSeats = new EfSeatRepository(loser);
 
-        // Loaded before anyone else writes, so its row version goes stale.
         var stale = await loserSeats.GetByIdAsync(seatId);
 
         await BumpSeatAsync(seatId, utcNow);
@@ -214,11 +203,10 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         Assert.Equal(before, await CountAsync());
     }
 
-    /// <summary>A retry after a rejected save does not carry the rejected attempt's rows along.</summary>
     [Fact]
     public async Task Save_WhenARejectedAttemptIsRetried_ShouldWriteOnlyTheSuccessfulAttempt()
     {
-        var seatId = await SeatAsync();
+        var seatId = await SeedAvailableAsync();
         var clientId = Guid.NewGuid();
         var utcNow = Now();
 
@@ -227,7 +215,6 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
 
         var stale = await seats.GetByIdAsync(seatId);
 
-        // Someone else holds and releases it, so the retry can then succeed.
         await BumpSeatAsync(seatId, utcNow);
 
         stale!.Hold(clientId, utcNow);
@@ -240,7 +227,6 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
 
         var messages = await MessagesForAsync(seatId);
 
-        // The other writer's hold and release, plus one hold from the retry.
         Assert.Equal(3, messages.Count);
 
         var held = messages
@@ -254,11 +240,10 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         Assert.Single(held, payload => payload.ClientId == clientId);
     }
 
-    /// <summary>Re-holding a seat you already hold publishes nothing.</summary>
     [Fact]
     public async Task Hold_WhenTheSameClientReholds_ShouldWriteNoSecondRow()
     {
-        var seatId = await SeatAsync();
+        var seatId = await SeedAvailableAsync();
         var clientId = Guid.NewGuid();
         var utcNow = Now();
 
@@ -283,9 +268,6 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         Assert.Single(await MessagesForAsync(seatId));
     }
 
-    /// <summary>
-    /// Bulk creation goes through the drain too; <c>Seat.Create</c> raises nothing, so no rows.
-    /// </summary>
     [Fact]
     public async Task AddRange_ShouldGoThroughTheDrainAndWriteNothingToday()
     {
@@ -303,18 +285,14 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         Assert.Equal(before, await CountAsync());
     }
 
-    /// <summary>
-    /// The drain discards only its own rejected rows, never a row someone else added and saved.
-    /// </summary>
     [Fact]
     public async Task Save_WhenSomethingElseAddedAnOutboxRow_ShouldNotDiscardIt()
     {
-        var seatId = await SeatAsync();
+        var seatId = await SeedAvailableAsync();
         var utcNow = Now();
 
         await using var context = new InventoryDbContext(_options);
 
-        // Added by hand, as a seeder would.
         var byHand = OutboxMessage.For(
             Guid.CreateVersion7(),
             InventoryEventTypes.SeatSold,
@@ -323,7 +301,6 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
 
         context.OutboxMessages.Add(byHand);
 
-        // Saved alongside a transition, so the drain runs in the same save.
         var seats = new EfSeatRepository(context);
         var seat = await seats.GetByIdAsync(seatId);
 
@@ -340,7 +317,7 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
     [Fact]
     public async Task Sell_ShouldPublishTheBuyer()
     {
-        var seatId = await SeatAsync();
+        var seatId = await SeedAvailableAsync();
         var clientId = Guid.NewGuid();
         var utcNow = Now();
 
@@ -368,8 +345,7 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         Assert.Equal(clientId, sold.ClientId);
     }
 
-    /// <summary>Creates a seat and returns its id.</summary>
-    private async Task<Guid> SeatAsync()
+    private async Task<Guid> SeedAvailableAsync()
     {
         var seatId = Guid.NewGuid();
 
@@ -381,7 +357,6 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         return seatId;
     }
 
-    /// <summary>Holds the seat for a new client through the repository, as a request would.</summary>
     private async Task HoldAsync(Guid seatId)
     {
         await using var context = new InventoryDbContext(_options);
@@ -393,7 +368,6 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         await seats.SaveAsync(seat);
     }
 
-    /// <summary>Moves the seat on by two row versions through another context, leaving it Available.</summary>
     private async Task BumpSeatAsync(Guid seatId, DateTime utcNow)
     {
         var other = Guid.NewGuid();
@@ -414,7 +388,6 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
     {
         await using var context = new InventoryDbContext(_options);
 
-        // Filter on the jsonb payload to scope to one seat among the test's other rows.
         return await context.OutboxMessages.AsNoTracking()
             .Where(message => EF.Functions.JsonContains(
                 message.Payload,
@@ -430,11 +403,11 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         return await context.OutboxMessages.CountAsync();
     }
 
-    /// <summary>Truncated to microseconds, the resolution Postgres stores, so instants compare equal.</summary>
+    // Truncated to microseconds to survive the Postgres round trip.
     private static DateTime Now()
     {
         var utcNow = DateTime.UtcNow;
 
-        return new DateTime(utcNow.Ticks - (utcNow.Ticks % TimeSpan.TicksPerMicrosecond), DateTimeKind.Utc);
+        return new DateTime(utcNow.Ticks - utcNow.Ticks % TimeSpan.TicksPerMicrosecond, DateTimeKind.Utc);
     }
 }

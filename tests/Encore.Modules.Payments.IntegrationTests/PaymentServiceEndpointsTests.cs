@@ -1,9 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Encore.Modules.Payments.Contracts;
 using Encore.Modules.Payments.Endpoints;
-using Encore.Modules.Payments.Models;
-using Encore.Modules.Payments.Simulation;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -11,15 +10,12 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace Encore.Modules.Payments.IntegrationTests;
 
 /// <summary>
-/// The Payments service API over a real socket and real Postgres, composed as a host composes
-/// it, so the token filter and the problem+json shape are part of what is tested.
-/// <c>HttpOrderPaymentsTests</c> pins the reading side. The database is shared by the class
-/// and never emptied, so every test pays for orders of its own; the service is started per test.
+/// The writing side of the wire; <c>HttpOrderPaymentsTests</c> pins the reading side. The database
+/// is never emptied, so every test uses fresh order ids.
 /// </summary>
 public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
     : IClassFixture<PaymentsDatabase>, IAsyncLifetime
@@ -31,7 +27,6 @@ public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
     private WebApplication _service = null!;
     private HttpClient _client = null!;
 
-    /// <inheritdoc />
     public async Task InitializeAsync()
     {
         var builder = WebApplication.CreateSlimBuilder();
@@ -43,7 +38,7 @@ public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
             ["ConnectionStrings:Payments"] = _database.ConnectionString,
             // The reconciler would race the assertions.
             ["Payments:Reconciliation:Enabled"] = "false",
-            // A gateway that always agrees; refusals are arranged through the row.
+            // Refusals are staged through the row's state, never the gateway.
             ["Payments:Simulation:DeclineRate"] = "0",
             ["Payments:Simulation:TimeoutRate"] = "0",
             ["Payments:Simulation:MinLatency"] = "00:00:00",
@@ -68,19 +63,17 @@ public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
             .Single();
 
         _client = new HttpClient { BaseAddress = new Uri(address.TrimEnd('/') + "/internal/payments/") };
-        _client.DefaultRequestHeaders.Add(Contracts.PaymentsServiceApi.ServiceTokenHeader, Token);
+        _client.DefaultRequestHeaders.Add(PaymentsServiceApi.ServiceTokenHeader, Token);
     }
 
-    /// <inheritdoc />
     public async Task DisposeAsync()
     {
         _client.Dispose();
         await _service.DisposeAsync();
     }
 
-    // -- the service token ------------------------------------------------
+    // -- The service token ------------------------------------------------
 
-    /// <summary>A caller without the token cannot reach the routes.</summary>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -91,7 +84,7 @@ public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
 
         if (token is not null)
         {
-            client.DefaultRequestHeaders.Add(Contracts.PaymentsServiceApi.ServiceTokenHeader, token);
+            client.DefaultRequestHeaders.Add(PaymentsServiceApi.ServiceTokenHeader, token);
         }
 
         foreach (var route in new[] { "authorize", "capture", "void" })
@@ -106,7 +99,6 @@ public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
         }
     }
 
-    /// <summary>A client id instead of the token gets 401.</summary>
     [Fact]
     public async Task Authorize_WithAClientIdInsteadOfTheToken_ShouldRefuse()
     {
@@ -119,7 +111,7 @@ public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
-    // -- the outcomes the adapter reads -----------------------------------
+    // -- The outcomes the adapter reads -----------------------------------
 
     [Fact]
     public async Task Authorize_WhenTheGatewayAgrees_ShouldAnswerAuthorized()
@@ -133,7 +125,6 @@ public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
         Assert.NotEqual(Guid.Empty, body.GetProperty("paymentId").GetGuid());
     }
 
-    /// <summary>A repeated authorisation is an answer, not a second charge.</summary>
     [Fact]
     public async Task Authorize_Twice_ShouldReturnTheSameAttempt()
     {
@@ -159,7 +150,6 @@ public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
         Assert.Equal("captured", body.GetProperty("outcome").GetString());
     }
 
-    /// <summary>Idempotent, and the adapter depends on it being so.</summary>
     [Fact]
     public async Task Capture_Twice_ShouldStillAnswerCaptured()
     {
@@ -194,7 +184,6 @@ public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
         Assert.Equal("voided", body.GetProperty("outcome").GetString());
     }
 
-    /// <summary>Voiding captured money is refused; Orders reads it as a lost race.</summary>
     [Fact]
     public async Task Void_AfterCapturing_ShouldRefuseWithAlreadyCaptured()
     {
@@ -218,7 +207,6 @@ public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
         Assert.Equal("no_authorization", body.GetProperty("reason").GetString());
     }
 
-    /// <summary>Authorising an order already paid is an answer, not a second charge.</summary>
     [Fact]
     public async Task Authorize_AfterCapturing_ShouldAnswerAlreadyCaptured()
     {
@@ -232,7 +220,6 @@ public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
         Assert.Equal("already_captured", body.GetProperty("outcome").GetString());
     }
 
-    /// <summary>Every refusal carries a <c>reason</c> in problem+json.</summary>
     [Fact]
     public async Task ARefusal_ShouldBeProblemJsonCarryingAReason()
     {
@@ -245,7 +232,7 @@ public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
         Assert.False(string.IsNullOrWhiteSpace(problem.GetProperty("reason").GetString()));
     }
 
-    // -- helpers ----------------------------------------------------------
+    // -- Helpers ----------------------------------------------------------
 
     private Task<(HttpStatusCode Status, JsonElement Body)> AuthorizeAsync(Guid orderId) =>
         SendAsync("authorize", new { orderId, clientId = ClientFor(orderId), amount = 42.00m, currency = "GBP" });
@@ -259,6 +246,6 @@ public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
         return (response.StatusCode, await response.Content.ReadFromJsonAsync<JsonElement>());
     }
 
-    /// <summary>The client derived from the order, so repeat calls present the same owner.</summary>
+    // Derived from the order, so repeat calls present the same owner.
     private static Guid ClientFor(Guid orderId) => orderId;
 }

@@ -8,11 +8,10 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Encore.Modules.Orders.UnitTests;
 
 /// <summary>
-/// Which <see cref="IOrderPayments"/> a composed container resolves, in both registration
-/// orders, with the HTTP switch set and unset. Testing each side of the seam alone missed a
-/// bug where the switch silently did nothing; only composing both modules shows it.
+/// Testing each side of the seam alone missed a switch that silently did nothing; only
+/// composing both modules shows it (018).
 /// </summary>
-public class StranglerSwitchTests
+public sealed class StranglerSwitchTests
 {
     private const string BaseAddress = "http://payments-api:8080/internal/payments";
 
@@ -32,7 +31,6 @@ public class StranglerSwitchTests
         Assert.Equal(nameof(HttpOrderPayments), Resolve(provider).GetType().Name);
     }
 
-    /// <summary>With no base address, the monolith is unchanged.</summary>
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -40,16 +38,12 @@ public class StranglerSwitchTests
     {
         using var provider = Compose(strangled: false, ordersFirst: ordersFirst);
 
+        // By name: InProcessOrderPayments is internal to Payments.
         Assert.Equal("InProcessOrderPayments", Resolve(provider).GetType().Name);
     }
 
-    /// <summary>
-    /// The resolved adapter, compared by type name, since <c>InProcessOrderPayments</c> is
-    /// internal to Payments.
-    /// </summary>
     private static IOrderPayments Resolve(ServiceProvider provider)
     {
-        // A scope, because both adapters are scoped.
         using var scope = provider.CreateScope();
 
         return scope.ServiceProvider.GetRequiredService<IOrderPayments>();
@@ -60,7 +54,7 @@ public class StranglerSwitchTests
         var settings = new Dictionary<string, string?>
         {
             ["ConnectionStrings:Orders"] = "Host=nowhere;Database=encore;Username=encore;Password=encore",
-            ["ConnectionStrings:Payments"] = "Host=nowhere;Database=encore;Username=encore;Password=encore",
+            ["ConnectionStrings:Payments"] = "Host=nowhere;Database=encore;Username=encore;Password=encore"
         };
 
         if (strangled)

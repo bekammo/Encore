@@ -12,11 +12,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Encore.Modules.Orders.IntegrationTests;
 
-/// <summary>
-/// The HTTP adapter to the Payments service, against a stub on a real loopback socket, so
-/// refused connections and unanswered requests are real. <c>PaymentServiceEndpointsTests</c>
-/// pins the other end of the wire format.
-/// </summary>
+/// <summary>A stub on a real loopback socket, so refused connections and unanswered requests are real.</summary>
 public sealed class HttpOrderPaymentsTests : IAsyncLifetime
 {
     private static readonly Guid OrderId = Guid.Parse("11111111-1111-1111-1111-111111111111");
@@ -26,16 +22,12 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
     private WebApplication _service = null!;
     private string _baseAddress = null!;
 
-    /// <summary>What the stub answers with next, set per test.</summary>
     private (int Status, string Body) _next = (StatusCodes.Status200OK, "{}");
 
-    /// <summary>How long the stub sits on a request before answering.</summary>
     private TimeSpan _delay = TimeSpan.Zero;
 
-    /// <summary>Every path the stub was asked for, in order. One instance per test.</summary>
     private readonly List<string> _paths = [];
 
-    /// <inheritdoc />
     public async Task InitializeAsync()
     {
         var builder = WebApplication.CreateSlimBuilder();
@@ -44,19 +36,18 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
 
         _service = builder.Build();
 
-        // One handler for all three routes; tests that care check which path was asked for.
         _service.Map("/internal/payments/{operation}", async (HttpContext http) =>
         {
             _paths.Add(http.Request.Path);
 
             if (_delay > TimeSpan.Zero)
             {
-                await Task.Delay(_delay).ConfigureAwait(false);
+                await Task.Delay(_delay);
             }
 
             http.Response.StatusCode = _next.Status;
             http.Response.ContentType = "application/json";
-            await http.Response.WriteAsync(_next.Body).ConfigureAwait(false);
+            await http.Response.WriteAsync(_next.Body);
         });
 
         await _service.StartAsync();
@@ -71,10 +62,9 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
         _baseAddress = address.TrimEnd('/') + "/internal/payments/";
     }
 
-    /// <inheritdoc />
     public async Task DisposeAsync() => await _service.DisposeAsync();
 
-    // -- the mapping table ------------------------------------------------
+    // -- The mapping table ------------------------------------------------
 
     [Theory]
     [InlineData(200, "authorized", AuthorizePaymentStatus.Authorized)]
@@ -95,7 +85,6 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
         Assert.Equal(PaymentId, response.PaymentId);
     }
 
-    /// <summary>The one authorize answer that names no attempt.</summary>
     [Fact]
     public async Task Authorize_WhenAnotherAttemptIsInFlight_ShouldCarryNoPaymentId()
     {
@@ -161,12 +150,8 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
         Assert.Equal(VoidPaymentStatus.NoAuthorization, response.Status);
     }
 
-    // -- when the far side does not answer --------------------------------
+    // -- When the far side does not answer --------------------------------
 
-    /// <summary>
-    /// Anything unreadable is a timeout: the one status already handled safely for "the money
-    /// may or may not be held".
-    /// </summary>
     [Theory]
     [InlineData(500, "{}")]
     [InlineData(502, "<html>upstream is angry</html>")]
@@ -182,7 +167,6 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
         Assert.Equal(AuthorizePaymentStatus.TimedOut, response.Status);
     }
 
-    /// <summary>A service that never answers is a timeout, not an exception.</summary>
     [Fact]
     public async Task Authorize_WhenTheServiceNeverAnswers_ShouldReportATimeout()
     {
@@ -194,7 +178,6 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
         Assert.Equal(AuthorizePaymentStatus.TimedOut, response.Status);
     }
 
-    /// <summary>A service that is not there at all is also a timeout.</summary>
     [Fact]
     public async Task Authorize_WhenNothingIsListening_ShouldReportATimeout()
     {
@@ -207,7 +190,6 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
         Assert.Equal(AuthorizePaymentStatus.TimedOut, response.Status);
     }
 
-    /// <summary>A rejected token is configuration, not a payment outcome, so it throws.</summary>
     [Fact]
     public async Task Authorize_WhenTheTokenIsRejected_ShouldThrowRatherThanReportATimeout()
     {
@@ -217,7 +199,6 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
             Payments().AuthorizeAsync(new AuthorizePaymentRequest(OrderId, ClientId, 10m, "GBP")));
     }
 
-    /// <summary>A success that names no attempt is a wire-format bug.</summary>
     [Fact]
     public async Task Authorize_WhenASuccessNamesNoAttempt_ShouldThrow()
     {
@@ -227,9 +208,8 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
             Payments().AuthorizeAsync(new AuthorizePaymentRequest(OrderId, ClientId, 10m, "GBP")));
     }
 
-    // -- the request the adapter sends ------------------------------------
+    // -- The request the adapter sends ------------------------------------
 
-    /// <summary>The path is the operation.</summary>
     [Fact]
     public async Task EachOperationShouldPostToItsOwnRoute()
     {
@@ -247,12 +227,8 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
             _paths);
     }
 
-    // -- helpers ----------------------------------------------------------
+    // -- Helpers ----------------------------------------------------------
 
-    /// <summary>
-    /// Sets the next answer: a success body with <c>outcome</c> for 2xx, otherwise problem+json
-    /// with <c>reason</c>, as the real endpoints emit.
-    /// </summary>
     private void Answer(int status, string reason, Guid? paymentId)
     {
         var key = status is >= 200 and < 300 ? "outcome" : "reason";

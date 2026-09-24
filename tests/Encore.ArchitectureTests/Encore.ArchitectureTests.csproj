@@ -1,7 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Architecture rules the build guards cannot reach: module boundaries, nothing
-       referencing the host, Domain namespaces. No architecture-test library needed. -->
+  <!-- Rules the ENCORE00x build guards cannot reach. No architecture-test library (002). -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>
@@ -13,10 +12,10 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
   </ItemGroup>
 
-  <!-- Build-order edges only: ReferenceOutputAssembly="false" keeps these outputs off this
-       project's compile surface, so the suite never depends on what it inspects. -->
+  <!-- Build-order edges only, so the suite never compiles against what it inspects. -->
   <ItemGroup>
     <ProjectReference Include="..\..\src\Encore.Api\Encore.Api.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Encore.Payments.Api\Encore.Payments.Api.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Encore.Shared\Encore.Shared.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Encore.Telemetry\Encore.Telemetry.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Encore.Modules.Catalog\Encore.Modules.Catalog.csproj" ReferenceOutputAssembly="false" />
@@ -30,7 +29,6 @@
     <ProjectReference Include="..\..\src\Encore.Modules.Payments.Contracts\Encore.Modules.Payments.Contracts.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
-  <!-- Where to find those outputs, injected at build time. -->
   <ItemGroup>
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>EncoreRepositoryRoot</_Parameter1>

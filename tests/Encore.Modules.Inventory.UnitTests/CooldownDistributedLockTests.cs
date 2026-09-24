@@ -6,11 +6,7 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Inventory.UnitTests;
 
-/// <summary>
-/// After the lock service fails to answer, the lock stops asking it for a while and reports
-/// "unavailable" itself. The first attempt after the window asks again.
-/// </summary>
-public class CooldownDistributedLockTests
+public sealed class CooldownDistributedLockTests
 {
     private static readonly TimeSpan Cooldown = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5);
@@ -53,7 +49,6 @@ public class CooldownDistributedLockTests
         Assert.Equal(2, _inner.AcquireCalls);
     }
 
-    /// <summary>A probe that is answered ends the outage: the next attempt asks straight away.</summary>
     [Fact]
     public async Task TryAcquire_WhenTheProbeIsAnswered_ShouldAskEveryTimeAgain()
     {
@@ -71,7 +66,6 @@ public class CooldownDistributedLockTests
         Assert.Equal(3, _inner.AcquireCalls);
     }
 
-    /// <summary>A refused probe starts a new window.</summary>
     [Fact]
     public async Task TryAcquire_WhenTheProbeIsRefused_ShouldCoolDownAgain()
     {
@@ -88,7 +82,6 @@ public class CooldownDistributedLockTests
         Assert.Equal(2, _inner.AcquireCalls);
     }
 
-    /// <summary>Somebody else holding the lock is an answer, not an outage.</summary>
     [Fact]
     public async Task TryAcquire_WhenHeldByAnother_ShouldKeepAsking()
     {
@@ -101,10 +94,6 @@ public class CooldownDistributedLockTests
         Assert.Equal(2, _inner.AcquireCalls);
     }
 
-    /// <summary>
-    /// A caller with a token took its lock before the window opened. Skipping its release would
-    /// strand the key until its TTL, and that client's next hold would be refused as in flight.
-    /// </summary>
     [Fact]
     public async Task Release_WhileCoolingDown_ShouldStillAsk()
     {
@@ -129,7 +118,6 @@ public class CooldownDistributedLockTests
         Assert.Equal(1, _inner.ReleaseCalls);
     }
 
-    /// <summary>A zero cooldown is the control: every attempt asks.</summary>
     [Fact]
     public async Task TryAcquire_WithZeroCooldown_ShouldAskEveryTime()
     {
@@ -142,7 +130,6 @@ public class CooldownDistributedLockTests
         Assert.Equal(2, _inner.AcquireCalls);
     }
 
-    /// <summary>What the cooldown answered is counted apart from what Redis answered.</summary>
     [Fact]
     public async Task TryAcquire_ShouldCountWhoAnswered()
     {

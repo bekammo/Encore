@@ -3,23 +3,15 @@ using System.Text.RegularExpressions;
 namespace Encore.ArchitectureTests;
 
 /// <summary>
-/// The rules inside the Inventory assembly, where <c>Ports/</c>, <c>Adapters/</c> and
-/// <c>Application/</c> are folders of one project and no reference can tell them apart (002, 021).
+/// <c>Ports/</c>, <c>Adapters/</c> and <c>Application/</c> are folders of one project, so their
+/// rules are read from source (002, 021).
 /// </summary>
-/// <remarks>
-/// Read from source, since the folders share an assembly. The adapters' type names are derived
-/// from <c>Adapters/</c> rather than listed, so a new adapter is covered the day it is written.
-/// </remarks>
-public partial class InventoryLayeringTests
+public sealed partial class InventoryLayeringTests
 {
     private const string AdaptersNamespace = "Encore.Modules.Inventory.Adapters";
 
     private static readonly string Inventory = Path.Combine("src", "Encore.Modules.Inventory");
 
-    /// <summary>
-    /// The use cases talk to the ports. Neither the adapters' namespace nor any adapter's type
-    /// name may appear in <c>Application/</c>, in code or in a comment.
-    /// </summary>
     [Fact]
     public void Application_ShouldNameNothingFromTheAdapters()
     {
@@ -30,10 +22,7 @@ public partial class InventoryLayeringTests
             $"Application/ reaches the adapters only through Ports/; it may not name {AdaptersNamespace} or an adapter's type. Found: {string.Join("; ", found)}");
     }
 
-    /// <summary>
-    /// A port never names an adapter's type, including in XML docs: the port declares what it
-    /// throws, and the adapter translates into it (002).
-    /// </summary>
+    /// <summary>The port declares what it throws; the adapter translates into it (002).</summary>
     [Fact]
     public void Ports_ShouldNameNoAdapterEvenInDocumentation()
     {
@@ -44,15 +33,11 @@ public partial class InventoryLayeringTests
             $"A port may not name an adapter's type or namespace, including in XML docs. Found: {string.Join("; ", found)}");
     }
 
-    /// <summary>
-    /// Telemetry is emitted at adapter edges only (021): no <c>ActivitySource</c>, no
-    /// <c>Meter</c>, nothing from <c>System.Diagnostics.Metrics</c> or the telemetry adapter,
-    /// in the use cases or the Domain. Code only, so a comment may explain the rule.
-    /// </summary>
+    /// <summary>Code only, so a comment may explain the rule (021).</summary>
     [Theory]
     [InlineData("src/Encore.Modules.Inventory/Application")]
     [InlineData("src/Encore.Modules.Inventory.Domain")]
-    public void NoTelemetryOutsideTheAdapterEdges(string directory)
+    public void NoTelemetryShouldBeEmittedOutsideTheAdapterEdges(string directory)
     {
         var found = new List<string>();
 
@@ -71,10 +56,6 @@ public partial class InventoryLayeringTests
             $"Modules emit telemetry at adapter edges only, never in the Domain or Application/ (021). Found: {string.Join("; ", found)}");
     }
 
-    /// <summary>
-    /// Sanity: a derivation that finds no adapters makes the two tests above pass vacuously, and
-    /// an empty folder does the same.
-    /// </summary>
     [Fact]
     public void ThereShouldBeAdaptersPortsAndUseCasesToInspect()
     {
@@ -88,18 +69,14 @@ public partial class InventoryLayeringTests
         Assert.NotEmpty(SourceScan.Files(Path.Combine(Inventory, "Application")));
     }
 
-    /// <summary>The telemetry vocabulary, as whole words or qualified names.</summary>
     [GeneratedRegex(@"\bActivitySource\b|\bMeter\b|\bSystem\.Diagnostics\.Metrics\b|\bAdapters\.Telemetry\b")]
     private static partial Regex TelemetryPattern();
 
-    /// <summary>Every type declared under <c>Adapters/</c>, nested ones and migrations included.</summary>
+    // Migrations included, so a migration's class name is forbidden too.
     private static IReadOnlySet<string> AdapterTypes() =>
         SourceScan.DeclaredTypes(SourceScan.Files(Path.Combine(Inventory, "Adapters")));
 
-    /// <summary>
-    /// Each line under <paramref name="directory"/> that names the adapters' namespace or one of
-    /// <paramref name="adapterTypes"/> as a whole word. The raw text, comments and all.
-    /// </summary>
+    // Raw text, not CodeOnly: a comment naming an adapter counts (002).
     private static List<string> Mentions(string directory, IReadOnlySet<string> adapterTypes)
     {
         var found = new List<string>();

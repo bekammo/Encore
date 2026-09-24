@@ -2,15 +2,11 @@ using System.Text.RegularExpressions;
 
 namespace Encore.ArchitectureTests;
 
-/// <summary>
-/// Conventions the scaffolded migration sources have to keep.
-/// </summary>
-public class MigrationConventionTests
+public sealed class MigrationConventionTests
 {
     /// <summary>
-    /// No migration may create the <c>xmin</c> system column. Mapping a concurrency token onto it
-    /// is correct; a <c>CreateTable</c> column for it fails outside the Npgsql provider, and
-    /// regenerating a migration would bring it back.
+    /// A <c>CreateTable</c> column for xmin fails outside the Npgsql provider, and regenerating a
+    /// migration brings it back (004).
     /// </summary>
     [Fact]
     public void NoMigrationShouldCreateTheXminSystemColumn()
@@ -25,7 +21,7 @@ public class MigrationConventionTests
             {
                 if (lines[i].Contains("xmin = table.Column", StringComparison.Ordinal))
                 {
-                    offenders.Add($"{Path.GetRelativePath(EncoreTree.Root, file)}:{i + 1}");
+                    offenders.Add($"{SourceScan.Relative(file)}:{i + 1}");
                 }
             }
         }
@@ -54,7 +50,6 @@ public class MigrationConventionTests
 
         var migration = MigrationSources()
             .Where(file => Path.GetFileName(file).Contains("AddExpiringHoldsIndex", StringComparison.Ordinal))
-            .Where(file => !file.EndsWith(".Designer.cs", StringComparison.Ordinal))
             .ToList();
 
         var file = Assert.Single(migration);
@@ -64,14 +59,10 @@ public class MigrationConventionTests
         Assert.Contains(expected, source, StringComparison.Ordinal);
     }
 
-    /// <summary>Sanity: if the glob stops finding migrations, the tests above pass vacuously.</summary>
     [Fact]
-    public void ThereShouldBeMigrationsToInspect()
-    {
+    public void ThereShouldBeMigrationsToInspect() =>
         Assert.NotEmpty(MigrationSources());
-    }
 
-    /// <summary>Migration bodies only, not Designer or snapshot files.</summary>
     private static List<string> MigrationSources() =>
         [.. Directory
             .EnumerateFiles(Path.Combine(EncoreTree.Root, "src"), "*.cs", SearchOption.AllDirectories)

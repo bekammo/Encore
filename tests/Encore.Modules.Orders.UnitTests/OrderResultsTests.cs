@@ -6,8 +6,7 @@ using Microsoft.AspNetCore.Http.HttpResults;
 
 namespace Encore.Modules.Orders.UnitTests;
 
-/// <summary>The outcome-to-HTTP mapping, tested without a host.</summary>
-public class OrderResultsTests
+public sealed class OrderResultsTests
 {
     private static readonly Guid OrderId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid EventId = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -15,39 +14,6 @@ public class OrderResultsTests
     private static readonly Guid OtherSeatId = Guid.Parse("44444444-4444-4444-4444-444444444444");
     private static readonly DateTime PlacedAt = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
     private static readonly PathString Path = new("/orders");
-
-    private static int StatusOf(IResult result) => result switch
-    {
-        IStatusCodeHttpResult status => status.StatusCode
-            ?? throw new InvalidOperationException("Result carries no status code."),
-        _ => throw new InvalidOperationException($"Unexpected result type {result.GetType().Name}.")
-    };
-
-    private static string? ReasonOf(IResult result) =>
-        result is ProblemHttpResult problem
-        && problem.ProblemDetails.Extensions.TryGetValue("reason", out var reason)
-            ? reason as string
-            : null;
-
-    private static bool? RetriableOf(IResult result) =>
-        result is ProblemHttpResult problem
-        && problem.ProblemDetails.Extensions.TryGetValue("retriable", out var retriable)
-            ? retriable as bool?
-            : null;
-
-    private static Order AnOrder(OrderStatus status) => new()
-    {
-        Id = OrderId,
-        ClientId = Guid.NewGuid(),
-        EventId = EventId,
-        Status = status,
-        PlacedAt = PlacedAt,
-        HoldsExpireAt = status is OrderStatus.Pending ? PlacedAt.AddMinutes(5) : null,
-        ClosedAt = status is OrderStatus.Pending ? null : PlacedAt,
-        Total = 50m,
-        Currency = "GBP",
-        Lines = [new OrderLine { Id = Guid.NewGuid(), OrderId = OrderId, SeatId = SeatId, UnitPrice = 50m, Currency = "GBP" }]
-    };
 
     // -- Checkout ---------------------------------------------------------
 
@@ -64,7 +30,6 @@ public class OrderResultsTests
         Assert.Equal(SeatId, Assert.Single(created.Value.Lines).SeatId);
     }
 
-    /// <summary>The 400s: what a client could have known was wrong before sending.</summary>
     [Theory]
     [InlineData(CheckoutOutcome.NoSeats, "no_seats")]
     [InlineData(CheckoutOutcome.DuplicateSeat, "duplicate_seat")]
@@ -79,7 +44,6 @@ public class OrderResultsTests
         Assert.Equal(expectedReason, ReasonOf(result));
     }
 
-    /// <summary>The 409s: refusals about the state of the world.</summary>
     [Theory]
     [InlineData(CheckoutOutcome.EventNotFound, "event_not_found", false)]
     [InlineData(CheckoutOutcome.NotOnSale, "not_on_sale", true)]
@@ -96,7 +60,6 @@ public class OrderResultsTests
         Assert.Equal(expectedRetriable, RetriableOf(result));
     }
 
-    /// <summary>A missing event is 409, not 404: the addressed <c>/orders</c> exists.</summary>
     [Fact]
     public void ForCheckout_WhenEventMissing_ShouldNotBe404()
     {
@@ -106,9 +69,6 @@ public class OrderResultsTests
         Assert.NotEqual(StatusCodes.Status404NotFound, StatusOf(result));
     }
 
-    /// <summary>
-    /// An open checkout is named, so a client whose 201 was lost can still finish or cancel it.
-    /// </summary>
     [Fact]
     public void ForCheckout_WhenACheckoutIsAlreadyOpen_ShouldNameIt()
     {
@@ -117,11 +77,10 @@ public class OrderResultsTests
         var problem = Assert.IsType<ProblemHttpResult>(result);
         Assert.Equal(StatusCodes.Status409Conflict, StatusOf(result));
         Assert.Equal("checkout_already_open", ReasonOf(result));
-        Assert.Equal(false, RetriableOf(result));
+        Assert.False(RetriableOf(result));
         Assert.Equal(OrderId, problem.ProblemDetails.Extensions["orderId"]);
     }
 
-    /// <summary>Too many seats is a 400 that states the limit.</summary>
     [Fact]
     public void ForCheckout_WhenTooManySeats_ShouldReportTheLimit()
     {
@@ -158,7 +117,6 @@ public class OrderResultsTests
         Assert.Equal(2, seats.Cast<object>().Count());
     }
 
-    /// <summary>The top-level <c>retriable</c> is true only if every seat's refusal is.</summary>
     [Fact]
     public void ForCheckout_WhenEveryRefusalIsRetriable_ShouldBeRetriable()
     {
@@ -187,14 +145,11 @@ public class OrderResultsTests
         Assert.False(RetriableOf(result));
     }
 
-    /// <summary>Every refusal Inventory can report maps to something.</summary>
+    public static TheoryData<HoldSeatStatus> HoldRefusals =>
+        new(Enum.GetValues<HoldSeatStatus>().Where(status => status is not HoldSeatStatus.Held));
+
     [Theory]
-    [InlineData(HoldSeatStatus.AlreadyHeld)]
-    [InlineData(HoldSeatStatus.AlreadySold)]
-    [InlineData(HoldSeatStatus.SeatNotFound)]
-    [InlineData(HoldSeatStatus.LostRace)]
-    [InlineData(HoldSeatStatus.HoldCapReached)]
-    [InlineData(HoldSeatStatus.ConcurrentRequestInFlight)]
+    [MemberData(nameof(HoldRefusals))]
     public void ForCheckout_EveryHoldRefusal_ShouldMap(HoldSeatStatus status)
     {
         var result = OrderResults.ForCheckout(
@@ -216,7 +171,6 @@ public class OrderResultsTests
         Assert.Equal("confirmed", ok.Value!.Status);
     }
 
-    /// <summary>A confirm whose holds lapsed still completed; the order says Expired.</summary>
     [Theory]
     [InlineData(OrderStatus.Expired, "holds_expired")]
     [InlineData(OrderStatus.Failed, "order_failed")]
@@ -255,7 +209,6 @@ public class OrderResultsTests
         Assert.Contains("cancelled", problem.ProblemDetails.Detail);
     }
 
-    /// <summary>AwaitingCapture is a 200: the customer has every seat.</summary>
     [Fact]
     public void ForConfirm_WhenAwaitingCapture_ShouldBe200WithTheStatusSaidPlainly()
     {
@@ -267,7 +220,6 @@ public class OrderResultsTests
         Assert.Equal("awaiting_capture", ok.Value!.Status);
     }
 
-    /// <summary>Payment failures are retriable, with a different card if need be.</summary>
     [Theory]
     [InlineData(OrderActionOutcome.PaymentDeclined, "payment_declined")]
     [InlineData(OrderActionOutcome.PaymentTimedOut, "payment_timed_out")]
@@ -283,19 +235,6 @@ public class OrderResultsTests
         Assert.True(RetriableOf(result));
     }
 
-    /// <summary>The status in the message is spelled as the body spells it.</summary>
-    [Fact]
-    public void ForCancel_WhenAwaitingCapture_ShouldSayTheStatusTheSameWayTheBodyDoes()
-    {
-        var result = OrderResults.ForCancel(
-            new OrderActionResult(OrderActionOutcome.NotPending, AnOrder(OrderStatus.AwaitingCapture)),
-            Path);
-
-        var problem = Assert.IsType<ProblemHttpResult>(result);
-        Assert.Equal(StatusCodes.Status409Conflict, StatusOf(result));
-        Assert.Contains("awaiting_capture", problem.ProblemDetails.Detail);
-    }
-
     [Fact]
     public void ForConfirm_WhenLostRace_ShouldBe409AndRetriable()
     {
@@ -308,15 +247,12 @@ public class OrderResultsTests
         Assert.True(RetriableOf(result));
     }
 
-    /// <summary>A completed confirm that left the order pending is a bug and throws.</summary>
     [Fact]
-    public void ForConfirm_WhenCompletedButStillPending_ShouldThrow()
-    {
+    public void ForConfirm_WhenCompletedButStillPending_ShouldThrow() =>
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             OrderResults.ForConfirm(
                 new OrderActionResult(OrderActionOutcome.Completed, AnOrder(OrderStatus.Pending)),
                 Path));
-    }
 
     // -- Cancel -----------------------------------------------------------
 
@@ -351,9 +287,20 @@ public class OrderResultsTests
         Assert.Equal("order_not_pending", ReasonOf(result));
     }
 
+    [Fact]
+    public void ForCancel_WhenAwaitingCapture_ShouldSayTheStatusTheSameWayTheBodyDoes()
+    {
+        var result = OrderResults.ForCancel(
+            new OrderActionResult(OrderActionOutcome.NotPending, AnOrder(OrderStatus.AwaitingCapture)),
+            Path);
+
+        var problem = Assert.IsType<ProblemHttpResult>(result);
+        Assert.Equal(StatusCodes.Status409Conflict, StatusOf(result));
+        Assert.Contains("awaiting_capture", problem.ProblemDetails.Detail);
+    }
+
     // -- Reading ----------------------------------------------------------
 
-    /// <summary>A pending order whose holds lapsed still reads pending; only Inventory can say otherwise.</summary>
     [Fact]
     public void ForRead_ShouldReturnTheStoredStatusWithoutDerivingExpiry()
     {
@@ -365,4 +312,39 @@ public class OrderResultsTests
         Assert.Equal("pending", ok.Value!.Status);
         Assert.Equal(order.HoldsExpireAt, ok.Value.HoldsExpireAt);
     }
+
+    // -- Helpers ----------------------------------------------------------
+
+    private static int StatusOf(IResult result) => result switch
+    {
+        IStatusCodeHttpResult status => status.StatusCode
+            ?? throw new InvalidOperationException("Result carries no status code."),
+        _ => throw new InvalidOperationException($"Unexpected result type {result.GetType().Name}.")
+    };
+
+    private static string? ReasonOf(IResult result) =>
+        result is ProblemHttpResult problem
+        && problem.ProblemDetails.Extensions.TryGetValue("reason", out var reason)
+            ? reason as string
+            : null;
+
+    private static bool? RetriableOf(IResult result) =>
+        result is ProblemHttpResult problem
+        && problem.ProblemDetails.Extensions.TryGetValue("retriable", out var retriable)
+            ? retriable as bool?
+            : null;
+
+    private static Order AnOrder(OrderStatus status) => new()
+    {
+        Id = OrderId,
+        ClientId = Guid.NewGuid(),
+        EventId = EventId,
+        Status = status,
+        PlacedAt = PlacedAt,
+        HoldsExpireAt = status is OrderStatus.Pending ? PlacedAt.AddMinutes(5) : null,
+        ClosedAt = status is OrderStatus.Pending ? null : PlacedAt,
+        Total = 50m,
+        Currency = "GBP",
+        Lines = [new OrderLine { Id = Guid.NewGuid(), OrderId = OrderId, SeatId = SeatId, UnitPrice = 50m, Currency = "GBP" }]
+    };
 }

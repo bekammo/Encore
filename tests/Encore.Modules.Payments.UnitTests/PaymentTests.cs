@@ -4,11 +4,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Payments.UnitTests;
 
-/// <summary>
-/// The payment state machine: what each transition permits and refuses, and the two
-/// idempotent ones. Time is passed in; no clock, no database.
-/// </summary>
-public class PaymentTests
+public sealed class PaymentTests
 {
     private static readonly Guid PaymentId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid OrderId = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -19,12 +15,10 @@ public class PaymentTests
     private const string Key = "order-22222222-attempt-1";
     private const string GatewayReference = "auth_7f3c9a";
 
-    /// <summary>Arbitrary fixed instant. Everything else is expressed relative to it.</summary>
     private static readonly DateTime T0 = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
 
     private static readonly DateTime Later = T0.AddSeconds(3);
 
-    /// <summary>Later still: when reconciliation asked the gateway what happened.</summary>
     private static readonly DateTime MuchLater = T0.AddMinutes(10);
 
     private static Payment Pending() =>
@@ -80,9 +74,10 @@ public class PaymentTests
         PaymentStatus.Declined => Declined(),
         PaymentStatus.TimedOut => TimedOut(),
         PaymentStatus.Voided => Voided(),
-        PaymentStatus.Abandoned => Abandoned(),
-        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped status.")
+        PaymentStatus.Abandoned => Abandoned()
     };
+
+    private static DateTime NotUtc(DateTimeKind kind) => DateTime.SpecifyKind(Later, kind);
 
     // -- Create -----------------------------------------------------------
 
@@ -129,6 +124,33 @@ public class PaymentTests
         Assert.Throws<ArgumentException>(() =>
             Payment.Create(PaymentId, OrderId, ClientId, Amount, Currency, "  ", T0));
 
+    [Fact]
+    public void Create_WhenIdIsEmpty_ShouldThrow()
+    {
+        var ex = Assert.Throws<ArgumentException>(() =>
+            Payment.Create(Guid.Empty, OrderId, ClientId, Amount, Currency, Key, T0));
+
+        Assert.Equal("id", ex.ParamName);
+    }
+
+    [Fact]
+    public void Create_WhenOrderIdIsEmpty_ShouldThrow()
+    {
+        var ex = Assert.Throws<ArgumentException>(() =>
+            Payment.Create(PaymentId, Guid.Empty, ClientId, Amount, Currency, Key, T0));
+
+        Assert.Equal("orderId", ex.ParamName);
+    }
+
+    [Fact]
+    public void Create_WhenClientIdIsEmpty_ShouldThrow()
+    {
+        var ex = Assert.Throws<ArgumentException>(() =>
+            Payment.Create(PaymentId, OrderId, Guid.Empty, Amount, Currency, Key, T0));
+
+        Assert.Equal("clientId", ex.ParamName);
+    }
+
     // -- Authorize --------------------------------------------------------
 
     [Fact]
@@ -142,7 +164,6 @@ public class PaymentTests
         Assert.Equal(GatewayReference, payment.GatewayReference);
     }
 
-    /// <summary>An authorisation is not an ending: a capture or void is still to come.</summary>
     [Fact]
     public void Authorize_ShouldNotResolveTheAttempt()
     {
@@ -188,7 +209,6 @@ public class PaymentTests
         Assert.Equal(Later, payment.ResolvedAt);
     }
 
-    /// <summary>A decline moved no money, so it does not hold the order's live slot.</summary>
     [Fact]
     public void Decline_ShouldNotLeaveTheAttemptLive()
     {
@@ -220,7 +240,6 @@ public class PaymentTests
         Assert.Equal(Later, payment.ResolvedAt);
     }
 
-    /// <summary>A timed-out authorisation stays live and keeps its key.</summary>
     [Fact]
     public void TimeOut_ShouldStayLiveAndKeepTheIdempotencyKey()
     {
@@ -230,7 +249,6 @@ public class PaymentTests
         Assert.Equal(Key, payment.IdempotencyKey);
     }
 
-    /// <summary>Only an authorisation can time out into TimedOut; a capture timeout stays Authorized.</summary>
     [Fact]
     public void TimeOut_WhenAuthorized_ShouldRefuse()
     {
@@ -255,7 +273,6 @@ public class PaymentTests
         Assert.Equal(Later.AddSeconds(30), payment.AttemptedAt);
     }
 
-    /// <summary>The retry reuses the row, and therefore the key.</summary>
     [Fact]
     public void Retry_ShouldKeepTheIdempotencyKey()
     {
@@ -284,10 +301,6 @@ public class PaymentTests
 
     // -- Resume -----------------------------------------------------------
 
-    /// <summary>
-    /// An attempt recorded but never answered is asked about again under the same key, and
-    /// restamped, so the reconciler does not mistake it for one abandoned by a crash.
-    /// </summary>
     [Fact]
     public void Resume_WhenPending_ShouldRestampTheAttemptAndKeepTheKey()
     {
@@ -317,17 +330,8 @@ public class PaymentTests
         Assert.Equal(PaymentTransitionReason.NotPending, ex.Reason);
     }
 
-    [Fact]
-    public void Resume_WhenTimeIsNotUtc_ShouldThrow() =>
-        Assert.Throws<ArgumentException>(
-            () => Pending().Resume(DateTime.SpecifyKind(Later, DateTimeKind.Local)));
-
     // -- Reconciliation ---------------------------------------------------
 
-    /// <summary>
-    /// Reconciliation transitions record an answer looked up at the gateway. Separate methods,
-    /// so the ordinary path cannot write an answer it never received.
-    /// </summary>
     [Fact]
     public void ResolveAsVoided_WhenTimedOut_ShouldReleaseTheFundsItFound()
     {
@@ -340,7 +344,6 @@ public class PaymentTests
         Assert.False(payment.IsLive);
     }
 
-    /// <summary>The looked-up reference is recorded, for anyone chasing the payment.</summary>
     [Fact]
     public void ResolveAsVoided_ShouldRecordTheReferenceItFound()
     {
@@ -353,7 +356,6 @@ public class PaymentTests
         Assert.Equal(GatewayReference, payment.GatewayReference);
     }
 
-    /// <summary>AttemptedAt does not move: the funds were held when the original call arrived.</summary>
     [Fact]
     public void ResolveAsVoided_ShouldNotMoveTheAttemptTime()
     {
@@ -388,7 +390,6 @@ public class PaymentTests
         Assert.Equal(PaymentTransitionReason.NotTimedOut, ex.Reason);
     }
 
-    /// <summary>A refusal read back from the gateway settles the attempt as Declined.</summary>
     [Fact]
     public void ResolveAsDeclined_WhenTimedOut_ShouldResolveTheAttempt()
     {
@@ -416,7 +417,6 @@ public class PaymentTests
         Assert.Equal(PaymentTransitionReason.NotTimedOut, ex.Reason);
     }
 
-    /// <summary>No record at the gateway: Abandoned, not live, freeing the order's slot.</summary>
     [Fact]
     public void ResolveAsAbandoned_WhenTimedOut_ShouldResolveTheAttempt()
     {
@@ -429,7 +429,6 @@ public class PaymentTests
         Assert.False(payment.IsLive);
     }
 
-    /// <summary>Nothing reached the gateway, so no reference is recorded.</summary>
     [Fact]
     public void ResolveAsAbandoned_ShouldLeaveNoGatewayReference()
     {
@@ -468,7 +467,6 @@ public class PaymentTests
         Assert.Equal(Later.AddSeconds(1), payment.ResolvedAt);
     }
 
-    /// <summary>Capture is idempotent, and the resolution time does not move.</summary>
     [Fact]
     public void Capture_WhenAlreadyCaptured_ShouldBeANoOp()
     {
@@ -521,7 +519,6 @@ public class PaymentTests
         Assert.Equal(Later, payment.ResolvedAt);
     }
 
-    /// <summary>A captured payment cannot be voided; that would be a refund.</summary>
     [Fact]
     public void Void_WhenCaptured_ShouldRefuse()
     {
@@ -547,7 +544,6 @@ public class PaymentTests
 
     // -- Liveness ---------------------------------------------------------
 
-    /// <summary>Live means "might hold or have taken money": a timeout counts, a refusal does not.</summary>
     [Theory]
     [InlineData(PaymentStatus.Pending, true)]
     [InlineData(PaymentStatus.Authorized, true)]
@@ -560,9 +556,8 @@ public class PaymentTests
         Assert.Equal(expected, InStatus(status).IsLive);
 
     /// <summary>
-    /// The unique index, not the read before it, is the guard against a double charge, so its
-    /// filter must name exactly the statuses <see cref="Payment.IsLive"/> counts. This reads the
-    /// filter from the model; <c>MigrateAsync</c> then refuses a model the migrations disagree with.
+    /// Reading the filter from the model is enough: <c>MigrateAsync</c> refuses a model the
+    /// migrations disagree with.
     /// </summary>
     [Fact]
     public void TheLiveAttemptIndex_ShouldFilterOnExactlyTheLiveStatuses()
@@ -581,48 +576,17 @@ public class PaymentTests
         Assert.Equal($"\"Status\" IN ({string.Join(", ", live)})", index.GetFilter());
     }
 
-    // -- Identity ---------------------------------------------------------
+    // -- utcNow must be UTC -----------------------------------------------
 
-    /// <summary>Empty ids are refused at construction.</summary>
-    [Fact]
-    public void Create_WhenIdIsEmpty_ShouldThrow()
-    {
-        var exception = Assert.Throws<ArgumentException>(() =>
-            Payment.Create(Guid.Empty, OrderId, ClientId, Amount, Currency, Key, T0));
-
-        Assert.Equal("id", exception.ParamName);
-    }
-
-    [Fact]
-    public void Create_WhenOrderIdIsEmpty_ShouldThrow()
-    {
-        var exception = Assert.Throws<ArgumentException>(() =>
-            Payment.Create(PaymentId, Guid.Empty, ClientId, Amount, Currency, Key, T0));
-
-        Assert.Equal("orderId", exception.ParamName);
-    }
-
-    [Fact]
-    public void Create_WhenClientIdIsEmpty_ShouldThrow()
-    {
-        var exception = Assert.Throws<ArgumentException>(() =>
-            Payment.Create(PaymentId, OrderId, Guid.Empty, Amount, Currency, Key, T0));
-
-        Assert.Equal("clientId", exception.ParamName);
-    }
-
-    // -- utcNow must be UTC -------------------------------------------------
-
-    /// <summary>Every transition requires a UTC instant; <c>Local</c> and <c>Unspecified</c> are refused.</summary>
     [Theory]
     [InlineData(DateTimeKind.Local)]
     [InlineData(DateTimeKind.Unspecified)]
     public void Create_WhenUtcNowIsNotUtc_ShouldThrow(DateTimeKind kind)
     {
-        var exception = Assert.Throws<ArgumentException>(() =>
+        var ex = Assert.Throws<ArgumentException>(() =>
             Payment.Create(PaymentId, OrderId, ClientId, Amount, Currency, Key, NotUtc(kind)));
 
-        Assert.Equal("utcNow", exception.ParamName);
+        Assert.Equal("utcNow", ex.ParamName);
     }
 
     [Theory]
@@ -632,10 +596,10 @@ public class PaymentTests
     {
         var payment = Pending();
 
-        var exception = Assert.Throws<ArgumentException>(() =>
+        var ex = Assert.Throws<ArgumentException>(() =>
             payment.Authorize(GatewayReference, NotUtc(kind)));
 
-        Assert.Equal("utcNow", exception.ParamName);
+        Assert.Equal("utcNow", ex.ParamName);
     }
 
     [Theory]
@@ -645,9 +609,9 @@ public class PaymentTests
     {
         var payment = Pending();
 
-        var exception = Assert.Throws<ArgumentException>(() => payment.Decline(NotUtc(kind)));
+        var ex = Assert.Throws<ArgumentException>(() => payment.Decline(NotUtc(kind)));
 
-        Assert.Equal("utcNow", exception.ParamName);
+        Assert.Equal("utcNow", ex.ParamName);
     }
 
     [Theory]
@@ -657,9 +621,9 @@ public class PaymentTests
     {
         var payment = Pending();
 
-        var exception = Assert.Throws<ArgumentException>(() => payment.TimeOut(NotUtc(kind)));
+        var ex = Assert.Throws<ArgumentException>(() => payment.TimeOut(NotUtc(kind)));
 
-        Assert.Equal("utcNow", exception.ParamName);
+        Assert.Equal("utcNow", ex.ParamName);
     }
 
     [Theory]
@@ -669,10 +633,15 @@ public class PaymentTests
     {
         var payment = TimedOut();
 
-        var exception = Assert.Throws<ArgumentException>(() => payment.Retry(NotUtc(kind)));
+        var ex = Assert.Throws<ArgumentException>(() => payment.Retry(NotUtc(kind)));
 
-        Assert.Equal("utcNow", exception.ParamName);
+        Assert.Equal("utcNow", ex.ParamName);
     }
+
+    [Fact]
+    public void Resume_WhenUtcNowIsNotUtc_ShouldThrow() =>
+        Assert.Throws<ArgumentException>(
+            () => Pending().Resume(DateTime.SpecifyKind(Later, DateTimeKind.Local)));
 
     [Theory]
     [InlineData(DateTimeKind.Local)]
@@ -681,9 +650,9 @@ public class PaymentTests
     {
         var payment = Authorized();
 
-        var exception = Assert.Throws<ArgumentException>(() => payment.Capture(NotUtc(kind)));
+        var ex = Assert.Throws<ArgumentException>(() => payment.Capture(NotUtc(kind)));
 
-        Assert.Equal("utcNow", exception.ParamName);
+        Assert.Equal("utcNow", ex.ParamName);
     }
 
     [Theory]
@@ -693,15 +662,11 @@ public class PaymentTests
     {
         var payment = Authorized();
 
-        var exception = Assert.Throws<ArgumentException>(() => payment.Void(NotUtc(kind)));
+        var ex = Assert.Throws<ArgumentException>(() => payment.Void(NotUtc(kind)));
 
-        Assert.Equal("utcNow", exception.ParamName);
+        Assert.Equal("utcNow", ex.ParamName);
     }
 
-    /// <summary>
-    /// The idempotent transitions check the instant before their early return, so a bad clock is
-    /// reported regardless of state.
-    /// </summary>
     [Theory]
     [InlineData(DateTimeKind.Local)]
     [InlineData(DateTimeKind.Unspecified)]
@@ -709,9 +674,9 @@ public class PaymentTests
     {
         var payment = Captured();
 
-        var exception = Assert.Throws<ArgumentException>(() => payment.Capture(NotUtc(kind)));
+        var ex = Assert.Throws<ArgumentException>(() => payment.Capture(NotUtc(kind)));
 
-        Assert.Equal("utcNow", exception.ParamName);
+        Assert.Equal("utcNow", ex.ParamName);
     }
 
     [Theory]
@@ -721,12 +686,11 @@ public class PaymentTests
     {
         var payment = Voided();
 
-        var exception = Assert.Throws<ArgumentException>(() => payment.Void(NotUtc(kind)));
+        var ex = Assert.Throws<ArgumentException>(() => payment.Void(NotUtc(kind)));
 
-        Assert.Equal("utcNow", exception.ParamName);
+        Assert.Equal("utcNow", ex.ParamName);
     }
 
-    /// <summary>The reconciliation transitions have the same UTC precondition.</summary>
     [Theory]
     [InlineData(DateTimeKind.Local)]
     [InlineData(DateTimeKind.Unspecified)]
@@ -734,10 +698,10 @@ public class PaymentTests
     {
         var payment = TimedOut();
 
-        var exception = Assert.Throws<ArgumentException>(
+        var ex = Assert.Throws<ArgumentException>(
             () => payment.ResolveAsVoided(GatewayReference, NotUtc(kind)));
 
-        Assert.Equal("utcNow", exception.ParamName);
+        Assert.Equal("utcNow", ex.ParamName);
     }
 
     [Theory]
@@ -747,9 +711,9 @@ public class PaymentTests
     {
         var payment = TimedOut();
 
-        var exception = Assert.Throws<ArgumentException>(() => payment.ResolveAsDeclined(NotUtc(kind)));
+        var ex = Assert.Throws<ArgumentException>(() => payment.ResolveAsDeclined(NotUtc(kind)));
 
-        Assert.Equal("utcNow", exception.ParamName);
+        Assert.Equal("utcNow", ex.ParamName);
     }
 
     [Theory]
@@ -759,11 +723,8 @@ public class PaymentTests
     {
         var payment = TimedOut();
 
-        var exception = Assert.Throws<ArgumentException>(() => payment.ResolveAsAbandoned(NotUtc(kind)));
+        var ex = Assert.Throws<ArgumentException>(() => payment.ResolveAsAbandoned(NotUtc(kind)));
 
-        Assert.Equal("utcNow", exception.ParamName);
+        Assert.Equal("utcNow", ex.ParamName);
     }
-
-    /// <summary>The same wall-clock reading as <see cref="Later"/> with the wrong Kind.</summary>
-    private static DateTime NotUtc(DateTimeKind kind) => DateTime.SpecifyKind(Later, kind);
 }

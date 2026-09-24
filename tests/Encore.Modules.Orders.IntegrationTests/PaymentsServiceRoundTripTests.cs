@@ -1,3 +1,4 @@
+using System.Globalization;
 using Encore.Modules.Orders.Data;
 using Encore.Modules.Payments;
 using Encore.Modules.Payments.Contracts;
@@ -5,18 +6,14 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
-using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Encore.Modules.Orders.IntegrationTests;
 
 /// <summary>
-/// Orders' HTTP client against the real Payments service routes, hosted in process on a real
-/// port. Every other test of this seam fakes one side: <c>HttpOrderPaymentsTests</c> answers
-/// from a stub, and <c>PaymentServiceEndpointsTests</c> sends hand-written requests. Only here
-/// do both run together, so a wire format the two disagree on fails a test (018). The database
-/// is shared by the class and never emptied; every test pays for orders of its own.
+/// Every other test of this seam fakes one side; only here do both run, so a wire format they
+/// disagree on fails (018). The database is never emptied, so every test uses fresh order ids.
 /// </summary>
 public sealed class PaymentsServiceRoundTripTests(OrdersDatabase database)
     : IClassFixture<OrdersDatabase>, IAsyncLifetime
@@ -27,10 +24,8 @@ public sealed class PaymentsServiceRoundTripTests(OrdersDatabase database)
 
     private readonly List<WebApplication> _services = [];
 
-    /// <inheritdoc />
     public Task InitializeAsync() => Task.CompletedTask;
 
-    /// <inheritdoc />
     public async Task DisposeAsync()
     {
         foreach (var service in _services)
@@ -39,7 +34,6 @@ public sealed class PaymentsServiceRoundTripTests(OrdersDatabase database)
         }
     }
 
-    /// <summary>Authorise, authorise again, capture, then a void that finds the money taken.</summary>
     [Fact]
     public async Task EveryAnswerOfAnOrdersLife_ShouldCrossTheWireIntact()
     {
@@ -64,7 +58,6 @@ public sealed class PaymentsServiceRoundTripTests(OrdersDatabase database)
         Assert.Equal(AuthorizePaymentStatus.AlreadyCaptured, reauthorized.Status);
     }
 
-    /// <summary>An authorisation released by a void, and the answers when nothing is held.</summary>
     [Fact]
     public async Task AVoidAndNothingHeld_ShouldCrossTheWireIntact()
     {
@@ -73,9 +66,15 @@ public sealed class PaymentsServiceRoundTripTests(OrdersDatabase database)
 
         await payments.AuthorizeAsync(new AuthorizePaymentRequest(orderId, clientId, 25m, "GBP"));
 
-        Assert.Equal(VoidPaymentStatus.Voided, (await payments.VoidAsync(new VoidPaymentRequest(orderId, clientId))).Status);
-        Assert.Equal(VoidPaymentStatus.NoAuthorization, (await payments.VoidAsync(new VoidPaymentRequest(orderId, clientId))).Status);
-        Assert.Equal(CapturePaymentStatus.NoAuthorization, (await payments.CaptureAsync(new CapturePaymentRequest(orderId, clientId))).Status);
+        Assert.Equal(
+            VoidPaymentStatus.Voided,
+            (await payments.VoidAsync(new VoidPaymentRequest(orderId, clientId))).Status);
+        Assert.Equal(
+            VoidPaymentStatus.NoAuthorization,
+            (await payments.VoidAsync(new VoidPaymentRequest(orderId, clientId))).Status);
+        Assert.Equal(
+            CapturePaymentStatus.NoAuthorization,
+            (await payments.CaptureAsync(new CapturePaymentRequest(orderId, clientId))).Status);
     }
 
     [Fact]
@@ -90,7 +89,7 @@ public sealed class PaymentsServiceRoundTripTests(OrdersDatabase database)
         Assert.NotNull(declined.PaymentId);
     }
 
-    /// <summary>A gateway timeout arrives as one, not as the unreadable-answer fallback.</summary>
+    /// <summary>A real timeout names its attempt; the unreadable-answer fallback carries Guid.Empty.</summary>
     [Fact]
     public async Task AGatewayTimeout_ShouldCrossTheWireIntact()
     {
@@ -103,10 +102,6 @@ public sealed class PaymentsServiceRoundTripTests(OrdersDatabase database)
         Assert.NotEqual(Guid.Empty, timedOut.PaymentId);
     }
 
-    /// <summary>
-    /// The Payments service as <c>Encore.Payments.Api</c> composes it, on a port of its own, and
-    /// Orders' client pointed at it.
-    /// </summary>
     private async Task<HttpOrderPayments> ClientAsync(double declineRate = 0, double timeoutRate = 0)
     {
         var builder = WebApplication.CreateSlimBuilder();
@@ -117,8 +112,8 @@ public sealed class PaymentsServiceRoundTripTests(OrdersDatabase database)
             ["ConnectionStrings:Payments"] = _database.ConnectionString,
             ["Payments:ServiceToken"] = Token,
             ["Payments:Reconciliation:Enabled"] = "false",
-            ["Payments:Simulation:DeclineRate"] = declineRate.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            ["Payments:Simulation:TimeoutRate"] = timeoutRate.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["Payments:Simulation:DeclineRate"] = declineRate.ToString(CultureInfo.InvariantCulture),
+            ["Payments:Simulation:TimeoutRate"] = timeoutRate.ToString(CultureInfo.InvariantCulture),
             ["Payments:Simulation:LostRequestRate"] = "0",
             ["Payments:Simulation:MinLatency"] = "00:00:00",
             ["Payments:Simulation:MaxLatency"] = "00:00:00"
@@ -134,10 +129,12 @@ public sealed class PaymentsServiceRoundTripTests(OrdersDatabase database)
 
         var address = service.Services
             .GetRequiredService<IServer>()
-            .Features.GetRequiredFeature<IServerAddressesFeature>()
-            .Addresses.First();
+            .Features
+            .Get<IServerAddressesFeature>()!
+            .Addresses
+            .Single();
 
-        var http = new HttpClient { BaseAddress = new Uri(address + "/internal/payments/") };
+        var http = new HttpClient { BaseAddress = new Uri(address.TrimEnd('/') + "/internal/payments/") };
         http.DefaultRequestHeaders.Add(PaymentsServiceApi.ServiceTokenHeader, Token);
 
         return new HttpOrderPayments(http);

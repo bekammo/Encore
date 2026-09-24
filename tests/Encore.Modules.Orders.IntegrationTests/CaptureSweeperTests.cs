@@ -11,17 +11,13 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Orders.IntegrationTests;
 
-/// <summary>
-/// The capture sweep against real Postgres, with Payments faked at its contract: which orders
-/// it finishes, which it leaves alone, and that it only ever does what a confirm would. A sweep
-/// visits every owed order, so the shared database is emptied before each test.
-/// </summary>
+/// <summary>The sweep visits every owed order, so the shared database is emptied before each test.</summary>
 public sealed class CaptureSweeperTests(OrdersDatabase database)
     : IClassFixture<OrdersDatabase>, IAsyncLifetime
 {
     private static readonly DateTime Now = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
 
-    /// <summary>Comfortably past <see cref="CaptureSweepOptions.MinimumAge"/>.</summary>
+    // Comfortably past CaptureSweepOptions.MinimumAge.
     private static readonly DateTime LongAgo = Now.AddMinutes(-10);
 
     private readonly OrdersDatabase _database = database;
@@ -30,13 +26,10 @@ public sealed class CaptureSweeperTests(OrdersDatabase database)
 
     private readonly DbContextOptions<OrdersDbContext> _options = database.Options;
 
-    /// <summary>Empties the orders the previous test left.</summary>
     public Task InitializeAsync() => _database.ResetAsync();
 
-    /// <inheritdoc />
     public Task DisposeAsync() => Task.CompletedTask;
 
-    /// <summary>An order owed its capture for long enough is captured and confirmed.</summary>
     [Fact]
     public async Task Sweep_WhenAnOrderHasAwaitedItsCapture_ShouldCaptureAndConfirmIt()
     {
@@ -52,7 +45,6 @@ public sealed class CaptureSweeperTests(OrdersDatabase database)
         Assert.Single(_payments.Captures);
     }
 
-    /// <summary>A sale recorded moments ago belongs to the confirm still asking for its capture.</summary>
     [Fact]
     public async Task Sweep_WhenTheSaleIsRecent_ShouldLeaveItToItsConfirm()
     {
@@ -65,7 +57,7 @@ public sealed class CaptureSweeperTests(OrdersDatabase database)
         Assert.Empty(_payments.Captures);
     }
 
-    /// <summary>A capture unanswered again leaves the order owed, to be asked about next sweep.</summary>
+    /// <summary>SoldAt is left alone, so the next sweep asks again rather than waiting out MinimumAge.</summary>
     [Fact]
     public async Task Sweep_WhenTheCaptureGoesUnansweredAgain_ShouldLeaveTheOrderOwed()
     {
@@ -82,7 +74,6 @@ public sealed class CaptureSweeperTests(OrdersDatabase database)
         Assert.Null(stored.ClosedAt);
     }
 
-    /// <summary>Only orders awaiting capture are its business.</summary>
     [Theory]
     [InlineData(OrderStatus.Pending)]
     [InlineData(OrderStatus.Confirmed)]
@@ -98,7 +89,6 @@ public sealed class CaptureSweeperTests(OrdersDatabase database)
         Assert.Empty(_payments.Captures);
     }
 
-    /// <summary>While another connection holds the lease, a sweep does nothing.</summary>
     [Fact]
     public async Task Sweep_WhenAnotherInstanceHoldsTheLease_ShouldDoNothing()
     {
@@ -122,7 +112,6 @@ public sealed class CaptureSweeperTests(OrdersDatabase database)
 
     // -- Helpers ----------------------------------------------------------
 
-    /// <summary>A committed order in the given status, with one line.</summary>
     private async Task<Guid> SeedAsync(OrderStatus status, DateTime? soldAt)
     {
         var orderId = Guid.NewGuid();
@@ -154,7 +143,6 @@ public sealed class CaptureSweeperTests(OrdersDatabase database)
         return await context.Orders.AsNoTracking().SingleAsync(order => order.Id == orderId);
     }
 
-    /// <summary>The sweep and a checkout service per scope, as the module composes them.</summary>
     private SweeperHost Host()
     {
         var services = new ServiceCollection();
@@ -185,7 +173,6 @@ public sealed class CaptureSweeperTests(OrdersDatabase database)
         public ValueTask DisposeAsync() => provider.DisposeAsync();
     }
 
-    /// <summary>Payments at its contract, counting captures.</summary>
     private sealed class CountingPayments : IOrderPayments
     {
         public CapturePaymentStatus CaptureWith { get; set; } = CapturePaymentStatus.Captured;
@@ -211,19 +198,26 @@ public sealed class CaptureSweeperTests(OrdersDatabase database)
             throw new NotSupportedException("The sweep never voids.");
     }
 
-    /// <summary>Catalog and Inventory, which finishing a capture never asks.</summary>
     private sealed class Unused : IEventPricing, ISeatReservations
     {
-        public Task<EventPricingResponse> GetAsync(EventPricingRequest request, CancellationToken cancellationToken = default) =>
+        public Task<EventPricingResponse> GetAsync(
+            EventPricingRequest request,
+            CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<HoldSeatsResponse> HoldAsync(HoldSeatsRequest request, CancellationToken cancellationToken = default) =>
+        public Task<HoldSeatsResponse> HoldAsync(
+            HoldSeatsRequest request,
+            CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<SellSeatsResponse> SellAsync(SellSeatsRequest request, CancellationToken cancellationToken = default) =>
+        public Task<SellSeatsResponse> SellAsync(
+            SellSeatsRequest request,
+            CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<ReleaseSeatsResponse> ReleaseAsync(ReleaseSeatsRequest request, CancellationToken cancellationToken = default) =>
+        public Task<ReleaseSeatsResponse> ReleaseAsync(
+            ReleaseSeatsRequest request,
+            CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
 }
