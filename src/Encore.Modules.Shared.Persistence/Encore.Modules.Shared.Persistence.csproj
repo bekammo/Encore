@@ -1,8 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The startup migrator and Npgsql wiring every module shares. Not a module: the
-       architecture tests forbid it to name any module or contracts assembly. -->
+  <!-- Not a module (017): only inert code that names no module or contracts assembly. No
+       ProjectReference; modules reference this, never the reverse. -->
 
+  <!-- Hosting abstractions only, not Microsoft.AspNetCore.App: every module references this,
+       and Notifications serves no routes. -->
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.4" />
   </ItemGroup>
@@ -11,8 +13,5 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
-
-  <!-- No ProjectReference: modules reference this, never the reverse, and nothing
-       zero-dependency may reach its EF Core. -->
 
 </Project>

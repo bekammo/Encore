@@ -5,18 +5,10 @@ using Npgsql;
 namespace Encore.Modules.Inventory.Adapters.Persistence;
 
 /// <summary>
-/// <see cref="IDistributedLock"/> on a Postgres session-level advisory lock: the same "try, do
-/// not wait" as the Redis lock, taken on a connection held until release. Selected with
-/// <c>Inventory:HoldCapLock = Postgres</c>, so the cap holds through a Redis outage, at the
-/// throughput cost 005 measured.
+/// A session-level advisory lock, so each held lock keeps its own connection until release.
+/// The TTL is ignored: a crashed holder's lock dies with its connection. A key collision
+/// costs a spurious "in flight" refusal, never a breach.
 /// </summary>
-/// <remarks>
-/// The key is <c>hashtextextended(resource, 0)</c>, computed by the server. A collision makes two
-/// resources share a lock, which costs a spurious "in flight" refusal, never a breach. The TTL is
-/// ignored: the lock lives exactly as long as its session, so a crashed holder frees it when its
-/// connection drops, which is what the TTL approximates for Redis. The cost is a second
-/// connection for each hold in flight.
-/// </remarks>
 public sealed class PostgresAdvisoryLock(NpgsqlDataSource dataSource) : IDistributedLock
 {
     private const string TryLockSql = "SELECT pg_try_advisory_lock(hashtextextended($1, 0))";
@@ -24,7 +16,6 @@ public sealed class PostgresAdvisoryLock(NpgsqlDataSource dataSource) : IDistrib
 
     private readonly NpgsqlDataSource _dataSource = dataSource;
 
-    /// <summary>The session holding each lock, by token, until it is released.</summary>
     private readonly ConcurrentDictionary<string, NpgsqlConnection> _held = new();
 
     /// <inheritdoc />

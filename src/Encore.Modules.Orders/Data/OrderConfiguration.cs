@@ -4,18 +4,10 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace Encore.Modules.Orders.Data;
 
-/// <summary>Maps <see cref="Order"/> to the <c>orders.orders</c> table.</summary>
-/// <remarks>
-/// The partial unique index allows one pending order per client per event; it is the real
-/// guard against a duplicate checkout. Its filter is built from <see cref="OrderStatus.Pending"/>,
-/// so renumbering the enum is a model change a migration has to follow.
-/// </remarks>
 public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
 {
-    /// <summary>The one-open-checkout index. The checkout matches a refusal on it.</summary>
     internal const string PendingCheckoutIndex = "ux_orders_client_event_pending";
 
-    /// <inheritdoc />
     public void Configure(EntityTypeBuilder<Order> builder)
     {
         builder.ToTable("orders");
@@ -55,7 +47,7 @@ public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
             .HasMaxLength(3)
             .IsRequired();
 
-        // xmin is a system column: mapped, never created by a migration.
+        // xmin is a system column: mapped, never created by a migration (004).
         builder.Property(order => order.RowVersion)
             .HasColumnName("xmin")
             .HasColumnType("xid")
@@ -67,14 +59,12 @@ public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
             .HasForeignKey(line => line.OrderId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        // One open checkout per client per event.
         builder
             .HasIndex(order => new { order.ClientId, order.EventId })
             .IsUnique()
             .HasFilter($"\"Status\" = {(int)OrderStatus.Pending}")
             .HasDatabaseName(PendingCheckoutIndex);
 
-        // What the capture sweep reads: the few orders still owed their capture, oldest first.
         builder
             .HasIndex(order => order.SoldAt)
             .HasFilter($"\"Status\" = {(int)OrderStatus.AwaitingCapture}")

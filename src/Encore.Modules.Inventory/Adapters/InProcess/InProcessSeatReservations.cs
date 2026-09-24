@@ -4,11 +4,6 @@ using Encore.Modules.Inventory.Contracts;
 
 namespace Encore.Modules.Inventory.Adapters.InProcess;
 
-/// <summary>
-/// Serves <see cref="ISeatReservations"/> in process by calling the use cases directly,
-/// translating their outcomes into the public contract so internal enums never become
-/// part of it.
-/// </summary>
 internal sealed class InProcessSeatReservations(
     HoldSeatCommandHandler holdSeat,
     ReleaseSeatCommandHandler releaseSeat,
@@ -75,7 +70,7 @@ internal sealed class InProcessSeatReservations(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        // All or none: every seat sold, or only the refusals are worth counting.
+        // All or none (011): every seat sold, or none did and only the refusals count.
         if (result.AllSold)
         {
             InventoryTelemetry.SeatOutcomes.Add(
@@ -119,7 +114,6 @@ internal sealed class InProcessSeatReservations(
 
     private static SellSeatResponse ToResponse(Guid seatId, SellSeatOutcome outcome) => outcome switch
     {
-        // Only refusals are mapped: a sale is an empty refusal list.
         SellSeatOutcome.Sold => throw new ArgumentOutOfRangeException(
             nameof(outcome), outcome, "A sale is not a refusal."),
 

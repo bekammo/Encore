@@ -9,11 +9,7 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Payments.IntegrationTests;
 
-/// <summary>
-/// The in-process adapter end to end against real Postgres and a misbehaving gateway. Needs a
-/// database because the one-live-attempt rule is a partial unique index. The database is shared
-/// by the class and never emptied, so every test uses fresh order ids.
-/// </summary>
+/// <summary>The database is never emptied, so every test uses fresh order ids.</summary>
 public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : IClassFixture<PaymentsDatabase>
 {
     private const decimal Amount = 120.50m;
@@ -23,7 +19,6 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
 
     private readonly DbContextOptions<PaymentsDbContext> _options = database.Options;
 
-    /// <summary>How the gateway reaches its ledger table.</summary>
     private readonly IServiceScopeFactory _scopes = database.Scopes;
 
     // -- Authorize --------------------------------------------------------
@@ -56,7 +51,6 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
         Assert.False(payment.IsLive);
     }
 
-    /// <summary>The row exists even though the gateway never answered: it is written first.</summary>
     [Fact]
     public async Task Authorize_WhenTheGatewayNeverAnswers_ShouldLeaveALiveAttemptBehind()
     {
@@ -71,7 +65,6 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
         Assert.True(payment.IsLive);
     }
 
-    /// <summary>A retry after a timeout reuses the row and its key.</summary>
     [Fact]
     public async Task Authorize_AfterATimeout_ShouldReuseTheRowAndTheKey()
     {
@@ -90,11 +83,7 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
         Assert.Equal(1, await CountAsync(orderId));
     }
 
-    /// <summary>
-    /// A second confirm arrives while the first is still waiting on the gateway. Both ask under
-    /// the same key and get the same decision; whichever saves second reports the row as the
-    /// other left it instead of failing.
-    /// </summary>
+    /// <summary>The second confirm lands while the first is still waiting on the gateway, under the same key.</summary>
     [Fact]
     public async Task Authorize_WhileAnotherConfirmIsAskingTheGateway_ShouldAnswerRatherThanFail()
     {
@@ -115,7 +104,6 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
         Assert.Equal(PaymentStatus.Authorized, (await ReadAsync(orderId)).Status);
     }
 
-    /// <summary>Authorising again while authorised returns the existing hold.</summary>
     [Fact]
     public async Task Authorize_WhenAlreadyAuthorized_ShouldReturnTheSameAttempt()
     {
@@ -143,7 +131,6 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
         Assert.Equal(1, await CountAsync(orderId));
     }
 
-    /// <summary>After a decline, a new attempt gets a new row and key.</summary>
     [Fact]
     public async Task Authorize_AfterADecline_ShouldStartAFreshAttempt()
     {
@@ -157,9 +144,7 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
         Assert.Equal(2, await CountAsync(orderId));
     }
 
-    /// <summary>
-    /// Another client asking about the same order sees nothing and is refused by the index.
-    /// </summary>
+    /// <summary>Another client's lookup finds nothing, so its insert is refused by the index.</summary>
     [Fact]
     public async Task Authorize_ForSomebodyElsesOrder_ShouldNotFindTheExistingAttempt()
     {
@@ -209,7 +194,6 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
         Assert.Equal(CapturePaymentStatus.NoAuthorization, response.Status);
     }
 
-    /// <summary>A capture with no answer changes nothing, so it can be retried.</summary>
     [Fact]
     public async Task Capture_WhenTheGatewayNeverAnswers_ShouldLeaveTheHoldCapturable()
     {
@@ -259,7 +243,6 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
         Assert.Equal(PaymentStatus.Captured, (await ReadAsync(orderId)).Status);
     }
 
-    /// <summary>Voiding with nothing held is not a failure.</summary>
     [Fact]
     public async Task Void_WithNothingHeld_ShouldSayThereIsNoAuthorization()
     {
@@ -282,7 +265,6 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
         Assert.Equal(VoidPaymentStatus.NoAuthorization, response.Status);
     }
 
-    /// <summary>A void with no answer leaves the hold recorded; it lapses at the gateway.</summary>
     [Fact]
     public async Task Void_WhenTheGatewayNeverAnswers_ShouldLeaveTheHoldRecorded()
     {
@@ -303,7 +285,7 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
     private static AuthorizePaymentRequest Authorize(Guid orderId, Guid clientId) =>
         new(orderId, clientId, Amount, Currency);
 
-    /// <summary>A fresh adapter over a fresh context: each call stands for a separate request.</summary>
+    // A fresh adapter over a fresh context: each call stands for a separate request.
     private IOrderPayments Payments(double declineRate = 0, double timeoutRate = 0, TimeSpan? latency = null) =>
         new InProcessOrderPayments(
             new PaymentsDbContext(_options),
@@ -319,7 +301,7 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
                 TimeProvider.System),
             new FakeTimeProvider(T0));
 
-    /// <summary>The one attempt against this order; a second would break the reuse-the-row rule.</summary>
+    // SingleAsync on purpose: a second row would break the reuse-the-row rule.
     private async Task<Payment> ReadAsync(Guid orderId)
     {
         await using var context = new PaymentsDbContext(_options);

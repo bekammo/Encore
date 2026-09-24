@@ -1,7 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- In-memory tests for the payment state machine and the HTTP mapping. No Testcontainers. -->
-
   <PropertyGroup>
     <IsPackable>false</IsPackable>
   </PropertyGroup>

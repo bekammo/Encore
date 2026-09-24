@@ -1,19 +1,12 @@
 namespace Encore.Modules.Payments.Contracts;
 
-/// <summary>
-/// The strings both sides of the Payments service API must spell identically. Addresses and
-/// tokens are configuration and do not belong here. The request bodies are the contract's own
-/// request records, so they need no spelling of their own.
-/// </summary>
 public static class PaymentsServiceApi
 {
-    /// <summary>The header carrying the shared service token.</summary>
     public const string ServiceTokenHeader = "X-Service-Token";
 
     /// <summary>
-    /// Every <c>outcome</c> a success carries and every <c>reason</c> a refusal carries. The
-    /// client reads an unknown one as a timeout, so a spelling the two sides disagree on would
-    /// fail silently. That is why both sides use these.
+    /// Every success <c>outcome</c> and refusal <c>reason</c>. The client reads an unknown one as
+    /// a timeout, so a spelling the two sides disagree on would fail silently (018).
     /// </summary>
     public static class Outcomes
     {

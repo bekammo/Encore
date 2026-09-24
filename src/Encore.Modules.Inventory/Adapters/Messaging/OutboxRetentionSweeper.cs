@@ -9,9 +9,8 @@ using Microsoft.Extensions.Options;
 namespace Encore.Modules.Inventory.Adapters.Messaging;
 
 /// <summary>
-/// Deletes outbox rows delivered longer ago than the retention window. Cleanup only.
-/// A bulk delete is right here: removing a delivered row announces nothing. Undelivered
-/// messages and dead letters are never deleted.
+/// A bulk delete, unlike the seat sweep: removing a delivered row announces nothing. Dead
+/// letters and undelivered rows are never deleted.
 /// </summary>
 internal sealed class OutboxRetentionSweeper(
     IServiceScopeFactory scopeFactory,
@@ -24,7 +23,6 @@ internal sealed class OutboxRetentionSweeper(
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<OutboxRetentionSweeper> _logger = logger;
 
-    /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
@@ -45,8 +43,6 @@ internal sealed class OutboxRetentionSweeper(
         _logger.LogInformation("Outbox retention sweep stopped.");
     }
 
-    /// <summary>Deletes one batch of old delivered rows. Internal so tests can drive one pass.</summary>
-    /// <returns>How many rows were removed.</returns>
     internal async Task<int> SweepBatchAsync(CancellationToken cancellationToken)
     {
         var cutoff = _timeProvider.GetUtcNow().UtcDateTime - _options.KeepDelivered;
@@ -54,9 +50,9 @@ internal sealed class OutboxRetentionSweeper(
         using var scope = _scopeFactory.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
 
-        // The subquery bounds the batch; EF has no Take() on ExecuteDelete. By Id, which is
-        // assigned in insert order and indexed, so the batch walks the primary key from the
-        // oldest rows and stops. ProcessedAt has no index, and sorting by it scanned the table.
+        // EF has no Take() on ExecuteDelete, so a subquery bounds the batch. By Id, the primary
+        // key in insert order, so the batch stops early; ProcessedAt has no index, and sorting by
+        // it scanned the table.
         var doomed = context.OutboxMessages
             .Where(message => message.ProcessedAt != null && message.ProcessedAt < cutoff)
             .OrderBy(message => message.Id)

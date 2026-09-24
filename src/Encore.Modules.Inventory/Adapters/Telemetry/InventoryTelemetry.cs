@@ -4,30 +4,25 @@ using System.Diagnostics.Metrics;
 namespace Encore.Modules.Inventory.Adapters.Telemetry;
 
 /// <summary>
-/// Inventory's own traces and metrics, through the BCL alone: nothing here knows whether
-/// anyone is listening, and nothing records unless something is. Recorded at the adapters'
-/// edges, so the Domain and the use cases stay as they were.
+/// BCL instruments only, recorded at the adapters' edges, never in the Domain or the use cases
+/// (021). Static rather than from <c>IMeterFactory</c>: one set per process either way, and the
+/// adapters that record are also built by hand in tests.
 /// </summary>
-/// <remarks>
-/// Static rather than from <c>IMeterFactory</c>: one set of instruments per process either way,
-/// and the adapters that record are also built by hand in tests.
-/// </remarks>
 internal static class InventoryTelemetry
 {
-    /// <summary>The source and meter name. Hosts subscribe to <c>Encore.*</c>.</summary>
+    /// <summary>Keeps the <c>Encore.</c> prefix: hosts subscribe to <c>Encore.*</c> (021).</summary>
     public const string Name = "Encore.Inventory";
 
     public static readonly ActivitySource Source = new(Name);
 
     private static readonly Meter Meter = new(Name);
 
-    /// <summary>What a seat answered, per seat, by action and outcome.</summary>
     public static readonly Counter<long> SeatOutcomes = Meter.CreateCounter<long>(
         "encore.inventory.seat.outcomes",
         unit: "{seat}",
         description: "Seat actions answered, by action and outcome.");
 
-    /// <summary>What the lock service answered, including the attempts the cooldown answered for it.</summary>
+    /// <summary>Redis lock calls, including attempts the cooldown refused without asking Redis.</summary>
     public static readonly Counter<long> LockAttempts = Meter.CreateCounter<long>(
         "encore.inventory.lock.attempts",
         unit: "{attempt}",
@@ -38,14 +33,13 @@ internal static class InventoryTelemetry
         unit: "{message}",
         description: "Outbox delivery attempts, by event type and outcome.");
 
-    /// <summary>From the seat change to its delivery: how late "late is not wrong" is.</summary>
     public static readonly Histogram<double> OutboxDeliveryLag = Meter.CreateHistogram<double>(
         "encore.inventory.outbox.delivery.lag",
         unit: "s",
         description: "Time from a seat change to the delivery of its event.",
         tags: null,
-        // In seconds. The SDK's default boundaries (0, 5, 10, 25…) are sized for milliseconds
-        // and put every healthy delivery in the first bucket.
+        // The SDK's default boundaries (0, 5, 10, 25…) suit milliseconds and would put every
+        // healthy delivery in the first bucket.
         advice: new InstrumentAdvice<double>
         {
             HistogramBucketBoundaries = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60]

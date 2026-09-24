@@ -4,14 +4,6 @@ using Encore.Modules.Inventory.Ports;
 
 namespace Encore.Modules.Inventory.Application;
 
-/// <summary>
-/// Gives held seats back to the pool. Each seat is answered on its own, and the
-/// releases are written in one transaction.
-/// </summary>
-/// <remarks>
-/// No lock: there is no cap to protect. Releasing a seat that is already available, or
-/// whose hold lapsed, succeeds, so a retry is not an error.
-/// </remarks>
 public sealed class ReleaseSeatCommandHandler(
     ISeatRepository seats,
     TimeProvider timeProvider)
@@ -19,7 +11,6 @@ public sealed class ReleaseSeatCommandHandler(
     private readonly ISeatRepository _seats = seats;
     private readonly TimeProvider _timeProvider = timeProvider;
 
-    /// <summary>Releases one seat. A batch of one.</summary>
     public async Task<ReleaseSeatOutcome> HandleAsync(
         ReleaseSeatCommand command,
         CancellationToken cancellationToken = default)
@@ -32,8 +23,6 @@ public sealed class ReleaseSeatCommandHandler(
         return results[0];
     }
 
-    /// <summary>Releases every requested seat it can.</summary>
-    /// <returns>One outcome per seat, in request order.</returns>
     public async Task<IReadOnlyList<ReleaseSeatOutcome>> HandleAsync(
         ReleaseSeatsCommand command,
         CancellationToken cancellationToken = default)
@@ -47,12 +36,11 @@ public sealed class ReleaseSeatCommandHandler(
             return attempt.Results;
         }
 
-        // The retry's load discards the first attempt's changes.
         var retry = await AttemptAsync(command, cancellationToken).ConfigureAwait(false);
 
         if (retry.LostRace)
         {
-            // Nothing else will: reload so releases that exist only in memory cannot reach a later save (011).
+            // Reloads only to discard the releases in memory, so no later save writes them (011).
             await _seats.GetByIdsAsync(command.SeatIds, cancellationToken).ConfigureAwait(false);
         }
 
@@ -87,6 +75,7 @@ public sealed class ReleaseSeatCommandHandler(
             results[i] = TryRelease(seat, command.ClientId, utcNow);
         }
 
+        // Every state change raises an event, so these are the seats that moved.
         var changed = seats.Values.Where(seat => seat.DomainEvents.Count > 0).ToList();
 
         if (changed.Count is 0)
@@ -122,7 +111,6 @@ public sealed class ReleaseSeatCommandHandler(
         }
         catch (SeatTransitionException ex) when (ex.Reason is SeatTransitionReason.SeatAlreadySold)
         {
-            // Sold to this client means a confirm of the same order won; a cancel uses this to back off.
             return seat.HeldByClientId == clientId
                 ? ReleaseSeatOutcome.SoldToYou
                 : ReleaseSeatOutcome.AlreadySold;
@@ -131,8 +119,6 @@ public sealed class ReleaseSeatCommandHandler(
         {
             return ReleaseSeatOutcome.NotTheHolder;
         }
-
-        // Any other reason propagates: it would mean the aggregate's contract changed.
     }
 
     private sealed record Attempt(IReadOnlyList<ReleaseSeatOutcome> Results, bool LostRace);

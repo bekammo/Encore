@@ -4,11 +4,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Payments.IntegrationTests;
 
-/// <summary>
-/// Payments' schema enforces what the module relies on, above all the partial unique index
-/// whose SQL filter no compiler checks. The database is shared by the class and never emptied,
-/// so every test uses fresh order ids and keys.
-/// </summary>
+/// <summary>The database is never emptied, so every test uses fresh order ids and keys.</summary>
 public sealed class PaymentsSchemaTests(PaymentsDatabase database) : IClassFixture<PaymentsDatabase>
 {
     private static readonly DateTime AttemptedAt = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
@@ -23,7 +19,7 @@ public sealed class PaymentsSchemaTests(PaymentsDatabase database) : IClassFixtu
         Assert.Empty(await context.Database.GetPendingMigrationsAsync());
     }
 
-    /// <summary>Two live attempts against one order are impossible at the database.</summary>
+    /// <summary>TimedOut is in the list on purpose: no answer may mean funds are held (013).</summary>
     [Theory]
     [InlineData(PaymentStatus.Pending)]
     [InlineData(PaymentStatus.Authorized)]
@@ -44,7 +40,6 @@ public sealed class PaymentsSchemaTests(PaymentsDatabase database) : IClassFixtu
         Assert.Contains("ux_payments_order_live", ex.InnerException!.Message);
     }
 
-    /// <summary>Declined and voided attempts do not block a new one.</summary>
     [Theory]
     [InlineData(PaymentStatus.Declined)]
     [InlineData(PaymentStatus.Voided)]
@@ -80,7 +75,6 @@ public sealed class PaymentsSchemaTests(PaymentsDatabase database) : IClassFixtu
         Assert.Contains("ux_payments_idempotency_key", ex.InnerException!.Message);
     }
 
-    /// <summary>Amounts keep four decimal places.</summary>
     [Fact]
     public async Task Amount_ShouldRoundTripAtFourDecimalPlaces()
     {
@@ -94,7 +88,6 @@ public sealed class PaymentsSchemaTests(PaymentsDatabase database) : IClassFixtu
         Assert.Equal(123.4567m, read.Amount);
     }
 
-    /// <summary>Timestamps come back as UTC.</summary>
     [Fact]
     public async Task Timestamps_ShouldRoundTripAsUtc()
     {

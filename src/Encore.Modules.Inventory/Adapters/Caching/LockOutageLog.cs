@@ -3,9 +3,8 @@ using Microsoft.Extensions.Logging;
 namespace Encore.Modules.Inventory.Adapters.Caching;
 
 /// <summary>
-/// Logs a Redis outage at its edges: one warning when the lock stops answering, one line
-/// when it answers again, and Debug in between. Logging every refused attempt used to
-/// flood the log with thousands of stack traces a second.
+/// Warns once per outage, not per attempt: logging every refused attempt flooded the log with
+/// thousands of stack traces a second.
 /// </summary>
 internal sealed class LockOutageLog(ILogger logger)
 {
@@ -13,7 +12,6 @@ internal sealed class LockOutageLog(ILogger logger)
 
     private long _refusedSinceLastAnswer;
 
-    /// <summary>Records that Redis could not answer this attempt.</summary>
     public void Refused(string operation, string resource, Exception exception)
     {
         if (Interlocked.Increment(ref _refusedSinceLastAnswer) == 1)
@@ -39,7 +37,6 @@ internal sealed class LockOutageLog(ILogger logger)
         }
     }
 
-    /// <summary>Records that Redis answered, whatever it answered.</summary>
     public void Answered()
     {
         if (Volatile.Read(ref _refusedSinceLastAnswer) == 0)

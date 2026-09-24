@@ -1,7 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- In-memory tests for the aggregate and the handlers. No Testcontainers: needing a
-       database here would mean the ports are not doing their job. -->
+  <!-- No Testcontainers: needing a database here would mean the ports are not doing their job. -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>

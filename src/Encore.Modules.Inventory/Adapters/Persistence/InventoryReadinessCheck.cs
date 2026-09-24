@@ -5,10 +5,6 @@ using Microsoft.Extensions.Options;
 
 namespace Encore.Modules.Inventory.Adapters.Persistence;
 
-/// <summary>
-/// Inventory's readiness: can it reach its database, and how big is the outbox backlog.
-/// Dead letters are reported but do not make the module unready.
-/// </summary>
 internal sealed class InventoryReadinessCheck(
     InventoryDbContext context,
     IOptions<OutboxOptions> outboxOptions) : IReadinessCheck
@@ -46,7 +42,6 @@ internal sealed class InventoryReadinessCheck(
         }
         catch (Exception ex)
         {
-            // Broad on purpose: a readiness check answers, it does not throw.
             return ReadinessResult.Failed($"inventory database unreachable: {ex.Message}");
         }
     }

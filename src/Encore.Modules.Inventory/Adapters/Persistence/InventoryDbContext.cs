@@ -4,24 +4,18 @@ using Microsoft.EntityFrameworkCore;
 namespace Encore.Modules.Inventory.Adapters.Persistence;
 
 /// <summary>
-/// EF Core context for the <c>inventory</c> schema: seats and the outbox.
+/// Every save writes each tracked seat's domain events as outbox rows in the same
+/// transaction, so a change and its announcement commit together or not at all (015).
 /// </summary>
-/// <remarks>
-/// Owns the outbox drain. Every save writes the domain events of every tracked seat as
-/// outbox rows in the same transaction, so a state change and its announcement commit
-/// together or not at all.
-/// </remarks>
 public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> options)
     : DbContext(options)
 {
-    /// <summary>Outbox rows this context's drain added and has not yet seen committed.</summary>
     private readonly List<OutboxMessage> _drained = [];
 
     public DbSet<Seat> Seats => Set<Seat>();
 
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
-    /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasDefaultSchema(InventoryPersistence.Schema);
@@ -30,7 +24,6 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
         base.OnModelCreating(modelBuilder);
     }
 
-    /// <inheritdoc />
     public override async Task<int> SaveChangesAsync(
         bool acceptAllChangesOnSuccess,
         CancellationToken cancellationToken = default)
@@ -46,8 +39,7 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
         return written;
     }
 
-    /// <inheritdoc />
-    /// <remarks>Overridden too, so no save path can skip the drain.</remarks>
+    /// <summary>Overridden too, so no save path can skip the drain.</summary>
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         var drained = DrainDomainEvents();
@@ -59,10 +51,6 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
         return written;
     }
 
-    /// <summary>
-    /// Adds every tracked seat's events to the outbox and returns the seats drained.
-    /// Walks the change tracker because one scoped context can hold several seats.
-    /// </summary>
     private List<Seat> DrainDomainEvents()
     {
         DiscardRejectedOutboxRows();
@@ -75,7 +63,7 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
 
         foreach (var seat in raising)
         {
-            // In raised order, so a reclaim's SeatReleased precedes its SeatHeld.
+            // Added in raised order. Delivery does not keep it (024).
             foreach (var domainEvent in seat.DomainEvents)
             {
                 var message = SeatEventPublication.ToOutboxMessage(domainEvent);
@@ -88,10 +76,8 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
         return raising;
     }
 
-    /// <summary>
-    /// Detaches outbox rows this drain added for a save that was rejected, so a retry
-    /// does not publish the same events twice. Rows added by anyone else are left alone.
-    /// </summary>
+    // A rejected save leaves its drained rows Added. Detach them so the retry does not publish
+    // the events twice; rows added by anyone else are left alone.
     private void DiscardRejectedOutboxRows()
     {
         if (_drained.Count is 0)
@@ -112,11 +98,8 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
         _drained.Clear();
     }
 
-    /// <summary>
-    /// Clears the events of seats whose rows have committed. Without this, later saves on
-    /// the same context would write them again. Runs after the base save, so a rejected
-    /// save keeps its events for the retry.
-    /// </summary>
+    // Only after the base save, so a rejected save keeps its events for the retry; without it,
+    // later saves on this context would write them again (015).
     private static void MarkPublished(List<Seat> drained)
     {
         foreach (var seat in drained)

@@ -1,14 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The inside of the hexagon. A separate assembly, so domain code cannot name
-       EF Core, ASP.NET Core or Redis types: a violation is a build error. -->
-
   <ItemGroup>
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
   </ItemGroup>
 
-  <!-- Opts into ENCORE001-003 (Directory.Build.targets): no packages, no framework
-       references, nothing outside the BCL in the resolved closure. -->
+  <!-- A separate assembly so the Domain cannot name infrastructure: ENCORE001-003 make
+       that a build error (002). -->
   <PropertyGroup>
     <EncoreZeroDependency>true</EncoreZeroDependency>
   </PropertyGroup>

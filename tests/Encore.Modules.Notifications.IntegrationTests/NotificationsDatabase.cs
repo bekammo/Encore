@@ -4,10 +4,7 @@ using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Notifications.IntegrationTests;
 
-/// <summary>
-/// One Postgres per test class, migrated once. Nothing empties it between tests, so rows
-/// accumulate across the class and every test works on fresh message ids.
-/// </summary>
+/// <summary>Never emptied: rows accumulate across a class, so every test uses fresh message ids.</summary>
 public sealed class NotificationsDatabase : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
@@ -16,10 +13,8 @@ public sealed class NotificationsDatabase : IAsyncLifetime
         .WithPassword("encore")
         .Build();
 
-    /// <summary>Options for a context on the migrated database.</summary>
     public DbContextOptions<NotificationsDbContext> Options { get; private set; } = null!;
 
-    /// <inheritdoc />
     public async Task InitializeAsync()
     {
         await _postgres.StartAsync();
@@ -30,10 +25,9 @@ public sealed class NotificationsDatabase : IAsyncLifetime
 
         await using var context = new NotificationsDbContext(Options);
 
-        // Migrate rather than EnsureCreated, so the real migration and its unique index are exercised.
+        // Migrate rather than EnsureCreated, so the real migrations are exercised.
         await context.Database.MigrateAsync();
     }
 
-    /// <inheritdoc />
     public async Task DisposeAsync() => await _postgres.DisposeAsync();
 }

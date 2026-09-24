@@ -8,24 +8,17 @@ using Microsoft.Extensions.Options;
 namespace Encore.Modules.Orders.Data;
 
 /// <summary>
-/// Finishes orders whose seats sold but whose capture never got an answer, by confirming them
-/// again on the customer's behalf.
+/// Cleanup in 006's sense (025): it runs the confirm a customer would, so with it off the next
+/// confirm still finishes the order. The advisory lock only stops two instances duplicating
+/// work; <c>xmin</c> guards each order.
 /// </summary>
-/// <remarks>
-/// The confirm that left an order awaiting capture answered 200, so the customer has no reason
-/// to ask again, and an uncaptured authorisation lapses at the gateway with the seats already
-/// given out (025). It adds no rule of its own: it runs the confirm a customer would, so with it
-/// off the next confirm still finishes the order, and nothing depends on it running. A Postgres
-/// advisory lock per sweep keeps two instances from duplicating work; <c>xmin</c> still guards
-/// each order.
-/// </remarks>
 internal sealed class CaptureSweeper(
     IServiceScopeFactory scopeFactory,
     IOptions<CaptureSweepOptions> options,
     TimeProvider timeProvider,
     ILogger<CaptureSweeper> logger) : BackgroundService
 {
-    /// <summary>This job's key in Postgres's advisory-lock namespace. Arbitrary but unique.</summary>
+    /// <summary>Arbitrary, but no other job's advisory lock in the same database may use it.</summary>
     internal const long LeaseKey = 3_811_030_058;
 
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
@@ -33,7 +26,6 @@ internal sealed class CaptureSweeper(
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<CaptureSweeper> _logger = logger;
 
-    /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
@@ -72,11 +64,6 @@ internal sealed class CaptureSweeper(
         _logger.LogInformation("Capture sweep stopped.");
     }
 
-    /// <summary>
-    /// Confirms one batch of owed orders under a transaction-scoped advisory lock. Another
-    /// instance holding it means this batch is redundant. Internal so tests can drive one sweep.
-    /// </summary>
-    /// <returns>How many orders ended confirmed.</returns>
     internal async Task<int> SweepBatchAsync(CancellationToken cancellationToken)
     {
         using var leaseScope = _scopeFactory.CreateScope();

@@ -5,13 +5,12 @@ using Testcontainers.PostgreSql;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// One Postgres per test class, migrated once. Rows accumulate across the class unless its
-/// tests call <see cref="ResetAsync"/>, which a class does when it counts rows or reads a
-/// whole table.
+/// Rows accumulate across a class unless its tests call <see cref="ResetAsync"/>, which a class
+/// does when it counts rows or reads a whole table.
 /// </summary>
 public sealed class InventoryDatabase : IAsyncLifetime
 {
-    /// <summary>Every table Inventory owns. The migrations history table is not one of them.</summary>
+    // Every Inventory data table: add a new one here, or rows leak between tests that reset.
     private const string TruncateSql =
         $"TRUNCATE TABLE \"{InventoryPersistence.Schema}\".\"seats\", \"{InventoryPersistence.Schema}\".\"outbox_messages\" RESTART IDENTITY CASCADE";
 
@@ -21,13 +20,10 @@ public sealed class InventoryDatabase : IAsyncLifetime
         .WithPassword("encore")
         .Build();
 
-    /// <summary>The migrated database, for a data source or a composed container.</summary>
     public string ConnectionString { get; private set; } = null!;
 
-    /// <summary>Options for a context on the migrated database.</summary>
     public DbContextOptions<InventoryDbContext> Options { get; private set; } = null!;
 
-    /// <inheritdoc />
     public async Task InitializeAsync()
     {
         await _postgres.StartAsync();
@@ -40,11 +36,10 @@ public sealed class InventoryDatabase : IAsyncLifetime
 
         await using var context = new InventoryDbContext(Options);
 
-        // Migrate rather than EnsureCreated, so the real migration and its partial indexes are exercised.
+        // Migrate rather than EnsureCreated, so the real migrations are exercised.
         await context.Database.MigrateAsync();
     }
 
-    /// <summary>Empties every Inventory table, so the next test starts with no seats and no outbox rows.</summary>
     public async Task ResetAsync()
     {
         await using var context = new InventoryDbContext(Options);
@@ -52,6 +47,5 @@ public sealed class InventoryDatabase : IAsyncLifetime
         await context.Database.ExecuteSqlRawAsync(TruncateSql);
     }
 
-    /// <inheritdoc />
     public async Task DisposeAsync() => await _postgres.DisposeAsync();
 }

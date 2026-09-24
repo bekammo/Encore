@@ -5,22 +5,17 @@ using Encore.Shared;
 namespace Encore.Modules.Inventory.Domain;
 
 /// <summary>
-/// Aggregate root for one seat at one event, and the only consistency boundary.
-/// A hold is not an entity: it is the <see cref="HeldByClientId"/> /
-/// <see cref="HoldExpiresAt"/> pair on this row.
+/// The only consistency boundary (003). A hold is the <see cref="HeldByClientId"/> /
+/// <see cref="HoldExpiresAt"/> pair on this row, not an entity.
 /// </summary>
-/// <remarks>
-/// Races are settled by optimistic concurrency on <see cref="RowVersion"/>. Time is
-/// always passed in, never read, so expiry is testable without waiting.
-/// </remarks>
 public sealed class Seat
 {
-    /// <summary>How long a hold lasts. Owned here so no caller can choose its own expiry.</summary>
+    /// <summary>Owned here: callers pass <c>utcNow</c>, never an expiry (003).</summary>
     public static readonly TimeSpan HoldDuration = TimeSpan.FromMinutes(5);
 
     private readonly List<IDomainEvent> _domainEvents = [];
 
-    /// <summary>For EF Core materialisation only.</summary>
+    // EF Core materialisation only.
     private Seat()
     {
     }
@@ -32,11 +27,6 @@ public sealed class Seat
         Status = SeatStatus.Available;
     }
 
-    /// <summary>
-    /// Creates a seat. Every seat starts <see cref="SeatStatus.Available"/>; the only
-    /// routes to held or sold are the transition methods.
-    /// </summary>
-    /// <exception cref="ArgumentException">Either id is empty.</exception>
     public static Seat Create(Guid id, Guid eventId)
     {
         if (id == Guid.Empty)
@@ -57,34 +47,26 @@ public sealed class Seat
     public Guid EventId { get; private set; }
 
     /// <summary>
-    /// Persisted status. A <see cref="SeatStatus.Held"/> row whose hold has lapsed is
-    /// effectively available, so read it together with <see cref="HoldExpiresAt"/>.
+    /// A <see cref="SeatStatus.Held"/> row at or past <see cref="HoldExpiresAt"/> is available;
+    /// nothing may wait for the sweep to fix the column (006).
     /// </summary>
     public SeatStatus Status { get; private set; }
 
-    /// <summary>
-    /// The holder while held, and the buyer once sold. After the sweep ends a lapsed hold it
-    /// still names that holder, so a swept seat answers a sale exactly as a lapsed one does.
-    /// </summary>
+    /// <summary>The holder, and after a sale the buyer.</summary>
     public Guid? HeldByClientId { get; private set; }
 
-    /// <summary>UTC instant at which the current hold lapses, or at which a swept hold lapsed.</summary>
     public DateTime? HoldExpiresAt { get; private set; }
 
-    /// <summary>Concurrency token, mapped to the Postgres <c>xmin</c> system column.</summary>
+    /// <summary>The Postgres <c>xmin</c> system column (004).</summary>
     public uint RowVersion { get; private set; }
 
     public IReadOnlyList<IDomainEvent> DomainEvents => _domainEvents;
 
-    /// <summary>
-    /// Drops recorded events. Handlers call it before an attempt; the outbox drain
-    /// calls it after a successful save so the events are not written twice.
-    /// </summary>
     public void ClearDomainEvents() => _domainEvents.Clear();
 
     /// <summary>
-    /// Holds the seat for <see cref="HoldDuration"/>. Allowed from available, or from a
-    /// lapsed hold, which is reclaimed. Re-holding your own live hold is a no-op.
+    /// From available, or from a lapsed hold, which is reclaimed. Re-holding your own live hold
+    /// is a no-op and does not extend it.
     /// </summary>
     /// <exception cref="SeatTransitionException">The seat is sold, or held by someone else.</exception>
     public void Hold(Guid clientId, DateTime utcNow)
@@ -94,8 +76,6 @@ public sealed class Seat
 
         if (EffectiveStatusAt(utcNow) is SeatStatus.Held)
         {
-            // Idempotent for the holder, and the expiry does not move: repeating the
-            // request must not extend the hold.
             if (HeldByClientId == clientId)
             {
                 return;
@@ -104,7 +84,7 @@ public sealed class Seat
             throw new SeatTransitionException(Id, SeatTransitionReason.SeatAlreadyHeld);
         }
 
-        // Ends a lapsed hold first, so its SeatReleased is recorded before the new SeatHeld.
+        // A reclaim records SeatReleased(Expired) before SeatHeld (003).
         ExpireHold(utcNow);
 
         var expiresAt = utcNow + HoldDuration;
@@ -117,14 +97,9 @@ public sealed class Seat
     }
 
     /// <summary>
-    /// Ends a hold that has already lapsed and records it as expired. Used by
-    /// <see cref="Hold"/> when reclaiming and by the background sweep.
+    /// The sweep's transition, and <see cref="Hold"/>'s reclaim. Only the status changes: the
+    /// lapsed holder pair stays, so a swept seat refuses a sale exactly as an unswept one (023).
     /// </summary>
-    /// <remarks>
-    /// Only the status changes. The lapsed holder and expiry stay on the row, because clearing
-    /// them would let the sweep change what <see cref="Sell"/> answers, and the sweep is cleanup.
-    /// </remarks>
-    /// <returns>Whether a lapsed hold was ended. A live hold or a sold seat is left alone.</returns>
     public bool ExpireHold(DateTime utcNow)
     {
         GuardUtc(utcNow);
@@ -144,10 +119,7 @@ public sealed class Seat
         return true;
     }
 
-    /// <summary>
-    /// Releases the holder's seat. A no-op if the seat is already effectively available,
-    /// so a retry is not an error.
-    /// </summary>
+    /// <summary>Releasing an available seat, or a lapsed hold, is a no-op.</summary>
     /// <exception cref="SeatTransitionException">The seat is sold, or held by someone else.</exception>
     public void Release(Guid clientId, DateTime utcNow)
     {
@@ -172,10 +144,11 @@ public sealed class Seat
     }
 
     /// <summary>
-    /// Converts this client's live hold into a sale. Terminal. There is no route from
-    /// available straight to sold.
+    /// Needs this client's live hold: there is no route from available straight to sold.
     /// </summary>
-    /// <exception cref="SeatTransitionException">No live hold, or not this client's.</exception>
+    /// <exception cref="SeatTransitionException">
+    /// The seat is sold, has no live hold, or is held by someone else.
+    /// </exception>
     public void Sell(Guid clientId, DateTime utcNow)
     {
         GuardUtc(utcNow);
@@ -183,8 +156,6 @@ public sealed class Seat
 
         if (EffectiveStatusAt(utcNow) is SeatStatus.Available)
         {
-            // "Your hold ran out" and "you never held this" are different answers. Read from the
-            // lapsed hold's record, not the status, so a swept row answers as an unswept one.
             var reason = (HoldExpiresAt is not null, HeldByClientId == clientId) switch
             {
                 (true, true) => SeatTransitionReason.HoldExpired,
@@ -203,17 +174,14 @@ public sealed class Seat
         Status = SeatStatus.Sold;
         HoldExpiresAt = null;
 
-        // HeldByClientId is kept, so the row still says who owns the seat.
         Raise(new SeatSold(Id, EventId, clientId, utcNow));
     }
 
-    /// <summary>The status as of <paramref name="utcNow"/>, with a lapsed hold reported as available.</summary>
     private SeatStatus EffectiveStatusAt(DateTime utcNow)
         => Status is SeatStatus.Held && HoldExpiresAt <= utcNow
             ? SeatStatus.Available
             : Status;
 
-    /// <summary>Every transition requires a UTC instant; <c>Local</c> and <c>Unspecified</c> are refused.</summary>
     private static void GuardUtc(DateTime utcNow)
     {
         if (utcNow.Kind is not DateTimeKind.Utc)

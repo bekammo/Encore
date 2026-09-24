@@ -3,10 +3,6 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Catalog.Data;
 
-/// <summary>
-/// Serves <see cref="IEventPricing"/> from Catalog's own tables, in process. Internal, so
-/// callers can only reach it through the interface.
-/// </summary>
 internal sealed class InProcessEventPricing(CatalogDbContext catalog) : IEventPricing
 {
     private readonly CatalogDbContext _catalog = catalog;
@@ -18,7 +14,6 @@ internal sealed class InProcessEventPricing(CatalogDbContext catalog) : IEventPr
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        // Projected: the caller needs four columns, not the entity.
         var priced = await _catalog.Events
             .AsNoTracking()
             .Where(show => show.Id == request.EventId)

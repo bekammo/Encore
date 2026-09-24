@@ -1,27 +1,20 @@
 namespace Encore.Shared;
 
 /// <summary>
-/// One module's answer to "can this host do its job right now". The host resolves
-/// every registration and reports them together, so it never needs to know which
-/// modules have a database.
+/// The host counts every registration's vote, so it never needs to know which modules have a
+/// database (016).
 /// </summary>
 public interface IReadinessCheck
 {
-    /// <summary>Short, stable name for this check in the response.</summary>
     string Name { get; }
 
-    /// <summary>Runs the check. Must not throw: a failure is an answer.</summary>
+    /// <summary>Must not throw: a failure is an answer.</summary>
     Task<ReadinessResult> CheckAsync(CancellationToken cancellationToken = default);
 }
 
-/// <summary>What one <see cref="IReadinessCheck"/> found.</summary>
 /// <param name="Ready">
-/// Whether the module can serve traffic. False takes the host out of rotation, so it
-/// is reserved for real outages such as an unreachable database.
-/// </param>
-/// <param name="Detail">
-/// One line for a human, including numbers worth watching (backlog, dead letters).
-/// Those do not fail the check.
+/// False takes the host out of rotation, so reserve it for a real outage such as an unreachable
+/// database. Backlog and dead-letter counts go in <c>Detail</c> and never fail the check.
 /// </param>
 public readonly record struct ReadinessResult(bool Ready, string Detail)
 {

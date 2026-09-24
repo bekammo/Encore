@@ -5,14 +5,10 @@ using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Payments.IntegrationTests;
 
-/// <summary>
-/// One Postgres per test class, migrated once, since a container per test would start dozens.
-/// Rows accumulate across the class unless its tests call <see cref="ResetAsync"/>, which a
-/// class does when it sweeps every attempt or needs a gateway that has answered nothing.
-/// </summary>
+/// <summary>Rows accumulate across a class unless its tests call <see cref="ResetAsync"/>.</summary>
 public sealed class PaymentsDatabase : IAsyncLifetime
 {
-    /// <summary>Every table Payments owns. The migrations history table is not one of them.</summary>
+    // Every Payments data table: add a new one here, or rows leak between tests that reset.
     private const string TruncateSql =
         $"TRUNCATE TABLE \"{PaymentsPersistence.Schema}\".\"payments\", \"{PaymentsPersistence.Schema}\".\"gateway_ledger\" RESTART IDENTITY CASCADE";
 
@@ -24,16 +20,12 @@ public sealed class PaymentsDatabase : IAsyncLifetime
 
     private ServiceProvider _provider = null!;
 
-    /// <summary>The migrated database, for a host or a composed container.</summary>
     public string ConnectionString { get; private set; } = null!;
 
-    /// <summary>Options for a context on the migrated database.</summary>
     public DbContextOptions<PaymentsDbContext> Options { get; private set; } = null!;
 
-    /// <summary>What the gateway resolves its context through.</summary>
     public IServiceScopeFactory Scopes { get; private set; } = null!;
 
-    /// <inheritdoc />
     public async Task InitializeAsync()
     {
         await _postgres.StartAsync();
@@ -46,7 +38,7 @@ public sealed class PaymentsDatabase : IAsyncLifetime
 
         await using (var context = new PaymentsDbContext(Options))
         {
-            // Migrate rather than EnsureCreated, so the real migration is exercised.
+            // Migrate rather than EnsureCreated, so the real migrations are exercised.
             await context.Database.MigrateAsync();
         }
 
@@ -57,10 +49,6 @@ public sealed class PaymentsDatabase : IAsyncLifetime
         Scopes = _provider.GetRequiredService<IServiceScopeFactory>();
     }
 
-    /// <summary>
-    /// Empties the attempts and the gateway's ledger, so the next test starts with no payments
-    /// and a gateway that has answered nothing.
-    /// </summary>
     public async Task ResetAsync()
     {
         await using var context = new PaymentsDbContext(Options);
@@ -68,7 +56,6 @@ public sealed class PaymentsDatabase : IAsyncLifetime
         await context.Database.ExecuteSqlRawAsync(TruncateSql);
     }
 
-    /// <inheritdoc />
     public async Task DisposeAsync()
     {
         await _provider.DisposeAsync();

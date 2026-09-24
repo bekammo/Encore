@@ -7,17 +7,11 @@ using Encore.Shared;
 
 namespace Encore.Modules.Inventory.Adapters.Persistence;
 
-/// <summary>
-/// Maps a seat's domain events to published contracts and outbox rows, so a rename inside
-/// the aggregate never changes the wire format. An unmapped event throws at the first
-/// save that raises it rather than being silently dropped.
-/// </summary>
 internal static class SeatEventPublication
 {
     /// <summary>
-    /// Web defaults, matching the HTTP surface, and strict on the way in: a row missing a member
-    /// fails to read and is dead-lettered, instead of reaching a handler as <c>Guid.Empty</c>
-    /// and being marked delivered. So a member added to a V1 contract must have a default.
+    /// Strict on the way in: a row missing a member dead-letters instead of reaching a handler
+    /// as <c>Guid.Empty</c> (024).
     /// </summary>
     internal static readonly JsonSerializerOptions SerializerOptions =
         new(JsonSerializerDefaults.Web)
@@ -26,7 +20,6 @@ internal static class SeatEventPublication
             RespectNullableAnnotations = true
         };
 
-    /// <summary>Maps one domain event to the row that will publish it.</summary>
     internal static OutboxMessage ToOutboxMessage(IDomainEvent domainEvent) => domainEvent switch
     {
         SeatHeld held => Message(
@@ -67,17 +60,14 @@ internal static class SeatEventPublication
             occurredAt,
             CurrentTraceParent());
 
-    /// <summary>
-    /// The traced operation this save runs inside, if any. Null outside any activity. ASP.NET
-    /// Core starts a request activity even without OpenTelemetry, so HTTP-driven rows carry one.
-    /// </summary>
+    // ASP.NET Core starts a request activity even without OpenTelemetry, so HTTP-driven rows
+    // carry a traceparent.
     private static string? CurrentTraceParent() =>
         Activity.Current is { IdFormat: ActivityIdFormat.W3C } activity ? activity.Id : null;
 
     private static string ReasonOf(SeatReleaseReason reason) => reason switch
     {
         SeatReleaseReason.Cancelled => SeatReleasedV1.Cancelled,
-        // No catch-all: a new reason must get its own published spelling, or the build fails.
         SeatReleaseReason.Expired => SeatReleasedV1.Expired
     };
 }

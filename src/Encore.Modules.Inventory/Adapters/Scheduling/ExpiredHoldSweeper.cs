@@ -8,15 +8,11 @@ using Microsoft.Extensions.Options;
 namespace Encore.Modules.Inventory.Adapters.Scheduling;
 
 /// <summary>
-/// Flips lapsed holds back to available in Postgres, so the table matches what every
-/// read path already treats as true.
+/// Cleanup only (006): every read already treats a lapsed hold as available, and the
+/// invariants hold with this job off (ExpiryWithoutTheSweepTests). It goes through the
+/// aggregate, not a bulk UPDATE, so each expiry still publishes <c>SeatReleased(Expired)</c>.
+/// Two sweeps on one seat are settled by <c>xmin</c>.
 /// </summary>
-/// <remarks>
-/// Cleanup only: lapsed holds are already available on every path, and the invariants
-/// hold with this job disabled. It goes through the aggregate so each expiry still
-/// publishes <c>SeatReleased(Expired)</c>. Safe to run in several processes: two sweeps
-/// on one seat are settled by <c>xmin</c>.
-/// </remarks>
 internal sealed class ExpiredHoldSweeper(
     IServiceScopeFactory scopeFactory,
     IOptions<ExpiredHoldSweepOptions> options,
@@ -28,7 +24,6 @@ internal sealed class ExpiredHoldSweeper(
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<ExpiredHoldSweeper> _logger = logger;
 
-    /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
@@ -36,8 +31,6 @@ internal sealed class ExpiredHoldSweeper(
             _options.BatchSize,
             _options.PollInterval);
 
-        // Counts visits, not expiries: every visit settles its row, so a full batch of
-        // visits is safe to follow straight away.
         await PollingLoop.RunAsync(
             SweepBatchAsync,
             _options.BatchSize,
@@ -50,11 +43,6 @@ internal sealed class ExpiredHoldSweeper(
         _logger.LogInformation("Inventory expired-hold sweep stopped.");
     }
 
-    /// <summary>
-    /// Sweeps one batch, one scope per seat so a lost race affects only that seat.
-    /// Internal so tests can drive one sweep.
-    /// </summary>
-    /// <returns>How many candidates were visited.</returns>
     internal async Task<int> SweepBatchAsync(CancellationToken cancellationToken)
     {
         var utcNow = _timeProvider.GetUtcNow().UtcDateTime;
@@ -82,6 +70,8 @@ internal sealed class ExpiredHoldSweeper(
             candidates.Count,
             expired);
 
+        // Visits, not expiries: every visit settles its row, so a full batch is safe to follow
+        // at once.
         return candidates.Count;
     }
 
@@ -97,10 +87,9 @@ internal sealed class ExpiredHoldSweeper(
             .ConfigureAwait(false);
     }
 
-    /// <summary>Loads one candidate and lets the aggregate decide.</summary>
-    /// <returns>Whether a lapsed hold was ended.</returns>
     private async Task<bool> ExpireAsync(Guid seatId, DateTime utcNow, CancellationToken cancellationToken)
     {
+        // A scope per seat, so a lost race affects only that seat.
         using var scope = _scopeFactory.CreateScope();
         var seats = scope.ServiceProvider.GetRequiredService<ISeatRepository>();
 
@@ -111,7 +100,6 @@ internal sealed class ExpiredHoldSweeper(
             return false;
         }
 
-        // A seat sold or re-held since the query refuses here and nothing is written.
         if (!seat.ExpireHold(utcNow))
         {
             return false;
@@ -123,7 +111,6 @@ internal sealed class ExpiredHoldSweeper(
         }
         catch (ConcurrentSeatModificationException)
         {
-            // Another sweep or a client got there first. No retry: nobody is waiting on this.
             _logger.LogDebug(
                 "Seat {SeatId} moved while the sweep was expiring it. Leaving it to the next sweep.",
                 seatId);

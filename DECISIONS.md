@@ -38,6 +38,7 @@ log is in git: `git show 2e5ad70:DECISIONS.md`.
 - [024](#024--the-outbox-promises-delivery-not-order) — The outbox promises delivery, not order
 - [025](#025--an-order-owed-its-capture-is-finished-by-a-sweep) — An order owed its capture is finished by a sweep
 - [026](#026--what-remains-of-the-roadmap-restated) — What remains of the roadmap, restated
+- [027](#027--a-comment-carries-a-reason-never-the-name) — A comment carries a reason, never the name
 
 ---
 
@@ -1154,3 +1155,23 @@ compared. `CheckoutCompositionTests` composes the real Inventory and Payments mo
 checkout, races every confirm against its cancel, and asserts the same three invariants on
 every test run. chaos.sh now exits non-zero when any row it reports as "must be 0" is not.
 This does not reopen 020: the check is about rows, not latency.
+
+---
+
+## 027 — A comment carries a reason, never the name
+
+An audit counted 1,286 `///` blocks outside `Migrations/`. Most said only what the member's
+name says, 94 were `<inheritdoc />` tags that no documentation file read, and 44 had gone
+stale. The comments that carry a rule were hard to find among them. Fewer than 300 remain.
+
+**A comment exists only where a maintainer would otherwise get something wrong**: a deliberate
+conflation, an idempotency promise across a boundary, a pinned value, what null means, a trap,
+an invariant with its decision number, or why the obvious thing is not done. **A fact is
+written once**, where it acts or on the contract that promises it, and a repo-wide rule is not
+restated per member. **`///` only where visible outside its file**, and **`<inheritdoc />` only
+on this repo's own contracts and ports**. **Endpoint summaries live only in `openapi.json`
+(008)**, not in `.WithSummary`, which nothing served and which had drifted.
+
+The alternative was to document every member. It reads as thorough, and it hides the rules
+among restatements, where a stale claim goes unnoticed. The cost is fewer IDE tooltips, and a
+reviewer holds each new comment to this rule.

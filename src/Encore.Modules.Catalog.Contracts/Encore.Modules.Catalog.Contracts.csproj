@@ -1,7 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Catalog's public face: the only thing another module may know about it.
-       No packages and no project references (ENCORE001-003 in Directory.Build.targets). -->
+  <!-- The only project another module may reference (017), so it depends on nothing. -->
   <PropertyGroup>
     <EncoreZeroDependency>true</EncoreZeroDependency>
   </PropertyGroup>

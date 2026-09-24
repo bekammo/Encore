@@ -1,7 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Flat module: Endpoints / Data / Models, no layering. -->
-
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
@@ -23,7 +21,6 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
-  <!-- Shared startup migrator and Npgsql wiring. It names no module. -->
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Shared.Persistence\Encore.Modules.Shared.Persistence.csproj" />
   </ItemGroup>
