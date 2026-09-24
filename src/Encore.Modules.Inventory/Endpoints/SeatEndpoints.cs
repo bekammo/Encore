@@ -7,10 +7,8 @@ using Microsoft.AspNetCore.Routing;
 namespace Encore.Modules.Inventory.Endpoints;
 
 /// <summary>
-/// Inventory's HTTP surface. Actions (<c>hold</c>, <c>release</c>, <c>purchase</c>) rather
-/// than a <c>/holds</c> resource, because a hold is two fields on the seat, not an entity.
-/// The three actions are idempotent, so retrying one is safe. Creating a seat map is not:
-/// each call adds a fresh set of seats.
+/// Actions rather than a <c>/holds</c> resource, because a hold is two fields on the seat, not
+/// an entity. The actions are idempotent; creating a seat map is not, and each call adds seats.
 /// </summary>
 /// <remarks>
 /// The actions go around the order: no price, no payment, no on-sale check. They stay open
@@ -18,31 +16,20 @@ namespace Encore.Modules.Inventory.Endpoints;
 /// </remarks>
 public static class SeatEndpoints
 {
-    /// <summary>Maps the seat routes under <c>/events/{eventId}</c>.</summary>
     public static IEndpointRouteBuilder MapSeatEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var events = endpoints.MapGroup("/events/{eventId:guid}");
 
         // Operator-facing, so no client identity.
-        events.MapPost("/seats", CreateSeatMapAsync)
-            .WithName("CreateSeatMap")
-            .WithSummary("Creates an event's seats and returns their ids.");
+        events.MapPost("/seats", CreateSeatMapAsync);
 
         // On the group, so a route added later cannot forget the client filter.
         var seat = events.MapGroup("/seats/{seatId:guid}")
             .AddEndpointFilter<ClientIdEndpointFilter>();
 
-        seat.MapPost("/hold", HoldAsync)
-            .WithName("HoldSeat")
-            .WithSummary("Holds a seat for the calling client for five minutes.");
-
-        seat.MapPost("/release", ReleaseAsync)
-            .WithName("ReleaseSeat")
-            .WithSummary("Gives a held seat back.");
-
-        seat.MapPost("/purchase", PurchaseAsync)
-            .WithName("PurchaseSeat")
-            .WithSummary("Converts the calling client's live hold into a sale.");
+        seat.MapPost("/hold", HoldAsync);
+        seat.MapPost("/release", ReleaseAsync);
+        seat.MapPost("/purchase", PurchaseAsync);
 
         return endpoints;
     }
@@ -73,14 +60,14 @@ public static class SeatEndpoints
                 instance: context.Request.Path);
         }
 
-        var result = await handler
+        var seatIds = await handler
             .HandleAsync(new CreateSeatMapCommand(eventId, request.Count), cancellationToken)
             .ConfigureAwait(false);
 
         // No Location header: there is no GET for a seat map.
         return TypedResults.Created(
             (string?)null,
-            new CreateSeatMapResponse(eventId, result.SeatIds));
+            new CreateSeatMapResponse(eventId, seatIds));
     }
 
     private static async Task<IResult> HoldAsync(

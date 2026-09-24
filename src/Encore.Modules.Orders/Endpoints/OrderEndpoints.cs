@@ -6,35 +6,20 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Orders.Endpoints;
 
-/// <summary>
-/// Endpoints for placing, reading and ending orders. Confirm and cancel are actions, not a
-/// status a client may write.
-/// </summary>
+/// <summary>Confirm and cancel are actions, not a status a client may write (008).</summary>
 public static class OrderEndpoints
 {
-    /// <summary>Maps the /orders route group.</summary>
     public static IEndpointRouteBuilder MapOrderEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        // On the group, so a route added later cannot forget the client filter.
         var orders = endpoints.MapGroup("/orders")
             .AddEndpointFilter<ClientIdEndpointFilter>();
 
         // Empty pattern, so the route is exactly /orders.
-        orders.MapPost("", CheckoutAsync)
-            .WithName("Checkout")
-            .WithSummary("Holds the seats and opens an order for them.");
+        orders.MapPost("", CheckoutAsync);
 
-        orders.MapGet("/{orderId:guid}", GetAsync)
-            .WithName("GetOrder")
-            .WithSummary("Reads one of the calling client's orders.");
-
-        orders.MapPost("/{orderId:guid}/confirm", ConfirmAsync)
-            .WithName("ConfirmOrder")
-            .WithSummary("Converts the order's holds into sales.");
-
-        orders.MapPost("/{orderId:guid}/cancel", CancelAsync)
-            .WithName("CancelOrder")
-            .WithSummary("Ends the order because the customer said so.");
+        orders.MapGet("/{orderId:guid}", GetAsync);
+        orders.MapPost("/{orderId:guid}/confirm", ConfirmAsync);
+        orders.MapPost("/{orderId:guid}/cancel", CancelAsync);
 
         return endpoints;
     }
@@ -56,7 +41,6 @@ public static class OrderEndpoints
         return OrderResults.ForCheckout(result, context.Request.Path);
     }
 
-    /// <remarks>Returns the stored status; only Inventory can say whether holds have lapsed.</remarks>
     private static async Task<IResult> GetAsync(
         Guid orderId,
         OrdersDbContext orders,

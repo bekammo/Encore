@@ -7,50 +7,27 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Catalog.Endpoints;
 
-/// <summary>
-/// Endpoints for browsing and populating the catalogue: straight CRUD against
-/// <see cref="CatalogDbContext"/>. No client identity: the catalogue is public and writes
-/// are operator-facing. Ids are generated here.
-/// </summary>
+/// <summary>No client identity: the catalogue is public and writes are operator-facing.</summary>
 public static class CatalogEndpoints
 {
     private const int MaxNameLength = 200;
 
     private const int MaxAddressLength = 500;
 
-    /// <summary>The price column is <c>numeric(19,4)</c> (<see cref="EventConfiguration"/>).</summary>
     private const int PriceDecimals = 4;
 
-    /// <summary>Exclusive: <c>numeric(19,4)</c> leaves 15 whole digits.</summary>
     private const decimal PriceLimit = 1_000_000_000_000_000m;
 
     public static IEndpointRouteBuilder MapCatalogEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var catalog = endpoints.MapGroup("/catalog");
 
-        catalog.MapPost("/venues", CreateVenueAsync)
-            .WithName("CreateVenue")
-            .WithSummary("Creates a venue and returns it.");
-
-        catalog.MapGet("/venues", ListVenuesAsync)
-            .WithName("ListVenues")
-            .WithSummary("Lists every venue.");
-
-        catalog.MapGet("/venues/{venueId:guid}", GetVenueAsync)
-            .WithName("GetVenue")
-            .WithSummary("Reads one venue.");
-
-        catalog.MapPost("/events", CreateEventAsync)
-            .WithName("CreateEvent")
-            .WithSummary("Creates an event at an existing venue and returns it.");
-
-        catalog.MapGet("/events", ListEventsAsync)
-            .WithName("ListEvents")
-            .WithSummary("Lists every event, soonest first.");
-
-        catalog.MapGet("/events/{eventId:guid}", GetEventAsync)
-            .WithName("GetEvent")
-            .WithSummary("Reads one event.");
+        catalog.MapPost("/venues", CreateVenueAsync);
+        catalog.MapGet("/venues", ListVenuesAsync);
+        catalog.MapGet("/venues/{venueId:guid}", GetVenueAsync);
+        catalog.MapPost("/events", CreateEventAsync);
+        catalog.MapGet("/events", ListEventsAsync);
+        catalog.MapGet("/events/{eventId:guid}", GetEventAsync);
 
         return endpoints;
     }
@@ -183,7 +160,6 @@ public static class CatalogEndpoints
                 "invalid_currency");
         }
 
-        // Checked rather than constrained, so the client gets a readable answer.
         var venueExists = await catalog.Venues
             .AsNoTracking()
             .AnyAsync(venue => venue.Id == request.VenueId, cancellationToken)
@@ -191,10 +167,10 @@ public static class CatalogEndpoints
 
         if (!venueExists)
         {
-            // 409, not 404: the addressed route exists; the venue named in the body does not.
+            // 409, not 404: the route exists; the venue named in the body does not (008).
             return CatalogResults.Conflict(
                 context.Request.Path,
-                "venue_not_found",
+                reason: "venue_not_found",
                 "No venue with that id. Create the venue before the event.",
                 retriable: false);
         }
@@ -254,10 +230,7 @@ public static class CatalogEndpoints
             : TypedResults.Ok(ToResponse(show));
     }
 
-    /// <summary>
-    /// Normalises an instant to UTC, refusing one with no timezone. Guessing would put a
-    /// show on sale at the wrong instant.
-    /// </summary>
+    // Unspecified is refused, not assumed UTC: a guess would put a show on sale at the wrong instant (008).
     private static bool TryToUtc(DateTime value, out DateTime utc)
     {
         utc = value.Kind switch
@@ -277,16 +250,11 @@ public static class CatalogEndpoints
             $"{field} must carry a timezone: end it with Z for UTC, or give an offset.",
             "ambiguous_timestamp");
 
-    /// <summary>
-    /// Whether the column holds the price exactly. Postgres refuses a 16th whole digit with an
-    /// overflow, which was a 500, and rounds a 5th decimal away without saying so.
-    /// </summary>
+    // The column is numeric(19,4): Postgres overflows on a 16th whole digit and silently rounds a 5th decimal away.
     private static bool FitsPriceColumn(decimal price) =>
         price is >= 0 and < PriceLimit && decimal.Round(price, PriceDecimals) == price;
 
-    /// <summary>
-    /// Three ASCII letters; a shape check, not a copy of ISO 4217.
-    /// </summary>
+    // A shape check, not a copy of ISO 4217.
     private static bool IsCurrencyCode(string? currency) =>
         currency is { Length: 3 } && currency.All(char.IsAsciiLetter);
 

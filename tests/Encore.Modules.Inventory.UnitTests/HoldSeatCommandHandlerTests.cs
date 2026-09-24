@@ -1,4 +1,5 @@
 using Encore.Modules.Inventory.Application;
+using Encore.Modules.Inventory.Contracts;
 using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Domain.Exceptions;
 using Encore.Modules.Inventory.Ports;
@@ -6,11 +7,7 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Inventory.UnitTests;
 
-/// <summary>
-/// The hold use case through fake ports: no database, no Redis. The client lock's policy,
-/// the single retry and batch answers are asserted directly.
-/// </summary>
-public class HoldSeatCommandHandlerTests
+public sealed class HoldSeatCommandHandlerTests
 {
     private static readonly Guid SeatId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid EventId = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -69,7 +66,7 @@ public class HoldSeatCommandHandlerTests
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(T0 + Seat.HoldDuration, result.HoldExpiresAt);
+        Assert.Equal(T0.AddMinutes(5), result.HoldExpiresAt);
     }
 
     [Fact]
@@ -130,23 +127,7 @@ public class HoldSeatCommandHandlerTests
         Assert.Equal(0, seats.SaveCalls);
     }
 
-    // -- The lock is an optimisation, and behaves like one -----------------
-
-    /// <summary>
-    /// With the seat lock gone and Redis unavailable, a hold still succeeds: Redis is not a
-    /// correctness dependency.
-    /// </summary>
-    [Fact]
-    public async Task Handle_WhenLockCannotBeAcquired_ShouldStillTakeTheHold()
-    {
-        var seats = new FakeSeatRepository(AvailableSeat());
-        var distributedLock = new FakeDistributedLock(LockOutcome.Unavailable);
-
-        var result = await HandlerFor(seats, distributedLock).HandleAsync(Command);
-
-        Assert.Equal(HoldSeatOutcome.Held, result.Outcome);
-        Assert.Equal(1, seats.SaveCalls);
-    }
+    // -- Taking and releasing the client lock -----------------------------
 
     [Fact]
     public async Task Handle_WhenLockCannotBeAcquired_ShouldNotReleaseSomebodyElsesLock()
@@ -181,18 +162,7 @@ public class HoldSeatCommandHandlerTests
         Assert.Equal(1, distributedLock.ReleaseCalls);
     }
 
-    [Fact]
-    public async Task Handle_ShouldLockOnTheClientAndEvent()
-    {
-        var seats = new FakeSeatRepository(AvailableSeat());
-        var distributedLock = new FakeDistributedLock();
-
-        await HandlerFor(seats, distributedLock).HandleAsync(Command);
-
-        Assert.Contains($"client:{ClientA}:event:{EventId}", distributedLock.Acquired);
-    }
-
-    /// <summary>There is no seat lock; the client lock is the only one taken.</summary>
+    /// <summary>No per-seat lock (004): xmin settles a race for a seat.</summary>
     [Fact]
     public async Task Handle_ShouldTakeNoLockButTheClientLock()
     {
@@ -225,7 +195,7 @@ public class HoldSeatCommandHandlerTests
 
         await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(2, seats.GetByIdCalls);
+        Assert.Equal(2, seats.LoadCalls);
         Assert.Equal(2, seats.SaveCalls);
     }
 
@@ -240,7 +210,6 @@ public class HoldSeatCommandHandlerTests
         Assert.Equal(HoldSeatOutcome.Held, result.Outcome);
     }
 
-    /// <summary>After a lost race, the reload finds the winner's hold and reports it truthfully.</summary>
     [Fact]
     public async Task Handle_WhenReloadRevealsTheWinner_ShouldReturnAlreadyHeld()
     {
@@ -265,10 +234,7 @@ public class HoldSeatCommandHandlerTests
         Assert.Equal(HoldSeatOutcome.LostRace, result.Outcome);
     }
 
-    /// <summary>
-    /// After the second loss nothing else would reload the seats, so the handler does: a hold
-    /// that exists only in memory must not reach a later save (011).
-    /// </summary>
+    /// <summary>A hold that exists only in memory must not reach a later save (011).</summary>
     [Fact]
     public async Task Handle_WhenBothAttemptsLoseRace_ShouldReloadWhatItChanged()
     {
@@ -279,10 +245,9 @@ public class HoldSeatCommandHandlerTests
 
         await HandlerFor(seats).HandleAsync(Command);
 
-        Assert.Equal(3, seats.GetByIdCalls);
+        Assert.Equal(3, seats.LoadCalls);
     }
 
-    /// <summary>The retry is bounded at one.</summary>
     [Fact]
     public async Task Handle_WhenContentionPersists_ShouldNotRetryMoreThanOnce()
     {
@@ -297,7 +262,6 @@ public class HoldSeatCommandHandlerTests
         Assert.Equal(2, seats.SaveCalls);
     }
 
-    /// <summary>Events raised by a rejected attempt do not survive into the retry.</summary>
     [Fact]
     public async Task Handle_WhenRetrying_ShouldDropEventsFromTheRejectedAttempt()
     {
@@ -309,8 +273,7 @@ public class HoldSeatCommandHandlerTests
 
         await HandlerFor(seats).HandleAsync(Command);
 
-        // The retry finds the seat already held by this client and raises nothing; without
-        // ClearDomainEvents() the rejected attempt's SeatHeld would remain.
+        // The retry re-holds idempotently and raises nothing: any event left is the rejected attempt's.
         Assert.Empty(seat.DomainEvents);
     }
 
@@ -320,7 +283,7 @@ public class HoldSeatCommandHandlerTests
     public async Task Handle_WhenClientHoldsFewerThanTheCap_ShouldHold()
     {
         var seats = new FakeSeatRepository(AvailableSeat())
-            .WithLiveHolds(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent - 1);
+            .WithLiveHolds(SeatReservationLimits.MaxHoldsPerClientPerEvent - 1);
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
@@ -331,7 +294,7 @@ public class HoldSeatCommandHandlerTests
     public async Task Handle_WhenClientIsAtTheCap_ShouldRefuse()
     {
         var seats = new FakeSeatRepository(AvailableSeat())
-            .WithLiveHolds(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent);
+            .WithLiveHolds(SeatReservationLimits.MaxHoldsPerClientPerEvent);
 
         var result = await HandlerFor(seats).HandleAsync(Command);
 
@@ -342,19 +305,18 @@ public class HoldSeatCommandHandlerTests
     public async Task Handle_WhenCapReached_ShouldNotWrite()
     {
         var seats = new FakeSeatRepository(AvailableSeat())
-            .WithLiveHolds(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent);
+            .WithLiveHolds(SeatReservationLimits.MaxHoldsPerClientPerEvent);
 
         await HandlerFor(seats).HandleAsync(Command);
 
         Assert.Equal(0, seats.SaveCalls);
     }
 
-    /// <summary>A client at the cap re-requesting a seat they already hold is still told yes.</summary>
     [Fact]
     public async Task Handle_WhenAtCapAndReHoldingASeatTheyAlreadyHold_ShouldSucceed()
     {
         var seats = new FakeSeatRepository(SeatHeldBy(ClientA))
-            .WithLiveHolds(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent - 1)
+            .WithLiveHolds(SeatReservationLimits.MaxHoldsPerClientPerEvent - 1)
             .WithLiveHoldOn(SeatId);
 
         var result = await HandlerFor(seats).HandleAsync(Command);
@@ -362,26 +324,23 @@ public class HoldSeatCommandHandlerTests
         Assert.Equal(HoldSeatOutcome.Held, result.Outcome);
     }
 
-    /// <summary>With the lock unavailable the handler proceeds; the cap is best-effort.</summary>
+    /// <summary>
+    /// Without the lock the cap is best-effort (005); ConcurrentHoldCapTests stages the race.
+    /// </summary>
     [Fact]
     public async Task Handle_WhenLockUnavailable_ShouldStillEnforceCapOnTheHappyPath()
     {
         var seats = new FakeSeatRepository(AvailableSeat())
-            .WithLiveHolds(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent);
+            .WithLiveHolds(SeatReservationLimits.MaxHoldsPerClientPerEvent);
 
         var result = await HandlerFor(seats, new FakeDistributedLock(LockOutcome.Unavailable))
             .HandleAsync(Command);
 
-        // Uncontended, the count still holds the cap; the race is covered by ConcurrentHoldCapTests.
         Assert.Equal(HoldSeatOutcome.HoldCapReached, result.Outcome);
     }
 
     // -- The client lock has no backstop ----------------------------------
 
-    /// <summary>
-    /// A contended client lock is refused: proceeding would let concurrent requests by one
-    /// client past the cap.
-    /// </summary>
     [Fact]
     public async Task Handle_WhenClientLockHeldByAnother_ShouldRefuse()
     {
@@ -401,7 +360,7 @@ public class HoldSeatCommandHandlerTests
 
         await HandlerFor(seats, distributedLock).HandleAsync(Command);
 
-        Assert.Equal(0, seats.GetByIdCalls);
+        Assert.Equal(0, seats.LoadCalls);
         Assert.Equal(0, seats.SaveCalls);
     }
 
@@ -417,7 +376,9 @@ public class HoldSeatCommandHandlerTests
         Assert.Equal(0, distributedLock.ReleaseCalls);
     }
 
-    /// <summary>An unreachable lock is not contention: the hold proceeds.</summary>
+    /// <summary>
+    /// An unreachable lock is not contention: Redis is not a correctness dependency (004).
+    /// </summary>
     [Fact]
     public async Task Handle_WhenClientLockUnavailable_ShouldProceedAnyway()
     {
@@ -454,9 +415,8 @@ public class HoldSeatCommandHandlerTests
         Assert.Equal(0, seats.SaveCalls);
     }
 
-    // -- Batches ------------------------------------------------------------
+    // -- Batches ----------------------------------------------------------
 
-    /// <summary>A refused seat does not cost the client the others; every seat is answered.</summary>
     [Fact]
     public async Task HandleBatch_WhenOneSeatIsRefused_ShouldStillHoldTheOthers()
     {
@@ -474,7 +434,6 @@ public class HoldSeatCommandHandlerTests
         Assert.Equal(ClientA, last.HeldByClientId);
     }
 
-    /// <summary>What the batch is for: every hold written by one save, not one each.</summary>
     [Fact]
     public async Task HandleBatch_ShouldWriteEveryHoldInOneSave()
     {
@@ -484,7 +443,7 @@ public class HoldSeatCommandHandlerTests
         await HandlerFor(seats).HandleAsync(BatchOf(batch));
 
         Assert.Equal(1, seats.SaveCalls);
-        Assert.Equal(1, seats.GetByIdCalls);
+        Assert.Equal(1, seats.LoadCalls);
         Assert.Equal(3, seats.LastSaved.Count);
     }
 
@@ -499,7 +458,6 @@ public class HoldSeatCommandHandlerTests
         Assert.Single(distributedLock.Acquired);
     }
 
-    /// <summary>The cap is applied in request order.</summary>
     [Fact]
     public async Task HandleBatch_WhenTheCapRunsOutPartWay_ShouldRefuseTheSeatsNamedLast()
     {
@@ -512,21 +470,22 @@ public class HoldSeatCommandHandlerTests
         var results = await HandlerFor(seats).HandleAsync(BatchOf(batch));
 
         Assert.Equal(
-            [HoldSeatOutcome.Held, HoldSeatOutcome.Held, HoldSeatOutcome.HoldCapReached, HoldSeatOutcome.HoldCapReached],
+            [
+                HoldSeatOutcome.Held,
+                HoldSeatOutcome.Held,
+                HoldSeatOutcome.HoldCapReached,
+                HoldSeatOutcome.HoldCapReached
+            ],
             results.Select(result => result.Outcome));
     }
 
-    /// <summary>
-    /// At the cap, a seat the client already holds can be re-held while a new one cannot, which
-    /// is why the port returns ids rather than a count.
-    /// </summary>
     [Fact]
     public async Task HandleBatch_AtTheCap_ShouldRefuseTheNewSeatAndKeepTheOneTheyHold()
     {
         var fresh = AnotherAvailableSeat();
         var theirs = HeldBy(AnotherAvailableSeat(), ClientA);
         var seats = FakeSeatRepository.Holding(fresh, theirs)
-            .WithLiveHolds(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent - 1)
+            .WithLiveHolds(SeatReservationLimits.MaxHoldsPerClientPerEvent - 1)
             .WithLiveHoldOn(theirs.Id);
 
         var results = await HandlerFor(seats).HandleAsync(BatchOf(fresh, theirs));
@@ -565,7 +524,6 @@ public class HoldSeatCommandHandlerTests
         Assert.All(results, result => Assert.Equal(HoldSeatOutcome.ConcurrentRequestInFlight, result.Outcome));
     }
 
-    /// <summary>A lost race rejects the whole write, so every moved seat is asked again.</summary>
     [Fact]
     public async Task HandleBatch_WhenTheWriteLosesARace_ShouldRetryTheWholeBatch()
     {
@@ -595,22 +553,17 @@ public class HoldSeatCommandHandlerTests
     }
 
     [Fact]
-    public async Task HandleBatch_WithNoSeats_ShouldThrow()
-    {
+    public async Task HandleBatch_WithNoSeats_ShouldThrow() =>
         await Assert.ThrowsAsync<ArgumentException>(() =>
             HandlerFor(FakeSeatRepository.Holding())
                 .HandleAsync(new HoldSeatsCommand(EventId, [], ClientA)));
-    }
 
     // -- Fakes ------------------------------------------------------------
 
-    /// <summary>A lock whose answer is the same for every resource.</summary>
     private sealed class FakeDistributedLock(LockOutcome outcome = LockOutcome.Acquired) : IDistributedLock
     {
-        /// <summary>Resources locked, in acquisition order.</summary>
         public List<string> Acquired { get; } = [];
 
-        /// <summary>Resources unlocked, in release order.</summary>
         public List<string> Released { get; } = [];
 
         public int ReleaseCalls => Released.Count;

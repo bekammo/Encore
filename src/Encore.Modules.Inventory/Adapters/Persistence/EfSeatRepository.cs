@@ -7,9 +7,8 @@ using Microsoft.EntityFrameworkCore;
 namespace Encore.Modules.Inventory.Adapters.Persistence;
 
 /// <summary>
-/// EF Core / Postgres implementation of <see cref="ISeatRepository"/>. The <c>xmin</c>
-/// token makes every save a conditional UPDATE; EF's concurrency exception is translated
-/// into <see cref="ConcurrentSeatModificationException"/> so it never leaks through the port.
+/// EF's concurrency exception never crosses the port: it is translated, and kept as the inner
+/// exception (002).
 /// </summary>
 public sealed class EfSeatRepository(InventoryDbContext context) : ISeatRepository
 {
@@ -25,7 +24,7 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
         IReadOnlyCollection<Guid> seatIds,
         CancellationToken cancellationToken = default)
     {
-        // Detach and re-read in one query, discarding whatever a failed attempt changed.
+        // Detached first: a query would hand back the tracked instance, unsaved changes and all.
         Detach(seatIds);
 
         return await _context.Seats
@@ -52,8 +51,7 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
 
         var liveHold = LiveHoldOf(clientId, eventId, utcNow);
 
-        // One round trip, a UNION ALL: the requested seats by primary key, and the client's
-        // live holds by ix_seats_event_client_status. A seat can come back from both halves.
+        // A requested seat the client already holds comes back from both halves of the UNION ALL.
         var rows = (await _context.Seats
                 .Where(seat => seatIds.Contains(seat.Id))
                 .Concat(_context.Seats.Where(liveHold))
@@ -65,7 +63,7 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
         var isLiveHold = liveHold.Compile();
         var liveHolds = rows.Where(isLiveHold).Select(seat => seat.Id).ToList();
 
-        // The cap's other seats are only counted. Untracked, so no later save can write them.
+        // Untracked, so no later save can write a seat the cap only counted.
         foreach (var counted in rows.Where(seat => !seatIds.Contains(seat.Id) && !alreadyTracked.Contains(seat.Id)))
         {
             _context.Entry(counted).State = EntityState.Detached;
@@ -77,7 +75,6 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
     /// <inheritdoc />
     public async Task SaveAsync(Seat seat, CancellationToken cancellationToken = default)
     {
-        // The outbox drain runs inside SaveChanges (InventoryDbContext).
         try
         {
             await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -91,7 +88,6 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
     /// <inheritdoc />
     public async Task SaveAsync(IReadOnlyCollection<Seat> seats, CancellationToken cancellationToken = default)
     {
-        // One SaveChanges: one transaction, sent as one batch.
         try
         {
             await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -105,36 +101,11 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
         }
     }
 
-    /// <summary>
-    /// A live hold by this client at this event, as the cap counts it. Expiry is in the
-    /// predicate, so a lapsed hold never counts. One definition, for the query and for memory.
-    /// </summary>
-    private static Expression<Func<Seat, bool>> LiveHoldOf(Guid clientId, Guid eventId, DateTime utcNow) =>
-        seat => seat.EventId == eventId
-            && seat.HeldByClientId == clientId
-            && seat.Status == SeatStatus.Held
-            && seat.HoldExpiresAt > utcNow;
-
-    /// <summary>Stops tracking these seats, so the next read gets them as the database has them.</summary>
-    private void Detach(IReadOnlyCollection<Guid> seatIds)
-    {
-        var tracked = _context.ChangeTracker
-            .Entries<Seat>()
-            .Where(entry => seatIds.Contains(entry.Entity.Id))
-            .ToList();
-
-        foreach (var entry in tracked)
-        {
-            entry.State = EntityState.Detached;
-        }
-    }
-
     /// <inheritdoc />
     public async Task<IReadOnlyList<Guid>> FindExpiredHoldsAsync(
         DateTime utcNow,
         int limit,
         CancellationToken cancellationToken = default)
-        // Oldest lapse first, so no row is starved. Uses the partial ix_seats_expiring_holds.
         => await _context.Seats
             .AsNoTracking()
             .Where(seat => seat.Status == SeatStatus.Held && seat.HoldExpiresAt <= utcNow)
@@ -149,7 +120,28 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
         IReadOnlyCollection<Seat> seats,
         CancellationToken cancellationToken = default)
     {
-        await _context.Seats.AddRangeAsync(seats, cancellationToken).ConfigureAwait(false);
+        _context.Seats.AddRange(seats);
         await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    // One definition for the query and the in-memory check. Expiry is in it, so a lapsed Held
+    // row is never a live hold (006).
+    private static Expression<Func<Seat, bool>> LiveHoldOf(Guid clientId, Guid eventId, DateTime utcNow) =>
+        seat => seat.EventId == eventId
+            && seat.HeldByClientId == clientId
+            && seat.Status == SeatStatus.Held
+            && seat.HoldExpiresAt > utcNow;
+
+    private void Detach(IReadOnlyCollection<Guid> seatIds)
+    {
+        var tracked = _context.ChangeTracker
+            .Entries<Seat>()
+            .Where(entry => seatIds.Contains(entry.Entity.Id))
+            .ToList();
+
+        foreach (var entry in tracked)
+        {
+            entry.State = EntityState.Detached;
+        }
     }
 }

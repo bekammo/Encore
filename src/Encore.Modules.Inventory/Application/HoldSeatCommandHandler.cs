@@ -5,30 +5,15 @@ using Encore.Modules.Inventory.Ports;
 
 namespace Encore.Modules.Inventory.Application;
 
-/// <summary>
-/// Holds seats for a client. Each <see cref="Seat"/> decides its own transition; this
-/// handler owns only the per-client hold cap, which spans several rows.
-/// </summary>
-/// <remarks>
-/// Each seat is answered on its own, and the holds that succeed are written in one
-/// transaction. A client + event lock serialises the cap check: if another request by
-/// the same client holds it, this one is refused; if the lock service is unavailable,
-/// the attempt proceeds and the cap may be exceeded. A lost race is retried once.
-/// </remarks>
 public sealed class HoldSeatCommandHandler(
     ISeatRepository seats,
     IDistributedLock distributedLock,
     TimeProvider timeProvider)
 {
-    /// <summary>Seats one client may hold at one event at once.</summary>
-    public static readonly int MaxHoldsPerClientPerEvent =
-        SeatReservationLimits.MaxHoldsPerClientPerEvent;
-
     private readonly ISeatRepository _seats = seats;
     private readonly IDistributedLock _distributedLock = distributedLock;
     private readonly TimeProvider _timeProvider = timeProvider;
 
-    /// <summary>Holds one seat. A batch of one.</summary>
     public async Task<HoldSeatResult> HandleAsync(
         HoldSeatCommand command,
         CancellationToken cancellationToken = default)
@@ -41,8 +26,6 @@ public sealed class HoldSeatCommandHandler(
         return results[0];
     }
 
-    /// <summary>Holds every requested seat it can.</summary>
-    /// <returns>One outcome per seat, in request order.</returns>
     public async Task<IReadOnlyList<HoldSeatResult>> HandleAsync(
         HoldSeatsCommand command,
         CancellationToken cancellationToken = default)
@@ -55,7 +38,7 @@ public sealed class HoldSeatCommandHandler(
             .TryAcquireAsync(clientResource, ClientHoldLock.Ttl, cancellationToken)
             .ConfigureAwait(false);
 
-        // Another request by this client is mid-count; letting both through could breach the cap.
+        // Unavailable falls through: without the lock, the cap may be exceeded (005).
         if (clientLock.Outcome is LockOutcome.HeldByAnother)
         {
             return [.. command.SeatIds.Select(_ => HoldSeatResult.ConcurrentRequestInFlight)];
@@ -70,12 +53,11 @@ public sealed class HoldSeatCommandHandler(
                 return attempt.Results;
             }
 
-            // The retry's load discards the first attempt's changes.
             var retry = await AttemptAsync(command, cancellationToken).ConfigureAwait(false);
 
             if (retry.LostRace)
             {
-                // Nothing else will: reload so holds that exist only in memory cannot reach a later save (011).
+                // Reloads only to discard the holds in memory, so no later save writes them (011).
                 await _seats.GetByIdsAsync(command.SeatIds, cancellationToken).ConfigureAwait(false);
             }
 
@@ -95,12 +77,10 @@ public sealed class HoldSeatCommandHandler(
     {
         var utcNow = _timeProvider.GetUtcNow().UtcDateTime;
 
-        // One read: the seats asked for, and the client's live holds for the cap.
         var loaded = await _seats
             .GetForHoldAsync(command.SeatIds, command.ClientId, command.EventId, utcNow, cancellationToken)
             .ConfigureAwait(false);
 
-        // The event id is checked, never trusted.
         var seats = loaded.Seats
             .Where(seat => seat.EventId == command.EventId)
             .ToDictionary(seat => seat.Id);
@@ -125,10 +105,9 @@ public sealed class HoldSeatCommandHandler(
             // Drop events left by a previous rejected attempt.
             seat.ClearDomainEvents();
 
-            // Re-holding a seat you already hold is not a new hold, so the cap does not apply.
             var alreadyTheirs = liveHolds.Contains(seat.Id);
 
-            if (!alreadyTheirs && holding >= MaxHoldsPerClientPerEvent)
+            if (!alreadyTheirs && holding >= SeatReservationLimits.MaxHoldsPerClientPerEvent)
             {
                 results[i] = HoldSeatResult.HoldCapReached;
                 continue;
@@ -184,8 +163,6 @@ public sealed class HoldSeatCommandHandler(
         {
             return HoldSeatResult.AlreadySold;
         }
-
-        // Any other reason propagates: it would mean the aggregate's contract changed.
     }
 
     private sealed record Attempt(IReadOnlyList<HoldSeatResult> Results, bool LostRace);

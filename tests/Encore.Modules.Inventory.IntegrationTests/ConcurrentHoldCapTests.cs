@@ -1,6 +1,7 @@
 using Encore.Modules.Inventory.Adapters.Caching;
 using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Application;
+using Encore.Modules.Inventory.Contracts;
 using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Ports;
 using Microsoft.EntityFrameworkCore;
@@ -11,18 +12,12 @@ using StackExchange.Redis;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// The per-client hold cap under one client racing themselves across many seats. Needs Redis:
-/// the cap spans rows, so the client lock is its only guard. Every test runs against both locks
-/// that can serialise the count (005).
+/// The cap spans rows, so the client lock is its only guard (005). Postgres and Redis are never
+/// emptied: every count and lock key names the test's own client and event.
 /// </summary>
-/// <remarks>
-/// Postgres and Redis are shared by the class and never emptied. Nothing needs them to be:
-/// every count and every lock key names this test's own client and event.
-/// </remarks>
 public sealed class ConcurrentHoldCapTests(InventoryDatabase database, InventoryRedis redis)
     : IClassFixture<InventoryDatabase>, IClassFixture<InventoryRedis>, IAsyncLifetime
 {
-    /// <summary>Seats the client tries for at once, comfortably above the cap.</summary>
     private const int ConcurrentAttempts = 12;
 
     private readonly Guid _eventId = Guid.NewGuid();
@@ -31,16 +26,13 @@ public sealed class ConcurrentHoldCapTests(InventoryDatabase database, Inventory
     private readonly DbContextOptions<InventoryDbContext> _options = database.Options;
     private readonly IConnectionMultiplexer _connection = redis.Connection;
 
-    /// <summary>This test's own, so its advisory-lock sessions end with it.</summary>
+    // Per test, so its advisory-lock sessions end with the test.
     private readonly NpgsqlDataSource _dataSource = NpgsqlDataSource.Create(database.ConnectionString);
 
-    /// <inheritdoc />
     public Task InitializeAsync() => Task.CompletedTask;
 
-    /// <inheritdoc />
     public async Task DisposeAsync() => await _dataSource.DisposeAsync();
 
-    /// <summary>Seeds <paramref name="count"/> available seats and returns their ids.</summary>
     private async Task<List<Guid>> SeedAvailableSeatsAsync(int count)
     {
         var seatIds = Enumerable.Range(0, count).Select(_ => Guid.NewGuid()).ToList();
@@ -55,7 +47,6 @@ public sealed class ConcurrentHoldCapTests(InventoryDatabase database, Inventory
         return seatIds;
     }
 
-    /// <summary>Fires one hold per seat at once, each on its own context, and returns every result.</summary>
     private async Task<IReadOnlyList<HoldSeatResult>> RaceForSeatsAsync(
         List<Guid> seatIds,
         IDistributedLock distributedLock)
@@ -98,7 +89,6 @@ public sealed class ConcurrentHoldCapTests(InventoryDatabase database, Inventory
         }
     }
 
-    /// <summary>Counts what the database actually believes, independent of the results.</summary>
     private async Task<int> CountPersistedHoldsAsync()
     {
         await using var context = new InventoryDbContext(_options);
@@ -110,8 +100,8 @@ public sealed class ConcurrentHoldCapTests(InventoryDatabase database, Inventory
     }
 
     /// <summary>
-    /// A burst of twelve ends with at most the cap. Lock losers are refused, so this proves a
-    /// ceiling; the next test proves a retrying client reaches it.
+    /// Lock losers are refused, so a burst proves only a ceiling; the next test proves the cap is
+    /// reached.
     /// </summary>
     [Theory]
     [InlineData(Redis)]
@@ -124,11 +114,10 @@ public sealed class ConcurrentHoldCapTests(InventoryDatabase database, Inventory
         var held = results.Count(result => result.Outcome is HoldSeatOutcome.Held);
 
         Assert.True(
-            held <= HoldSeatCommandHandler.MaxHoldsPerClientPerEvent,
-            $"Client held {held} seats; the cap is {HoldSeatCommandHandler.MaxHoldsPerClientPerEvent}. "
+            held <= SeatReservationLimits.MaxHoldsPerClientPerEvent,
+            $"Client held {held} seats; the cap is {SeatReservationLimits.MaxHoldsPerClientPerEvent}. "
             + $"Outcomes: {Describe(results)}");
 
-        // No refusal indicates a real fault.
         Assert.All(results, result => Assert.Contains(result.Outcome, new[]
         {
             HoldSeatOutcome.Held,
@@ -139,11 +128,10 @@ public sealed class ConcurrentHoldCapTests(InventoryDatabase database, Inventory
         Assert.Equal(held, await CountPersistedHoldsAsync());
     }
 
-    /// <summary>A client that retries on contention converges on exactly the cap, and stops.</summary>
     [Theory]
     [InlineData(Redis)]
     [InlineData(Postgres)]
-    public async Task Hold_WhenOneClientRetriesOnContention_ShouldReachExactlyTheCap(string serialisedBy)
+    public async Task Hold_WhenOneClientHoldsSeatAfterSeat_ShouldReachExactlyTheCap(string serialisedBy)
     {
         var seatIds = await SeedAvailableSeatsAsync(ConcurrentAttempts);
         var distributedLock = LockFor(serialisedBy);
@@ -156,32 +144,21 @@ public sealed class ConcurrentHoldCapTests(InventoryDatabase database, Inventory
 
         foreach (var seatId in seatIds)
         {
-            // Sequential with a bounded retry, as a client would on ConcurrentRequestInFlight.
-            for (var attempt = 0; attempt < 5; attempt++)
+            var result = await handler.HandleAsync(new HoldSeatCommand(_eventId, seatId, _clientA));
+
+            if (result.Outcome is HoldSeatOutcome.Held)
             {
-                var result = await handler.HandleAsync(new HoldSeatCommand(_eventId, seatId, _clientA));
-
-                if (result.Outcome is HoldSeatOutcome.Held)
-                {
-                    held++;
-                    break;
-                }
-
-                if (result.Outcome is HoldSeatOutcome.HoldCapReached)
-                {
-                    break;
-                }
+                held++;
             }
         }
 
-        Assert.Equal(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent, held);
-        Assert.Equal(HoldSeatCommandHandler.MaxHoldsPerClientPerEvent, await CountPersistedHoldsAsync());
+        Assert.Equal(SeatReservationLimits.MaxHoldsPerClientPerEvent, held);
+        Assert.Equal(SeatReservationLimits.MaxHoldsPerClientPerEvent, await CountPersistedHoldsAsync());
     }
 
     private const string Redis = nameof(Redis);
     private const string Postgres = nameof(Postgres);
 
-    /// <summary>The two ways to serialise the count (005): the Redis lock, or a Postgres advisory lock.</summary>
     private IDistributedLock LockFor(string serialisedBy) => serialisedBy switch
     {
         Redis => new RedisDistributedLock(_connection, NullLogger<RedisDistributedLock>.Instance),

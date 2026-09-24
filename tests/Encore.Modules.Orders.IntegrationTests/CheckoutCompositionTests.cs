@@ -11,18 +11,10 @@ using Npgsql;
 namespace Encore.Modules.Orders.IntegrationTests;
 
 /// <summary>
-/// Checkout, confirm and cancel through the real Inventory and Payments modules, composed
-/// through their <c>Add*</c> methods as the host composes them. Every other Orders test fakes
-/// the far side of its seams, so this is the one place 011 and 012 are checked across them:
-/// 018's lesson that a seam is not proven by testing each side of it.
+/// The one place 011 and 012 are checked across Orders' seams, through the real Inventory and
+/// Payments modules composed as the host composes them (018). The invariants count every order,
+/// so the shared database is emptied before each test.
 /// </summary>
-/// <remarks>
-/// The invariants are chaos.sh's order evidence, read from the same tables, so the claim in
-/// WRITEUP.md that no order ends partly sold, sold without money or paid without its seats
-/// is a check that fails here rather than only a number in a report. They count every order in
-/// the database, so the class's shared database is emptied before each test; the modules are
-/// composed afresh per test, so no in-memory state carries over either.
-/// </remarks>
 public sealed class CheckoutCompositionTests(OrdersDatabase database)
     : IClassFixture<OrdersDatabase>, IAsyncLifetime
 {
@@ -32,7 +24,6 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
 
     private ServiceProvider _provider = null!;
 
-    /// <summary>Empties the three schemas, then composes the modules over them as the host does.</summary>
     public async Task InitializeAsync()
     {
         await _database.ResetAsync();
@@ -65,19 +56,13 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
         services.AddPaymentsModule(configuration);
         services.AddOrdersModule(configuration);
 
-        // Catalog is not the seam under test.
         services.AddSingleton<IEventPricing, OnSale>();
 
         _provider = services.BuildServiceProvider();
     }
 
-    /// <inheritdoc />
     public async Task DisposeAsync() => await _provider.DisposeAsync();
 
-    /// <summary>
-    /// Every order's confirm races its cancel. Whichever wins, the seats and the money end
-    /// together: no order partly sold, none sold without money, none paid without its seats.
-    /// </summary>
     [Fact]
     public async Task ConfirmRacingCancel_ShouldEndEveryOrderWithItsSeatsAndMoneyTogether()
     {
@@ -112,9 +97,8 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
     }
 
     /// <summary>
-    /// A confirm has sold the seats but not yet recorded it when the cancel arrives. The real
-    /// adapter must answer sold-to-you, so the cancel backs off and leaves the money (012).
-    /// Answering "already sold" instead would void an authorisation with a sale behind it.
+    /// The real adapter must answer SoldToYou, so the cancel backs off (012); AlreadySold would
+    /// void an authorisation with a sale behind it.
     /// </summary>
     [Fact]
     public async Task Cancel_AfterTheSaleButBeforeItIsRecorded_ShouldLeaveTheMoneyForTheConfirm()
@@ -126,7 +110,7 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
         var placed = await WithCheckoutAsync(checkout => checkout.CheckoutAsync(clientId, eventId, seatIds));
         var order = placed.Order!;
 
-        // A confirm's first two steps, through the real modules, stopped before it records the sale.
+        // A confirm's authorise and sell, stopped before it records the sale.
         await using (var scope = _provider.CreateAsyncScope())
         {
             var payments = scope.ServiceProvider.GetRequiredService<IOrderPayments>();
@@ -139,7 +123,6 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
         var cancel = await WithCheckoutAsync(checkout => checkout.CancelAsync(clientId, order.Id));
         Assert.Equal(OrderActionOutcome.LostRace, cancel.Outcome);
 
-        // The confirm, retried, finds the money still held and finishes.
         var confirm = await WithCheckoutAsync(checkout => checkout.ConfirmAsync(clientId, order.Id));
         Assert.Equal(OrderActionOutcome.Completed, confirm.Outcome);
 
@@ -162,17 +145,13 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
     {
         await using var scope = _provider.CreateAsyncScope();
 
-        var created = await scope.ServiceProvider
+        return await scope.ServiceProvider
             .GetRequiredService<CreateSeatMapCommandHandler>()
             .HandleAsync(new CreateSeatMapCommand(eventId, count));
-
-        return created.SeatIds;
     }
 
-    /// <summary>
-    /// chaos.sh's order invariants, over the same tables. A seat is this order's sale when it
-    /// is sold to the order's client: every order here has its own client.
-    /// </summary>
+    // chaos.sh's order invariants over the same tables. A sold seat counts as an order's sale when
+    // it is sold to the order's client, so every order here needs a client of its own.
     private async Task<Dictionary<string, long>> OrderEvidenceAsync()
     {
         const string Sql = """
@@ -222,7 +201,6 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
             .ToDictionary(reader.GetName, ordinal => reader.GetInt64(ordinal));
     }
 
-    /// <summary>Catalog at its contract: priced, and on sale since long ago.</summary>
     private sealed class OnSale : IEventPricing
     {
         public Task<EventPricingResponse> GetAsync(

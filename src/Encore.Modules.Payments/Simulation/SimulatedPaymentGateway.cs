@@ -9,36 +9,21 @@ using Npgsql;
 namespace Encore.Modules.Payments.Simulation;
 
 /// <summary>
-/// A fake payment provider that declines or hangs at configured rates after a configured
-/// delay, so the rest of the system has to cope with an unreliable dependency.
+/// Remembers its decisions in <c>payments.gateway_ledger</c>, so every process asks the same
+/// gateway and a restart forgets nothing (014).
 /// </summary>
-/// <remarks>
-/// It honours idempotency keys and remembers its decisions in <c>payments.gateway_ledger</c>,
-/// so every process asks the same gateway and a restart forgets nothing. A timeout is two
-/// different events: a request lost on the way leaves no record, while an answer lost on the
-/// way back leaves one that <see cref="LookUpAsync"/> can find. Seeded randomness is locked
-/// because a seeded <see cref="Random"/> is not thread-safe.
-/// </remarks>
 internal sealed class SimulatedPaymentGateway(
     IServiceScopeFactory scopeFactory,
     IOptions<PaymentSimulationOptions> options,
-    TimeProvider clock)
+    TimeProvider timeProvider)
 {
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
     private readonly PaymentSimulationOptions _options = options.Value;
-    private readonly TimeProvider _clock = clock;
+    private readonly TimeProvider _timeProvider = timeProvider;
     private readonly Random? _seeded =
         options.Value.Seed is { } seed ? new Random(seed) : null;
-
-    /// <summary>
-    /// Guards the random draws.
-    /// </summary>
     private readonly Lock _gate = new();
 
-    /// <summary>
-    /// Asks for funds to be held.
-    /// </summary>
-    /// <returns>The outcome, and the gateway's reference when it succeeded.</returns>
     public async Task<(GatewayOutcome Outcome, string? Reference)> AuthorizeAsync(
         string idempotencyKey,
         decimal amount,
@@ -52,13 +37,10 @@ internal sealed class SimulatedPaymentGateway(
         bool unanswered;
         bool requestLost;
 
-        // Drawn together, so one call always consumes the same number of seeded draws.
+        // Drawn under one lock, so no other call's draw lands between the two.
         lock (_gate)
         {
-            // Does the caller hear anything back?
             unanswered = NextDoubleLocked() < _options.TimeoutRate;
-
-            // If not: was the request lost (no record) or only the answer?
             requestLost = unanswered && NextDoubleLocked() < _options.LostRequestRate;
         }
 
@@ -69,7 +51,6 @@ internal sealed class SimulatedPaymentGateway(
 
         var outcome = await RememberAsync(idempotencyKey, cancellationToken).ConfigureAwait(false);
 
-        // It arrived and was decided; the caller just does not hear about it.
         if (unanswered)
         {
             return (GatewayOutcome.TimedOut, null);
@@ -80,10 +61,6 @@ internal sealed class SimulatedPaymentGateway(
             : (outcome, null);
     }
 
-    /// <summary>
-    /// Asks what the gateway has on record for a key. Records nothing. A lookup can itself
-    /// go unanswered, which is <see cref="GatewayRecord.Unknown"/>, never "nothing happened".
-    /// </summary>
     public async Task<(GatewayRecord Record, string? Reference)> LookUpAsync(
         string idempotencyKey,
         CancellationToken cancellationToken = default)
@@ -109,8 +86,6 @@ internal sealed class SimulatedPaymentGateway(
             : (GatewayRecord.Declined, null);
     }
 
-    /// <summary>Takes funds that are being held.</summary>
-    /// <remarks>Never declines: a known simplification.</remarks>
     public async Task<GatewayOutcome> CaptureAsync(
         string gatewayReference,
         CancellationToken cancellationToken = default)
@@ -122,8 +97,7 @@ internal sealed class SimulatedPaymentGateway(
         return HangsUp() ? GatewayOutcome.TimedOut : GatewayOutcome.Succeeded;
     }
 
-    /// <summary>Releases funds that are being held, without taking them.</summary>
-    /// <remarks>The ledger row is kept, but nothing looks up a key after it has been reconciled.</remarks>
+    /// <summary>The ledger row is kept, but nothing looks up a key after it has been reconciled.</summary>
     public async Task<GatewayOutcome> VoidAsync(
         string gatewayReference,
         CancellationToken cancellationToken = default)
@@ -135,10 +109,7 @@ internal sealed class SimulatedPaymentGateway(
         return HangsUp() ? GatewayOutcome.TimedOut : GatewayOutcome.Succeeded;
     }
 
-    /// <summary>
-    /// The gateway's decision for this key: the recorded one, or a fresh roll written down.
-    /// If two calls race, the primary key lets one insert and the loser reads the winner's answer.
-    /// </summary>
+    // If two calls race, the primary key lets one insert and the loser reads the winner's answer.
     private async Task<GatewayOutcome> RememberAsync(
         string idempotencyKey,
         CancellationToken cancellationToken)
@@ -165,7 +136,7 @@ internal sealed class SimulatedPaymentGateway(
         {
             IdempotencyKey = idempotencyKey,
             Outcome = outcome,
-            RecordedAt = _clock.GetUtcNow().UtcDateTime
+            RecordedAt = _timeProvider.GetUtcNow().UtcDateTime
         });
 
         try
@@ -186,9 +157,6 @@ internal sealed class SimulatedPaymentGateway(
         }
     }
 
-    /// <summary>
-    /// What the gateway has on record for a key, or null.
-    /// </summary>
     private async Task<GatewayOutcome?> ReadAsync(
         string idempotencyKey,
         CancellationToken cancellationToken)
@@ -205,7 +173,7 @@ internal sealed class SimulatedPaymentGateway(
     }
 
     private static bool IsDuplicateKey(DbUpdateException exception) =>
-        exception.InnerException is PostgresException { SqlState: "23505" } postgres
+        exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation } postgres
         && postgres.ConstraintName == GatewayLedgerConfiguration.PrimaryKeyName;
 
     private bool HangsUp() => NextDouble() < _options.TimeoutRate;
@@ -223,9 +191,10 @@ internal sealed class SimulatedPaymentGateway(
         var span = max - min;
         var delay = min + (span * NextDouble());
 
-        await Task.Delay(delay, _clock, cancellationToken).ConfigureAwait(false);
+        await Task.Delay(delay, _timeProvider, cancellationToken).ConfigureAwait(false);
     }
 
+    // A seeded Random is not thread-safe.
     private double NextDouble()
     {
         if (_seeded is null)
@@ -239,16 +208,11 @@ internal sealed class SimulatedPaymentGateway(
         }
     }
 
-    /// <summary>
-    /// The same draw, for a caller already holding <c>_gate</c>.
-    /// </summary>
+    // For a caller already holding _gate.
     private double NextDoubleLocked() =>
         _seeded is null ? Random.Shared.NextDouble() : _seeded.NextDouble();
 
-    /// <summary>
-    /// A stable, opaque handle derived from the key, so the same authorisation
-    /// always answers with the same reference.
-    /// </summary>
+    // Derived from the key, so the same authorisation always answers with the same reference.
     private static string ReferenceFor(string idempotencyKey)
     {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(idempotencyKey));

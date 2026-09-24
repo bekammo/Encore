@@ -1,16 +1,13 @@
 using Encore.Modules.Inventory.Application;
 using Encore.Modules.Inventory.Domain;
+using Encore.Modules.Inventory.Domain.Events;
 using Encore.Modules.Inventory.Domain.Exceptions;
 using Encore.Modules.Inventory.Ports;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Inventory.UnitTests;
 
-/// <summary>
-/// The sell use case through fake ports. A retried purchase is a success, which the handler
-/// can tell apart from someone else's purchase because the seat keeps the buyer's id.
-/// </summary>
-public class SellSeatCommandHandlerTests
+public sealed class SellSeatCommandHandlerTests
 {
     private static readonly Guid SeatId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid EventId = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -19,20 +16,13 @@ public class SellSeatCommandHandlerTests
 
     private static readonly DateTime T0 = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
 
-    /// <summary>Inside the 5-minute hold taken at <see cref="T0"/>.</summary>
     private static readonly DateTime WithinHold = T0.AddMinutes(4);
 
     private static SellSeatCommand Command => new(EventId, SeatId, ClientA);
 
     private static Seat AvailableSeat() => Seat.Create(SeatId, EventId);
 
-    private static Seat SeatHeldBy(Guid clientId)
-    {
-        var seat = AvailableSeat();
-        seat.Hold(clientId, T0);
-        seat.ClearDomainEvents();
-        return seat;
-    }
+    private static Seat SeatHeldBy(Guid clientId) => HeldBy(AvailableSeat(), clientId, T0);
 
     private static Seat SeatSoldTo(Guid clientId)
     {
@@ -91,13 +81,12 @@ public class SellSeatCommandHandlerTests
 
         await HandlerFor(seats).HandleAsync(Command);
 
-        var sold = Assert.IsType<Domain.Events.SeatSold>(Assert.Single(seat.DomainEvents));
+        var sold = Assert.IsType<SeatSold>(Assert.Single(seat.DomainEvents));
         Assert.Equal(ClientA, sold.ClientId);
     }
 
     // -- Idempotency for the buyer ----------------------------------------
 
-    /// <summary>A retried or double-submitted purchase that already went through is a success.</summary>
     [Fact]
     public async Task Handle_WhenSeatAlreadySoldToThisClient_ShouldReturnSold()
     {
@@ -129,7 +118,6 @@ public class SellSeatCommandHandlerTests
         Assert.Empty(seat.DomainEvents);
     }
 
-    /// <summary>The distinction the idempotency rests on: sold, but not to you.</summary>
     [Fact]
     public async Task Handle_WhenSeatSoldToSomebodyElse_ShouldReturnAlreadySold()
     {
@@ -192,7 +180,6 @@ public class SellSeatCommandHandlerTests
         Assert.Equal(SellSeatOutcome.SeatNotFound, result);
     }
 
-    /// <summary>A seat under another event is reported as not found.</summary>
     [Fact]
     public async Task Handle_WhenSeatBelongsToADifferentEvent_ShouldReportNotFound()
     {
@@ -216,10 +203,9 @@ public class SellSeatCommandHandlerTests
         var result = await HandlerFor(seats).HandleAsync(Command);
 
         Assert.Equal(SellSeatOutcome.Sold, result);
-        Assert.Equal(2, seats.GetByIdCalls);
+        Assert.Equal(2, seats.LoadCalls);
     }
 
-    /// <summary>Losing a race to the client's own concurrent purchase is still a success.</summary>
     [Fact]
     public async Task Handle_WhenReloadShowsTheClientAlreadyBoughtIt_ShouldReturnSold()
     {
@@ -285,10 +271,7 @@ public class SellSeatCommandHandlerTests
         Assert.All(batch, seat => Assert.Equal(SeatStatus.Sold, seat.Status));
     }
 
-    /// <summary>
-    /// One lapsed hold means nothing sells, and the seats sold in memory are reloaded so no later
-    /// save can write them.
-    /// </summary>
+    /// <summary>The seats sold in memory are reloaded, so no later save can write them (011).</summary>
     [Fact]
     public async Task HandleBatch_WhenOneHoldHasLapsed_ShouldSellNone()
     {
@@ -301,10 +284,9 @@ public class SellSeatCommandHandlerTests
         Assert.False(result.AllSold);
         Assert.Equal([new SeatSaleRefusal(lapsed.Id, SellSeatOutcome.HoldExpired)], result.Refusals);
         Assert.Equal(0, seats.SaveCalls);
-        Assert.Equal(2, seats.GetByIdCalls);
+        Assert.Equal(2, seats.LoadCalls);
     }
 
-    /// <summary>Every seat is asked, so the caller learns every reason at once.</summary>
     [Fact]
     public async Task HandleBatch_WhenSeveralSeatsRefuse_ShouldReportEveryOne()
     {
@@ -323,7 +305,6 @@ public class SellSeatCommandHandlerTests
             result.Refusals);
     }
 
-    /// <summary>A retried confirm after the sale: already theirs, nothing to write.</summary>
     [Fact]
     public async Task HandleBatch_WhenEverySeatIsAlreadyTheirs_ShouldSucceedWithoutWriting()
     {
@@ -356,10 +337,6 @@ public class SellSeatCommandHandlerTests
         Assert.Equal(0, seats.SaveCalls);
     }
 
-    /// <summary>
-    /// A lost race rejects the whole write; the retry finds a seat sold to someone else and
-    /// writes nothing.
-    /// </summary>
     [Fact]
     public async Task HandleBatch_WhenTheRetryFindsASeatGone_ShouldSellNone()
     {
@@ -397,10 +374,6 @@ public class SellSeatCommandHandlerTests
         Assert.Equal(2, seats.SaveCalls);
     }
 
-    /// <summary>
-    /// The retry's load discards the first loss; nothing discards the second but a third load,
-    /// or the seats that read Sold in memory would reach the next save on the same unit of work.
-    /// </summary>
     [Fact]
     public async Task HandleBatch_WhenBothAttemptsLoseTheRace_ShouldReloadTheSeats()
     {
@@ -414,7 +387,7 @@ public class SellSeatCommandHandlerTests
 
         await HandlerFor(seats).HandleAsync(BatchOf(batch));
 
-        Assert.Equal(3, seats.GetByIdCalls);
+        Assert.Equal(3, seats.LoadCalls);
     }
 
     [Fact]

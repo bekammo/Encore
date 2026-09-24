@@ -3,17 +3,17 @@ using Microsoft.AspNetCore.Http;
 namespace Encore.Modules.Payments.Endpoints;
 
 /// <summary>
-/// Reads and validates the <c>X-Client-Id</c> header, a claimed identity rather than
-/// authentication. Copied rather than shared: <c>Encore.Shared</c> must stay free of
-/// ASP.NET Core. Its item key differs so two filters on one route cannot collide.
+/// A claimed identity standing in for an Identity module, not authentication. A filter, not a
+/// bound parameter, so a bad header gets a readable 400. Copied, not shared (017):
+/// <c>Encore.Shared</c> must stay free of ASP.NET Core.
 /// </summary>
 internal sealed class ClientIdEndpointFilter : IEndpointFilter
 {
     internal const string HeaderName = "X-Client-Id";
 
+    // Different in each copy, so two filters on one route cannot collide (017).
     private const string ItemKey = "Encore.Payments.ClientId";
 
-    /// <inheritdoc />
     public async ValueTask<object?> InvokeAsync(
         EndpointFilterInvocationContext context,
         EndpointFilterDelegate next)
@@ -37,12 +37,9 @@ internal sealed class ClientIdEndpointFilter : IEndpointFilter
 
         context.HttpContext.Items[ItemKey] = clientId;
 
-        return await next(context);
+        return await next(context).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// The client id for this request. Throws if the filter was not applied to the route.
-    /// </summary>
     internal static Guid ClientId(HttpContext context) =>
         context.Items[ItemKey] is Guid clientId
             ? clientId
