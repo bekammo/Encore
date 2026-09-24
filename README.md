@@ -33,31 +33,31 @@ a capacity claim. The same order invariants are asserted on every CI run by
 ## Architecture
 
 ```mermaid
-flowchart LR
-    client([HTTP clients · k6])
+flowchart TB
+    client(["HTTP clients · k6"])
 
-    subgraph host["Encore.Api"]
-        direction TB
-        catalog["Catalog"]
+    subgraph monolith["Encore.Api"]
         orders["Orders"]
-        inventory["Inventory<br/><i>hexagonal</i>"]
-        notifications["Notifications"]
+        catalog["Catalog"]
+        inventory["Inventory (hexagonal)"]
         payments["Payments"]
+        notifications["Notifications"]
     end
 
-    papi["Encore.Payments.Api<br/><i>the same Payments module</i>"]
-    pg[("PostgreSQL<br/>one schema per module")]
-    redis[("Redis<br/>short-lived lock only")]
+    papi["Encore.Payments.Api"]
+    redis[("Redis: lock only")]
+    pg[("PostgreSQL: one schema per module")]
 
-    client --> host
+    client --> orders
+    client --> inventory
     orders -->|price| catalog
-    orders -->|hold · sell · release| inventory
-    orders -->|authorise · capture · void| payments
-    orders -.->|or over HTTP, by one config key| papi
-    inventory -->|outbox · SeatSold| notifications
-    inventory --- redis
-    host --- pg
-    papi --- pg
+    orders -->|hold, sell, release| inventory
+    orders -->|authorise, capture, void| payments
+    orders -.->|or over HTTP| papi
+    inventory -->|outbox| notifications
+    inventory --> redis
+    inventory --> pg
+    papi --> pg
 ```
 
 | Module | Shape | Why |
