@@ -908,6 +908,13 @@ The seat lock's removal was measured the same way: three runs against six, 18% m
 lost races 0.10% → 0.23% (004). And the partial index suspected of a 62% p99 regression was
 cleared by three runs with it and three without — one noisy window was the likelier answer.
 
+**The dispatcher's cost was mostly two fixable things.** After the audit, the outbox claim was
+ordered the way its index is (it had read the whole due backlog every tick), and EF Core's
+per-statement logging went to `Warning`. A fresh baseline, three runs on 2026-09-24 with the
+dispatcher on, put the p99 of a contended hold at 34–44 ms and a purchase at 27–30 ms, with one
+86 ms outlier whose median matched the others. That is inside the pre-outbox spread or below
+it, against 78.2 and 141.4 before. Every run held all three invariants.
+
 **What this is not.** One laptop, mostly one run per configuration. The counts and the
 mechanisms behind them are strong; latency comparisons across sessions are not.
 

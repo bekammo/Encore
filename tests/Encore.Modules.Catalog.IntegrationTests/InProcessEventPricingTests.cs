@@ -2,7 +2,6 @@ using Encore.Modules.Catalog.Contracts;
 using Encore.Modules.Catalog.Data;
 using Encore.Modules.Catalog.Models;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Catalog.IntegrationTests;
 
@@ -10,34 +9,12 @@ namespace Encore.Modules.Catalog.IntegrationTests;
 /// The <see cref="IEventPricing"/> adapter against real Postgres: a missing event is a status,
 /// a found one carries every field, and the sale window survives as UTC.
 /// </summary>
-public sealed class InProcessEventPricingTests : IAsyncLifetime
+public sealed class InProcessEventPricingTests(CatalogDatabase database) : IClassFixture<CatalogDatabase>
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
-
     private static readonly DateTime StartsAt = new(2026, 7, 1, 19, 30, 0, DateTimeKind.Utc);
     private static readonly DateTime OnSaleAt = new(2026, 6, 1, 9, 0, 0, DateTimeKind.Utc);
 
-    private DbContextOptions<CatalogDbContext> _options = null!;
-
-    /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        _options = new DbContextOptionsBuilder<CatalogDbContext>()
-            .UseCatalogNpgsql(_postgres.GetConnectionString())
-            .Options;
-
-        await using var context = new CatalogDbContext(_options);
-        await context.Database.MigrateAsync();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    private readonly DbContextOptions<CatalogDbContext> _options = database.Options;
 
     [Fact]
     public async Task Get_WhenEventExists_ShouldReturnItsPriceAndSaleWindow()

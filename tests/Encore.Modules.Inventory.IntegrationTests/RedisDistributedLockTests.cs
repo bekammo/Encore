@@ -3,36 +3,20 @@ using Encore.Modules.Inventory.Ports;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using StackExchange.Redis;
-using Testcontainers.Redis;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// The Redis lock adapter against real Redis and against no Redis at all.
+/// The Redis lock adapter against real Redis and against no Redis at all. The container is
+/// shared by the class; every test locks resources of its own.
 /// </summary>
-public sealed class RedisDistributedLockTests : IAsyncLifetime
+public sealed class RedisDistributedLockTests(InventoryRedis redis) : IClassFixture<InventoryRedis>
 {
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5);
 
-    private readonly RedisContainer _redis = new RedisBuilder("redis:7").Build();
-
-    private IConnectionMultiplexer _connection = null!;
-    private RedisDistributedLock _lock = null!;
-
-    /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _redis.StartAsync();
-        _connection = await ConnectionMultiplexer.ConnectAsync(_redis.GetConnectionString());
-        _lock = new RedisDistributedLock(_connection, NullLogger<RedisDistributedLock>.Instance);
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync()
-    {
-        await _connection.DisposeAsync();
-        await _redis.DisposeAsync();
-    }
+    /// <summary>A lock per test, over the class's connection.</summary>
+    private readonly RedisDistributedLock _lock =
+        new(redis.Connection, NullLogger<RedisDistributedLock>.Instance);
 
     private static string NewResource() => $"test:{Guid.NewGuid():N}";
 

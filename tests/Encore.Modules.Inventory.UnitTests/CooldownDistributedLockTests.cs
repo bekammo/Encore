@@ -2,6 +2,7 @@ using System.Diagnostics.Metrics;
 using Encore.Modules.Inventory.Adapters.Caching;
 using Encore.Modules.Inventory.Adapters.Telemetry;
 using Encore.Modules.Inventory.Ports;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Inventory.UnitTests;
 
@@ -15,7 +16,7 @@ public class CooldownDistributedLockTests
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5);
 
     private readonly ScriptedLock _inner = new();
-    private readonly ManualTimeProvider _clock = new(new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));
+    private readonly FakeTimeProvider _clock = new(new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));
 
     private CooldownDistributedLock Lock(TimeSpan? cooldown = null) =>
         new(_inner, cooldown ?? Cooldown, _clock);
@@ -205,14 +206,5 @@ public class CooldownDistributedLockTests
             ReleaseCalls++;
             return Task.FromResult(true);
         }
-    }
-
-    private sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
-    {
-        private DateTimeOffset _now = start;
-
-        public override DateTimeOffset GetUtcNow() => _now;
-
-        public void Advance(TimeSpan by) => _now += by;
     }
 }

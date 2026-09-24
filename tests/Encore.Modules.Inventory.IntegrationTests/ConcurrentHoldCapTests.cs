@@ -7,8 +7,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using StackExchange.Redis;
-using Testcontainers.PostgreSql;
-using Testcontainers.Redis;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
@@ -17,49 +15,30 @@ namespace Encore.Modules.Inventory.IntegrationTests;
 /// the cap spans rows, so the client lock is its only guard. Every test runs against both locks
 /// that can serialise the count (005).
 /// </summary>
-public sealed class ConcurrentHoldCapTests : IAsyncLifetime
+/// <remarks>
+/// Postgres and Redis are shared by the class and never emptied. Nothing needs them to be:
+/// every count and every lock key names this test's own client and event.
+/// </remarks>
+public sealed class ConcurrentHoldCapTests(InventoryDatabase database, InventoryRedis redis)
+    : IClassFixture<InventoryDatabase>, IClassFixture<InventoryRedis>, IAsyncLifetime
 {
     /// <summary>Seats the client tries for at once, comfortably above the cap.</summary>
     private const int ConcurrentAttempts = 12;
 
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
-
-    private readonly RedisContainer _redis = new RedisBuilder("redis:7").Build();
-
     private readonly Guid _eventId = Guid.NewGuid();
     private readonly Guid _clientA = Guid.NewGuid();
 
-    private DbContextOptions<InventoryDbContext> _options = null!;
-    private IConnectionMultiplexer _connection = null!;
-    private NpgsqlDataSource _dataSource = null!;
+    private readonly DbContextOptions<InventoryDbContext> _options = database.Options;
+    private readonly IConnectionMultiplexer _connection = redis.Connection;
+
+    /// <summary>This test's own, so its advisory-lock sessions end with it.</summary>
+    private readonly NpgsqlDataSource _dataSource = NpgsqlDataSource.Create(database.ConnectionString);
 
     /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await Task.WhenAll(_postgres.StartAsync(), _redis.StartAsync());
-
-        _options = new DbContextOptionsBuilder<InventoryDbContext>()
-            .UseInventoryNpgsql(_postgres.GetConnectionString())
-            .Options;
-
-        _connection = await ConnectionMultiplexer.ConnectAsync(_redis.GetConnectionString());
-        _dataSource = NpgsqlDataSource.Create(_postgres.GetConnectionString());
-
-        await using var context = new InventoryDbContext(_options);
-        await context.Database.MigrateAsync();
-    }
+    public Task InitializeAsync() => Task.CompletedTask;
 
     /// <inheritdoc />
-    public async Task DisposeAsync()
-    {
-        await _connection.DisposeAsync();
-        await _dataSource.DisposeAsync();
-        await Task.WhenAll(_postgres.DisposeAsync().AsTask(), _redis.DisposeAsync().AsTask());
-    }
+    public async Task DisposeAsync() => await _dataSource.DisposeAsync();
 
     /// <summary>Seeds <paramref name="count"/> available seats and returns their ids.</summary>
     private async Task<List<Guid>> SeedAvailableSeatsAsync(int count)

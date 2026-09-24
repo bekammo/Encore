@@ -2,6 +2,7 @@ using Encore.Modules.Inventory.Application;
 using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Domain.Exceptions;
 using Encore.Modules.Inventory.Ports;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Inventory.UnitTests;
 
@@ -56,7 +57,7 @@ public class ReleaseSeatCommandHandlerTests
         new(EventId, [.. seats.Select(seat => seat.Id)], ClientA);
 
     private static ReleaseSeatCommandHandler HandlerFor(FakeSeatRepository seats, DateTime? now = null) =>
-        new(seats, new FixedTimeProvider(now ?? WithinHold));
+        new(seats, new FakeTimeProvider(now ?? WithinHold));
 
     // -- Happy path -------------------------------------------------------
 
@@ -266,12 +267,5 @@ public class ReleaseSeatCommandHandlerTests
 
         Assert.All(results, result => Assert.Equal(ReleaseSeatOutcome.Released, result));
         Assert.Equal(0, seats.SaveCalls);
-    }
-
-    // -- Fakes ------------------------------------------------------------
-
-    private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

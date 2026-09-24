@@ -9,41 +9,25 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
 /// Delivery: at-least-once, in id order, one dispatcher per row, bounded retries. Uses a real
 /// DI container, since scope management and handler resolution are the dispatcher's job, and
-/// drives one tick at a time rather than waiting on the hosted service.
+/// drives one tick at a time rather than waiting on the hosted service. A tick claims whatever
+/// is due, so the shared database is emptied before each test.
 /// </summary>
-public sealed class OutboxDispatcherTests : IAsyncLifetime
+public sealed class OutboxDispatcherTests(InventoryDatabase database)
+    : IClassFixture<InventoryDatabase>, IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
+    private readonly InventoryDatabase _database = database;
 
-    private string _connectionString = null!;
+    /// <summary>Empties the outbox the previous test left.</summary>
+    public Task InitializeAsync() => _database.ResetAsync();
 
     /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-        _connectionString = _postgres.GetConnectionString();
-
-        await using var context = new InventoryDbContext(
-            new DbContextOptionsBuilder<InventoryDbContext>()
-                .UseInventoryNpgsql(_connectionString)
-                .Options);
-
-        await context.Database.MigrateAsync();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
     public async Task Dispatch_ShouldDeliverTheMessageAndMarkItProcessed()
@@ -344,10 +328,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
             payload,
             occurredAt);
 
-        await using var context = new InventoryDbContext(
-            new DbContextOptionsBuilder<InventoryDbContext>()
-                .UseInventoryNpgsql(_connectionString)
-                .Options);
+        await using var context = new InventoryDbContext(_database.Options);
 
         context.OutboxMessages.Add(message);
         await context.SaveChangesAsync();
@@ -357,10 +338,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
 
     private async Task<List<OutboxMessage>> MessagesAsync()
     {
-        await using var context = new InventoryDbContext(
-            new DbContextOptionsBuilder<InventoryDbContext>()
-                .UseInventoryNpgsql(_connectionString)
-                .Options);
+        await using var context = new InventoryDbContext(_database.Options);
 
         return await context.OutboxMessages.AsNoTracking()
             .OrderBy(message => message.Id)
@@ -383,7 +361,7 @@ public sealed class OutboxDispatcherTests : IAsyncLifetime
         var services = new ServiceCollection();
 
         services.AddDbContext<InventoryDbContext>(builder =>
-            builder.UseInventoryNpgsql(_connectionString));
+            builder.UseInventoryNpgsql(_database.ConnectionString));
 
         registerHandlers(services);
 

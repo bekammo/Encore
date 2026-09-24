@@ -1,17 +1,12 @@
 using Encore.Modules.Catalog.Contracts;
 using Encore.Modules.Inventory;
-using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Application;
 using Encore.Modules.Inventory.Contracts;
-using Encore.Modules.Orders.Data;
 using Encore.Modules.Payments;
 using Encore.Modules.Payments.Contracts;
-using Encore.Modules.Payments.Data;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
-using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Orders.IntegrationTests;
 
@@ -24,26 +19,25 @@ namespace Encore.Modules.Orders.IntegrationTests;
 /// <remarks>
 /// The invariants are chaos.sh's order evidence, read from the same tables, so the claim in
 /// WRITEUP.md that no order ends partly sold, sold without money or paid without its seats
-/// is a check that fails here rather than only a number in a report.
+/// is a check that fails here rather than only a number in a report. They count every order in
+/// the database, so the class's shared database is emptied before each test; the modules are
+/// composed afresh per test, so no in-memory state carries over either.
 /// </remarks>
-public sealed class CheckoutCompositionTests : IAsyncLifetime
+public sealed class CheckoutCompositionTests(OrdersDatabase database)
+    : IClassFixture<OrdersDatabase>, IAsyncLifetime
 {
     private const int OrderCount = 20;
 
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
+    private readonly OrdersDatabase _database = database;
 
     private ServiceProvider _provider = null!;
 
-    /// <inheritdoc />
+    /// <summary>Empties the three schemas, then composes the modules over them as the host does.</summary>
     public async Task InitializeAsync()
     {
-        await _postgres.StartAsync();
+        await _database.ResetAsync();
 
-        var connectionString = _postgres.GetConnectionString();
+        var connectionString = _database.ConnectionString;
 
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -75,20 +69,10 @@ public sealed class CheckoutCompositionTests : IAsyncLifetime
         services.AddSingleton<IEventPricing, OnSale>();
 
         _provider = services.BuildServiceProvider();
-
-        await using var scope = _provider.CreateAsyncScope();
-
-        await scope.ServiceProvider.GetRequiredService<InventoryDbContext>().Database.MigrateAsync();
-        await scope.ServiceProvider.GetRequiredService<PaymentsDbContext>().Database.MigrateAsync();
-        await scope.ServiceProvider.GetRequiredService<OrdersDbContext>().Database.MigrateAsync();
     }
 
     /// <inheritdoc />
-    public async Task DisposeAsync()
-    {
-        await _provider.DisposeAsync();
-        await _postgres.DisposeAsync();
-    }
+    public async Task DisposeAsync() => await _provider.DisposeAsync();
 
     /// <summary>
     /// Every order's confirm races its cancel. Whichever wins, the seats and the money end
@@ -226,7 +210,7 @@ public sealed class CheckoutCompositionTests : IAsyncLifetime
             FROM checked;
             """;
 
-        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await using var connection = new NpgsqlConnection(_database.ConnectionString);
         await connection.OpenAsync();
 
         await using var command = new NpgsqlCommand(Sql, connection);

@@ -9,21 +9,19 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Testcontainers.PostgreSql;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
 /// The expired-hold sweep against real Postgres: what it tidies, what it leaves alone, and
-/// what happens when a row moves underneath it. One sweep is driven directly per test.
+/// what happens when a row moves underneath it. One sweep is driven directly per test. A sweep
+/// visits every seat, so the shared database is emptied before each test.
 /// </summary>
-public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
+public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
+    : IClassFixture<InventoryDatabase>, IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
+    private readonly InventoryDatabase _database = database;
 
     private readonly Guid _eventId = Guid.NewGuid();
     private readonly Guid _clientA = Guid.NewGuid();
@@ -32,25 +30,15 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
     /// <summary>"Now" for every test, truncated to microseconds to survive the Postgres round trip.</summary>
     private readonly DateTime _now = new(DateTime.UtcNow.Ticks / 10 * 10, DateTimeKind.Utc);
 
-    private DbContextOptions<InventoryDbContext> _options = null!;
+    private readonly DbContextOptions<InventoryDbContext> _options = database.Options;
 
     private DateTime LapsedAt => _now - Seat.HoldDuration - TimeSpan.FromMinutes(1);
 
-    /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        _options = new DbContextOptionsBuilder<InventoryDbContext>()
-            .UseInventoryNpgsql(_postgres.GetConnectionString())
-            .Options;
-
-        await using var context = new InventoryDbContext(_options);
-        await context.Database.MigrateAsync();
-    }
+    /// <summary>Empties the seats and the outbox the previous test left.</summary>
+    public Task InitializeAsync() => _database.ResetAsync();
 
     /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
     public async Task Sweep_WhenAHoldHasLapsed_ShouldReturnTheSeatToAvailable()
@@ -313,7 +301,10 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
             .ToListAsync();
     }
 
-    /// <summary>A container resolving <c>ISeatRepository</c> per scope, with a fixed clock.</summary>
+    /// <summary>
+    /// A container resolving <c>ISeatRepository</c> per scope, with a clock that does not move,
+    /// so expiry is data rather than duration.
+    /// </summary>
     private SweeperHost Host(Action<ExpiredHoldSweepOptions>? configure = null)
     {
         var options = new ExpiredHoldSweepOptions();
@@ -322,7 +313,7 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
         var services = new ServiceCollection();
 
         services.AddDbContext<InventoryDbContext>(builder =>
-            builder.UseInventoryNpgsql(_postgres.GetConnectionString()));
+            builder.UseInventoryNpgsql(_database.ConnectionString));
 
         services.AddScoped<ISeatRepository, EfSeatRepository>();
 
@@ -331,7 +322,7 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
         var sweeper = new ExpiredHoldSweeper(
             provider.GetRequiredService<IServiceScopeFactory>(),
             Options.Create(options),
-            new FixedTimeProvider(_now),
+            new FakeTimeProvider(_now),
             NullLogger<ExpiredHoldSweeper>.Instance);
 
         return new SweeperHost(provider, sweeper);
@@ -343,11 +334,5 @@ public sealed class ExpiredHoldSweeperTests : IAsyncLifetime
         internal ExpiredHoldSweeper Sweeper { get; } = sweeper;
 
         public ValueTask DisposeAsync() => provider.DisposeAsync();
-    }
-
-    /// <summary>A clock that does not move, so expiry is data rather than duration.</summary>
-    private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => new(utcNow, TimeSpan.Zero);
     }
 }

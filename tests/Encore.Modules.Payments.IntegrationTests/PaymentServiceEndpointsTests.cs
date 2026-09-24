@@ -1,7 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
-using Encore.Modules.Payments.Data;
 using Encore.Modules.Payments.Endpoints;
 using Encore.Modules.Payments.Models;
 using Encore.Modules.Payments.Simulation;
@@ -9,29 +8,25 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Payments.IntegrationTests;
 
 /// <summary>
 /// The Payments service API over a real socket and real Postgres, composed as a host composes
 /// it, so the token filter and the problem+json shape are part of what is tested.
-/// <c>HttpOrderPaymentsTests</c> pins the reading side.
+/// <c>HttpOrderPaymentsTests</c> pins the reading side. The database is shared by the class
+/// and never emptied, so every test pays for orders of its own; the service is started per test.
 /// </summary>
-public sealed class PaymentServiceEndpointsTests : IAsyncLifetime
+public sealed class PaymentServiceEndpointsTests(PaymentsDatabase database)
+    : IClassFixture<PaymentsDatabase>, IAsyncLifetime
 {
     private const string Token = "a-token-for-this-test-only";
 
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
+    private readonly PaymentsDatabase _database = database;
 
     private WebApplication _service = null!;
     private HttpClient _client = null!;
@@ -39,15 +34,13 @@ public sealed class PaymentServiceEndpointsTests : IAsyncLifetime
     /// <inheritdoc />
     public async Task InitializeAsync()
     {
-        await _postgres.StartAsync();
-
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
 
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["ConnectionStrings:Payments"] = _postgres.GetConnectionString(),
+            ["ConnectionStrings:Payments"] = _database.ConnectionString,
             // The reconciler would race the assertions.
             ["Payments:Reconciliation:Enabled"] = "false",
             // A gateway that always agrees; refusals are arranged through the row.
@@ -64,14 +57,6 @@ public sealed class PaymentServiceEndpointsTests : IAsyncLifetime
         _service.UseExceptionHandler();
         _service.UseStatusCodePages();
         _service.MapPaymentServiceEndpoints(Token);
-
-        await using (var context = new PaymentsDbContext(
-            new DbContextOptionsBuilder<PaymentsDbContext>()
-                .UsePaymentsNpgsql(_postgres.GetConnectionString())
-                .Options))
-        {
-            await context.Database.MigrateAsync();
-        }
 
         await _service.StartAsync();
 
@@ -91,7 +76,6 @@ public sealed class PaymentServiceEndpointsTests : IAsyncLifetime
     {
         _client.Dispose();
         await _service.DisposeAsync();
-        await _postgres.DisposeAsync();
     }
 
     // -- the service token ------------------------------------------------

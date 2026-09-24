@@ -77,11 +77,7 @@ public class AssemblyReferenceTests
 
     /// <summary>A module may reach another module only through its contracts assembly.</summary>
     [Theory]
-    [InlineData("Encore.Modules.Catalog")]
-    [InlineData("Encore.Modules.Orders")]
-    [InlineData("Encore.Modules.Notifications")]
-    [InlineData("Encore.Modules.Payments")]
-    [InlineData("Encore.Modules.Inventory")]
+    [MemberData(nameof(TheoryRows.ComposedModuleAssemblies), MemberType = typeof(TheoryRows))]
     public void Module_ShouldReachOtherModulesOnlyThroughContracts(string module)
     {
         // Inventory is allowed its own domain assembly; every other module
@@ -102,28 +98,26 @@ public class AssemblyReferenceTests
     }
 
     /// <summary>
-    /// The host composes the modules; nothing composes the host.
+    /// The hosts compose the modules; nothing composes a host. Every host, checked from every
+    /// assembly that is not one.
     /// </summary>
     [Theory]
-    [InlineData("Encore.Shared")]
-    [InlineData("Encore.Modules.Catalog")]
-    [InlineData("Encore.Modules.Catalog.Contracts")]
-    [InlineData("Encore.Modules.Orders")]
-    [InlineData("Encore.Modules.Notifications")]
-    [InlineData("Encore.Modules.Payments")]
-    [InlineData("Encore.Modules.Payments.Contracts")]
-    [InlineData("Encore.Modules.Inventory")]
-    [InlineData("Encore.Modules.Inventory.Contracts")]
-    [InlineData("Encore.Modules.Inventory.Domain")]
-    public void NothingShouldReferenceTheHost(string assembly)
+    [MemberData(nameof(TheoryRows.NonHosts), MemberType = typeof(TheoryRows))]
+    public void NothingShouldReferenceAHost(string assembly)
     {
-        Assert.DoesNotContain("Encore.Api", EncoreTree.ReferencedNames(assembly));
+        var named = EncoreTree
+            .ReferencedNames(assembly)
+            .Where(name => EncoreTree.Hosts.Contains(name, StringComparer.Ordinal))
+            .ToList();
+
+        Assert.True(
+            named.Count == 0,
+            $"{assembly} references a host; a host composes modules and nothing may depend on one. Found: {string.Join(", ", named)}");
     }
 
-    /// <summary>The host owns no business logic and talks to no database directly.</summary>
+    /// <summary>A host owns no business logic and talks to no database directly.</summary>
     [Theory]
-    [InlineData("Encore.Api")]
-    [InlineData("Encore.Payments.Api")]
+    [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]
     public void Host_ShouldNameNoPersistenceOrCacheAssembly(string host)
     {
         string[] forbidden = ["Microsoft.EntityFrameworkCore", "Npgsql", "StackExchange.Redis"];
@@ -198,18 +192,12 @@ public class AssemblyReferenceTests
             $"{EncoreTree.Telemetry} knows what an exporter is and may not know that a module exists. Found: {string.Join(", ", named)}");
     }
 
-    /// <summary>No module or contracts assembly emits a reference to the telemetry project or to OpenTelemetry.</summary>
+    /// <summary>
+    /// Nothing but a host emits a reference to the telemetry project or to OpenTelemetry: no
+    /// module, contracts assembly, the Domain, <c>Encore.Shared</c> or the shared persistence project.
+    /// </summary>
     [Theory]
-    [InlineData("Encore.Shared")]
-    [InlineData("Encore.Modules.Catalog")]
-    [InlineData("Encore.Modules.Catalog.Contracts")]
-    [InlineData("Encore.Modules.Orders")]
-    [InlineData("Encore.Modules.Notifications")]
-    [InlineData("Encore.Modules.Payments")]
-    [InlineData("Encore.Modules.Payments.Contracts")]
-    [InlineData("Encore.Modules.Inventory")]
-    [InlineData("Encore.Modules.Inventory.Contracts")]
-    [InlineData("Encore.Modules.Inventory.Domain")]
+    [MemberData(nameof(TheoryRows.Composed), MemberType = typeof(TheoryRows))]
     public void Module_ShouldNameNoTelemetryAssembly(string assembly)
     {
         var leaked = EncoreTree
@@ -222,10 +210,11 @@ public class AssemblyReferenceTests
             $"{assembly} emits through System.Diagnostics; exporters belong to the host. Found: {string.Join(", ", leaked)}");
     }
 
-    /// <summary>The host never names the shared persistence project: each module registers its own migrator.</summary>
-    [Fact]
-    public void Host_ShouldNotNameTheSharedPersistenceAssembly() =>
-        Assert.DoesNotContain(EncoreTree.SharedPersistence, EncoreTree.ReferencedNames("Encore.Api"));
+    /// <summary>No host names the shared persistence project: each module registers its own migrator.</summary>
+    [Theory]
+    [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]
+    public void Host_ShouldNotNameTheSharedPersistenceAssembly(string host) =>
+        Assert.DoesNotContain(EncoreTree.SharedPersistence, EncoreTree.ReferencedNames(host));
 
     /// <summary>Every type in the Domain assembly lives in the Domain namespace.</summary>
     [Fact]

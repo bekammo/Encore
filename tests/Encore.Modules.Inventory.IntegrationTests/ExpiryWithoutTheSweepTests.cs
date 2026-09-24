@@ -1,9 +1,8 @@
 using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Application;
 using Encore.Modules.Inventory.Domain;
-using Encore.Modules.Inventory.Ports;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.PostgreSql;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
@@ -11,17 +10,12 @@ namespace Encore.Modules.Inventory.IntegrationTests;
 /// Expiry with no sweep and no Redis: if any of these needed the sweep, the design would be
 /// broken. Lapsed rows stay <c>Held</c> in Postgres throughout, and the invariants hold anyway.
 /// Covers reclaiming, selling against a lapsed hold, the hold cap and the oversell invariant.
+/// The database is shared by the class and never emptied; every test has its own client and event.
 /// </summary>
-public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
+public sealed class ExpiryWithoutTheSweepTests(InventoryDatabase database) : IClassFixture<InventoryDatabase>
 {
     /// <summary>How many clients pile onto the one lapsed seat.</summary>
     private const int ConcurrentAttempts = 30;
-
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
 
     private readonly Guid _eventId = Guid.NewGuid();
     private readonly Guid _clientA = Guid.NewGuid();
@@ -30,26 +24,10 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
     /// <summary>Truncated to whole microseconds; see <c>ConcurrentHoldTests</c>.</summary>
     private readonly DateTime _now = new(DateTime.UtcNow.Ticks / 10 * 10, DateTimeKind.Utc);
 
-    private DbContextOptions<InventoryDbContext> _options = null!;
+    private readonly DbContextOptions<InventoryDbContext> _options = database.Options;
 
     /// <summary>A hold taken this long ago has lapsed by <see cref="_now"/>.</summary>
     private DateTime LapsedAt => _now - Seat.HoldDuration - TimeSpan.FromMinutes(1);
-
-    /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        _options = new DbContextOptionsBuilder<InventoryDbContext>()
-            .UseInventoryNpgsql(_postgres.GetConnectionString())
-            .Options;
-
-        await using var context = new InventoryDbContext(_options);
-        await context.Database.MigrateAsync();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
 
     /// <summary>The row still says Held by someone else, and the next client gets the seat.</summary>
     [Fact]
@@ -146,7 +124,7 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
                 var handler = new HoldSeatCommandHandler(
                     new EfSeatRepository(context),
                     new AlwaysGrantingLock(),
-                    new FixedTimeProvider(_now));
+                    new FakeTimeProvider(_now));
 
                 var command = new HoldSeatCommand(_eventId, seatId, Guid.NewGuid());
 
@@ -194,7 +172,7 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
         var handler = new HoldSeatCommandHandler(
             new EfSeatRepository(context),
             new AlwaysGrantingLock(),
-            new FixedTimeProvider(_now));
+            new FakeTimeProvider(_now));
 
         return await handler.HandleAsync(new HoldSeatCommand(_eventId, seatId, clientId));
     }
@@ -205,7 +183,7 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
 
         var handler = new SellSeatCommandHandler(
             new EfSeatRepository(context),
-            new FixedTimeProvider(_now));
+            new FakeTimeProvider(_now));
 
         return await handler.HandleAsync(new SellSeatCommand(_eventId, seatId, clientId));
     }
@@ -241,27 +219,5 @@ public sealed class ExpiryWithoutTheSweepTests : IAsyncLifetime
         await using var context = new InventoryDbContext(_options);
 
         return await context.Seats.AsNoTracking().SingleAsync(seat => seat.Id == seatId);
-    }
-
-    /// <summary>A lock that grants everything, so the results rest on the aggregate and xmin alone.</summary>
-    private sealed class AlwaysGrantingLock : IDistributedLock
-    {
-        public Task<LockAcquisition> TryAcquireAsync(
-            string resource,
-            TimeSpan ttl,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(LockAcquisition.Acquired(Guid.NewGuid().ToString("N")));
-
-        public Task<bool> ReleaseAsync(
-            string resource,
-            string token,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(true);
-    }
-
-    /// <summary>A clock that does not move, so "lapsed" comes from the seeded data.</summary>
-    private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => new(utcNow, TimeSpan.Zero);
     }
 }

@@ -5,43 +5,22 @@ using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Domain.Exceptions;
 using Encore.Modules.Inventory.Ports;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.PostgreSql;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
 /// An order's seats written together against real Postgres: a sale of every seat or none, and
 /// holds and releases answered per seat but written in one transaction. Seats written together
-/// share one <c>xmin</c>, which is how "one transaction" is checked.
+/// share one <c>xmin</c>, which is how "one transaction" is checked. The database is shared by
+/// the class and never emptied, so every assertion is scoped to the test's own seats.
 /// </summary>
-public sealed class SeatBatchTests : IAsyncLifetime
+public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<InventoryDatabase>
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
-
     private readonly Guid _eventId = Guid.NewGuid();
     private readonly DateTime _now = Now();
 
-    private DbContextOptions<InventoryDbContext> _options = null!;
-
-    /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        _options = new DbContextOptionsBuilder<InventoryDbContext>()
-            .UseInventoryNpgsql(_postgres.GetConnectionString())
-            .Options;
-
-        await using var context = new InventoryDbContext(_options);
-        await context.Database.MigrateAsync();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    private readonly DbContextOptions<InventoryDbContext> _options = database.Options;
 
     // -- Selling: all or none ----------------------------------------------
 
@@ -126,7 +105,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
                 new EfSeatRepository(context),
                 () => MoveAsync(seatIds[1], clientId));
 
-            var result = await new SellSeatCommandHandler(contested, new FixedTimeProvider(_now))
+            var result = await new SellSeatCommandHandler(contested, new FakeTimeProvider(_now))
                 .HandleAsync(new SellSeatsCommand(_eventId, seatIds, clientId));
 
             Assert.Equal([new SeatSaleRefusal(seatIds[1], SellSeatOutcome.LostRace)], result.Refusals);
@@ -238,7 +217,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
                 new EfSeatRepository(context),
                 () => BumpAsync(seatIds[1]));
 
-            var results = await new HoldSeatCommandHandler(contested, new AlwaysGrantingLock(), new FixedTimeProvider(_now))
+            var results = await new HoldSeatCommandHandler(contested, new AlwaysGrantingLock(), new FakeTimeProvider(_now))
                 .HandleAsync(new HoldSeatsCommand(_eventId, seatIds, clientId));
 
             Assert.All(results, result => Assert.Equal(HoldSeatOutcome.LostRace, result.Outcome));
@@ -292,7 +271,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
                 new EfSeatRepository(context),
                 () => MoveAsync(seatIds[1], clientId));
 
-            var results = await new ReleaseSeatCommandHandler(contested, new FixedTimeProvider(_now))
+            var results = await new ReleaseSeatCommandHandler(contested, new FakeTimeProvider(_now))
                 .HandleAsync(new ReleaseSeatsCommand(_eventId, seatIds, clientId));
 
             Assert.All(results, result => Assert.Equal(ReleaseSeatOutcome.LostRace, result));
@@ -317,7 +296,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
         {
             var results = await new ReleaseSeatCommandHandler(
                     new EfSeatRepository(context),
-                    new FixedTimeProvider(_now))
+                    new FakeTimeProvider(_now))
                 .HandleAsync(new ReleaseSeatsCommand(_eventId, seatIds, clientId));
 
             Assert.All(results, result => Assert.Equal(ReleaseSeatOutcome.Released, result));
@@ -331,7 +310,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
     // -- Helpers ------------------------------------------------------------
 
     private SellSeatCommandHandler SellHandler(InventoryDbContext context) =>
-        new(new EfSeatRepository(context), new FixedTimeProvider(_now));
+        new(new EfSeatRepository(context), new FakeTimeProvider(_now));
 
     private async Task<SellSeatsResult> SellAsync(IReadOnlyList<Guid> seatIds, Guid clientId)
     {
@@ -347,7 +326,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
         var handler = new HoldSeatCommandHandler(
             new EfSeatRepository(context),
             new AlwaysGrantingLock(),
-            new FixedTimeProvider(_now));
+            new FakeTimeProvider(_now));
 
         return await handler.HandleAsync(new HoldSeatsCommand(_eventId, seatIds, clientId));
     }
@@ -433,7 +412,7 @@ public sealed class SeatBatchTests : IAsyncLifetime
 
         var count = 0;
 
-        // One query per seat, filtered on the payload, because the container is shared.
+        // One query per seat, filtered on the payload, because the database is shared by the class.
         foreach (var seatId in seatIds)
         {
             count += await context.OutboxMessages.AsNoTracking()
@@ -450,27 +429,6 @@ public sealed class SeatBatchTests : IAsyncLifetime
         var utcNow = DateTime.UtcNow;
 
         return new DateTime(utcNow.Ticks - (utcNow.Ticks % TimeSpan.TicksPerMicrosecond), DateTimeKind.Utc);
-    }
-
-    /// <summary>A lock that grants everything; nothing here needs serialising.</summary>
-    private sealed class AlwaysGrantingLock : IDistributedLock
-    {
-        public Task<LockAcquisition> TryAcquireAsync(
-            string resource,
-            TimeSpan ttl,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(LockAcquisition.Acquired(Guid.NewGuid().ToString("N")));
-
-        public Task<bool> ReleaseAsync(
-            string resource,
-            string token,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(true);
-    }
-
-    private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => new(utcNow, TimeSpan.Zero);
     }
 
     /// <summary>A real repository whose batch saves each lose a race, because another writer moves first.</summary>

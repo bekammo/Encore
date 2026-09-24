@@ -5,60 +5,26 @@ using Encore.Modules.Payments.Simulation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using Testcontainers.PostgreSql;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Payments.IntegrationTests;
 
 /// <summary>
 /// The in-process adapter end to end against real Postgres and a misbehaving gateway. Needs a
-/// database because the one-live-attempt rule is a partial unique index. Fresh order ids per test.
+/// database because the one-live-attempt rule is a partial unique index. The database is shared
+/// by the class and never emptied, so every test uses fresh order ids.
 /// </summary>
-public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
+public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : IClassFixture<PaymentsDatabase>
 {
     private const decimal Amount = 120.50m;
     private const string Currency = "GBP";
 
     private static readonly DateTime T0 = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
 
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
-
-    private DbContextOptions<PaymentsDbContext> _options = null!;
+    private readonly DbContextOptions<PaymentsDbContext> _options = database.Options;
 
     /// <summary>How the gateway reaches its ledger table.</summary>
-    private ServiceProvider _provider = null!;
-    private IServiceScopeFactory _scopes = null!;
-
-    /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        var connectionString = _postgres.GetConnectionString();
-
-        _options = new DbContextOptionsBuilder<PaymentsDbContext>()
-            .UsePaymentsNpgsql(connectionString)
-            .Options;
-
-        await using var context = new PaymentsDbContext(_options);
-        await context.Database.MigrateAsync();
-
-        var services = new ServiceCollection();
-        services.AddDbContext<PaymentsDbContext>(builder => builder.UsePaymentsNpgsql(connectionString));
-
-        _provider = services.BuildServiceProvider();
-        _scopes = _provider.GetRequiredService<IServiceScopeFactory>();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync()
-    {
-        await _provider.DisposeAsync();
-        await _postgres.DisposeAsync();
-    }
+    private readonly IServiceScopeFactory _scopes = database.Scopes;
 
     // -- Authorize --------------------------------------------------------
 
@@ -351,7 +317,7 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
                     MaxLatency = latency ?? TimeSpan.Zero
                 }),
                 TimeProvider.System),
-            new FixedTimeProvider(T0));
+            new FakeTimeProvider(T0));
 
     /// <summary>The one attempt against this order; a second would break the reuse-the-row rule.</summary>
     private async Task<Payment> ReadAsync(Guid orderId)
@@ -368,10 +334,5 @@ public sealed class InProcessOrderPaymentsTests : IAsyncLifetime
         await using var context = new PaymentsDbContext(_options);
 
         return await context.Payments.CountAsync(payment => payment.OrderId == orderId);
-    }
-
-    private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

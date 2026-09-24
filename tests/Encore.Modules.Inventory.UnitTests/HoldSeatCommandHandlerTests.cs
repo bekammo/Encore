@@ -2,6 +2,7 @@ using Encore.Modules.Inventory.Application;
 using Encore.Modules.Inventory.Domain;
 using Encore.Modules.Inventory.Domain.Exceptions;
 using Encore.Modules.Inventory.Ports;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Inventory.UnitTests;
 
@@ -47,7 +48,7 @@ public class HoldSeatCommandHandlerTests
     private static HoldSeatCommandHandler HandlerFor(
         FakeSeatRepository seats,
         FakeDistributedLock? distributedLock = null) =>
-        new(seats, distributedLock ?? new FakeDistributedLock(), new FixedTimeProvider(T0));
+        new(seats, distributedLock ?? new FakeDistributedLock(), new FakeTimeProvider(T0));
 
     // -- Happy path -------------------------------------------------------
 
@@ -642,10 +643,5 @@ public class HoldSeatCommandHandlerTests
             Released.Add(resource);
             return Task.FromResult(true);
         }
-    }
-
-    private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

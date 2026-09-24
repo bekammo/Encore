@@ -1,7 +1,6 @@
 using Encore.Modules.Catalog.Data;
 using Encore.Modules.Catalog.Models;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Catalog.IntegrationTests;
 
@@ -9,33 +8,9 @@ namespace Encore.Modules.Catalog.IntegrationTests;
 /// Catalog's mapping against real Postgres: money keeps its precision and timestamps come back
 /// as the same UTC instant.
 /// </summary>
-public sealed class CatalogSchemaTests : IAsyncLifetime
+public sealed class CatalogSchemaTests(CatalogDatabase database) : IClassFixture<CatalogDatabase>
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
-
-    private DbContextOptions<CatalogDbContext> _options = null!;
-
-    /// <inheritdoc />
-    public async Task InitializeAsync()
-    {
-        await _postgres.StartAsync();
-
-        _options = new DbContextOptionsBuilder<CatalogDbContext>()
-            .UseCatalogNpgsql(_postgres.GetConnectionString())
-            .Options;
-
-        await using var context = new CatalogDbContext(_options);
-
-        // Migrate rather than EnsureCreated, so the real migration is exercised.
-        await context.Database.MigrateAsync();
-    }
-
-    /// <inheritdoc />
-    public async Task DisposeAsync() => await _postgres.DisposeAsync();
+    private readonly DbContextOptions<CatalogDbContext> _options = database.Options;
 
     [Fact]
     public async Task Migrate_ShouldLeaveNoPendingMigrations()

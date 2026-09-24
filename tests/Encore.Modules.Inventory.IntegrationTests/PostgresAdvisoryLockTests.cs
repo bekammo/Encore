@@ -1,7 +1,6 @@
 using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Ports;
 using Npgsql;
-using Testcontainers.PostgreSql;
 
 namespace Encore.Modules.Inventory.IntegrationTests;
 
@@ -9,31 +8,39 @@ namespace Encore.Modules.Inventory.IntegrationTests;
 /// The advisory lock keeps the port's contract: try without waiting, one holder, released only
 /// by its token, and a holder's session ending frees it.
 /// </summary>
-public sealed class PostgresAdvisoryLockTests : IAsyncLifetime
+/// <remarks>
+/// The container is shared by the class. Most tests leave "client:1" held by a session nothing
+/// will close, so each test first ends every session holding an advisory lock and then takes a
+/// data source of its own.
+/// </remarks>
+public sealed class PostgresAdvisoryLockTests(InventoryDatabase database)
+    : IClassFixture<InventoryDatabase>, IAsyncLifetime
 {
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5);
 
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16")
-        .WithDatabase("encore")
-        .WithUsername("encore")
-        .WithPassword("encore")
-        .Build();
+    /// <summary>Waits up to five seconds for each backend to exit, so its locks are gone on return.</summary>
+    private const string EndLockHoldersSql = """
+        SELECT pg_terminate_backend(pid, 5000)
+        FROM (SELECT DISTINCT pid FROM pg_locks WHERE locktype = 'advisory') AS holders
+        """;
+
+    private readonly InventoryDatabase _database = database;
 
     private NpgsqlDataSource _dataSource = null!;
 
-    /// <inheritdoc />
+    /// <summary>Ends the sessions earlier tests left holding locks, then opens this test's data source.</summary>
     public async Task InitializeAsync()
     {
-        await _postgres.StartAsync();
-        _dataSource = NpgsqlDataSource.Create(_postgres.GetConnectionString());
+        _dataSource = NpgsqlDataSource.Create(_database.ConnectionString);
+
+        await using var admin = await _dataSource.OpenConnectionAsync();
+        await using var endHolders = new NpgsqlCommand(EndLockHoldersSql, admin);
+
+        await endHolders.ExecuteNonQueryAsync();
     }
 
     /// <inheritdoc />
-    public async Task DisposeAsync()
-    {
-        await _dataSource.DisposeAsync();
-        await _postgres.DisposeAsync();
-    }
+    public async Task DisposeAsync() => await _dataSource.DisposeAsync();
 
     [Fact]
     public async Task TryAcquire_WhenAnotherHoldsIt_ShouldNotWait()
@@ -95,7 +102,7 @@ public sealed class PostgresAdvisoryLockTests : IAsyncLifetime
             await kill.ExecuteNonQueryAsync();
         }
 
-        var fresh = new PostgresAdvisoryLock(NpgsqlDataSource.Create(_postgres.GetConnectionString()));
+        var fresh = new PostgresAdvisoryLock(NpgsqlDataSource.Create(_database.ConnectionString));
 
         Assert.Equal(LockOutcome.Acquired, (await fresh.TryAcquireAsync("client:1", Ttl)).Outcome);
     }
