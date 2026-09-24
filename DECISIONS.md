@@ -39,6 +39,7 @@ log is in git: `git show 2e5ad70:DECISIONS.md`.
 - [025](#025--an-order-owed-its-capture-is-finished-by-a-sweep) — An order owed its capture is finished by a sweep
 - [026](#026--what-remains-of-the-roadmap-restated) — What remains of the roadmap, restated
 - [027](#027--a-comment-carries-a-reason-never-the-name) — A comment carries a reason, never the name
+- [028](#028--an-event-is-never-free) — An event is never free
 
 ---
 
@@ -1175,3 +1176,19 @@ on this repo's own contracts and ports**. **Endpoint summaries live only in `ope
 The alternative was to document every member. It reads as thorough, and it hides the rules
 among restatements, where a stale claim goes unnoticed. The cost is fewer IDE tooltips, and a
 reviewer holds each new comment to this rule.
+
+---
+
+## 028 — An event is never free
+
+Catalog accepted a price of zero, and Payments refuses to authorise one: `Payment.Create`
+guards the amount, as a charge of nothing is not a charge (013). An order for a free event
+therefore failed at confirm, a 500 in the monolith, and in the strangled pair the 500 read as
+`TimedOut` (018), so the order could never confirm. No test priced an event at zero.
+
+**Catalog refuses a price that is not above zero** (`invalid_price`, 400), and the
+hand-written document says so. The alternative was a confirm that skips Payments when the
+total is zero and sells the seats directly. It would support free events, but it adds a second
+path through authorise, sell, capture (010, 022, 025), the one sequence the repo treats as
+load-bearing, for a case nothing asks for. The cost is that a free event has to be modelled
+another way if one is ever wanted, and that decision starts from here.

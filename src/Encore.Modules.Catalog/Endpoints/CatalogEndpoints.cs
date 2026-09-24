@@ -142,12 +142,12 @@ public static class CatalogEndpoints
             onSaleAt = normalised;
         }
 
-        if (!FitsPriceColumn(request.Price))
+        if (!IsSellablePrice(request.Price))
         {
             return CatalogResults.Invalid(
                 context.Request.Path,
                 "Invalid event",
-                $"Price must be at least 0, below 10^15, and have at most {PriceDecimals} decimal places.",
+                $"Price must be above 0, below 10^15, and have at most {PriceDecimals} decimal places.",
                 "invalid_price");
         }
 
@@ -250,9 +250,10 @@ public static class CatalogEndpoints
             $"{field} must carry a timezone: end it with Z for UTC, or give an offset.",
             "ambiguous_timestamp");
 
-    // The column is numeric(19,4): Postgres overflows on a 16th whole digit and silently rounds a 5th decimal away.
-    private static bool FitsPriceColumn(decimal price) =>
-        price is >= 0 and < PriceLimit && decimal.Round(price, PriceDecimals) == price;
+    // Above zero, because Payments refuses to authorise nothing (028). Within numeric(19,4), because
+    // Postgres overflows on a 16th whole digit and silently rounds a 5th decimal away.
+    private static bool IsSellablePrice(decimal price) =>
+        price is > 0 and < PriceLimit && decimal.Round(price, PriceDecimals) == price;
 
     // A shape check, not a copy of ISO 4217.
     private static bool IsCurrencyCode(string? currency) =>

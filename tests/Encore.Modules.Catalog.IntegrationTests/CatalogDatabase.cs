@@ -15,9 +15,13 @@ public sealed class CatalogDatabase : IAsyncLifetime
 
     public DbContextOptions<CatalogDbContext> Options { get; private set; } = null!;
 
+    public string ConnectionString { get; private set; } = null!;
+
     public async Task InitializeAsync()
     {
         await _postgres.StartAsync();
+
+        ConnectionString = _postgres.GetConnectionString();
 
         Options = new DbContextOptionsBuilder<CatalogDbContext>()
             .UseCatalogNpgsql(_postgres.GetConnectionString())
