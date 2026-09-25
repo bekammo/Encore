@@ -1,0 +1,35 @@
+
+Encore flash-sale harness — run "final-3"
+
+  base url                  http://api:8080
+  chaos phases              none (baseline)
+  contention                50 vus, 5 seats, 60s
+  sale                      100 vus, 500 seats, 60s
+
+  hold ms, contention       med 9.4  p95 21.1  p99 30.2  max 111.5
+  hold ms, sale             med 11.7  p95 18.9  p99 24.8  max 104.3
+  purchase ms               med 16.7  p95 44.3  p99 76.8  max 81.8
+
+  holds won                 17579
+  holds refused             715112
+  win rate                  0.024
+
+  already held              236486
+  already sold              476867
+  lost race                 1759
+  hold cap reached          0
+  lock contended            0
+
+  seats sold                500 of 500 sellable
+  sold out after            first 52.0 ms, last 634.0 ms
+  sale refused              0
+  release refused           0
+  unexpected                0
+  oversold                  no
+
+Invariants, as k6 recorded them
+
+    no oversell, overall    pass
+    no oversell, flash sale pass
+    no unexpected responses pass
+

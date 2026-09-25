@@ -23,7 +23,7 @@ project is **where architecture is worth paying for**.
 
 - [WRITEUP.md](WRITEUP.md) tells the story in one read: what was built, what broke under
   load, and what that changed.
-- [DECISIONS.md](DECISIONS.md) records 32 decisions, each with the alternative it beat and
+- [DECISIONS.md](DECISIONS.md) records 33 decisions, each with the alternative it beat and
   what it costs.
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) lists every setting, its default and where
   it is set.
@@ -31,7 +31,8 @@ project is **where architecture is worth paying for**.
 ## Results
 
 Measured on 2026-09-25 with k6 against the containerised system as it stands, with faults
-injected by [`load/chaos.sh`](load/chaos.sh) and the aftermath read back from Postgres.
+injected by [`load/chaos.sh`](load/chaos.sh) and the aftermath read back from Postgres. The
+session's report and baseline digests are in [`load/evidence/`](load/evidence/2026-09-25/).
 
 | Scenario | Outcome |
 |---|---|

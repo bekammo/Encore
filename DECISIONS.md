@@ -44,6 +44,7 @@ log is in git: `git show 2e5ad70:DECISIONS.md`.
 - [030](#030--what-checkout-does-not-guard-is-closed-keyed-or-rate-limited) — What checkout does not guard is closed, keyed or rate-limited
 - [031](#031--an-abandoned-order-is-expired-by-a-sweep-that-asks-inventory-first) — An abandoned order is expired by a sweep that asks Inventory first
 - [032](#032--a-holds-one-read-counts-its-rows-instead-of-compiling-a-predicate) — A hold's one read counts its rows instead of compiling a predicate
+- [033](#033--the-session-the-readme-quotes-is-committed-with-it) — The session the README quotes is committed with it
 
 ---
 
@@ -1360,3 +1361,19 @@ A `Union` or a `Distinct` added to the query would break it silently, and
 The same session also showed how far a number moves between sessions on the machine alone. The
 monolith baseline ran about 17% below 2026-09-24's, both for this code and for the code before
 029–031. That is 019's caveat, and the reason the README quotes ranges rather than one number.
+
+---
+
+## 033 — The session the README quotes is committed with it
+
+`load/results/` stays ignored. One machine's numbers on one day are worth keeping locally to
+compare with the next run, and a reader cannot tell them from a claim. But the README quotes
+numbers, and a number with no run behind it in the repository asks the reader to take it on
+trust, which is what 020 refuses to do.
+
+**The session the README quotes is copied to `load/evidence/<date>/`**: the chaos report and
+the three baseline digests, nothing more. When the README's numbers change, the folder is
+replaced in the same change, never kept beside the new one, so the repository holds exactly the
+run the README describes. The alternative was committing `load/results/` whole: 139 files, most
+of them runs that nothing cites. The cost is one more thing to keep in step with the README,
+which a reviewer has to check whenever a number moves.
