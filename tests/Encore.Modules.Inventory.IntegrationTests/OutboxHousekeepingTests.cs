@@ -4,6 +4,7 @@ using Encore.Modules.Inventory.Adapters.Persistence;
 using Encore.Modules.Inventory.Contracts.Events;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -85,11 +86,11 @@ public sealed class OutboxHousekeepingTests(InventoryDatabase database)
         await using var context = new InventoryDbContext(_options);
 
         var check = new InventoryReadinessCheck(context, Options.Create(new OutboxOptions()));
-        var result = await check.CheckAsync(CancellationToken.None);
+        var result = await check.CheckHealthAsync(new HealthCheckContext(), CancellationToken.None);
 
-        Assert.True(result.Ready);
-        Assert.Contains("1 pending", result.Detail, StringComparison.Ordinal);
-        Assert.Contains("1 dead-lettered", result.Detail, StringComparison.Ordinal);
+        Assert.Equal(HealthStatus.Healthy, result.Status);
+        Assert.Contains("1 pending", result.Description, StringComparison.Ordinal);
+        Assert.Contains("1 dead-lettered", result.Description, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -101,10 +102,10 @@ public sealed class OutboxHousekeepingTests(InventoryDatabase database)
                 .Options);
 
         var check = new InventoryReadinessCheck(context, Options.Create(new OutboxOptions()));
-        var result = await check.CheckAsync(CancellationToken.None);
+        var result = await check.CheckHealthAsync(new HealthCheckContext(), CancellationToken.None);
 
-        Assert.False(result.Ready);
-        Assert.Contains("unreachable", result.Detail, StringComparison.Ordinal);
+        Assert.Equal(HealthStatus.Unhealthy, result.Status);
+        Assert.Contains("unreachable", result.Description, StringComparison.Ordinal);
     }
 
     private async Task<Guid> SeedAsync(

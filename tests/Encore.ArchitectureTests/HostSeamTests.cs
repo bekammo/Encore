@@ -89,7 +89,7 @@ public sealed partial class HostSeamTests
     {
         var guarded = EncoreTree.ModuleAssemblies
             .Concat(EncoreTree.ContractsAssemblies)
-            .Append(EncoreTree.SharedPersistence)
+            .Concat(EncoreTree.SharedModuleProjects)
             .ToHashSet(StringComparer.Ordinal);
 
         var seamTypes = EncoreTree.ComposedModules
@@ -172,6 +172,38 @@ public sealed partial class HostSeamTests
             .ToList();
 
         Assert.NotEmpty(called);
+    }
+
+    /// <summary>
+    /// A module attaches rate-limit policies to its routes; a host without the middleware skips
+    /// every one of them silently (030).
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]
+    public void Host_MappingARateLimitedModule_ShouldUseTheRateLimiter(string host)
+    {
+        var limited = SourceScan.ModuleFiles()
+            .Where(file => SourceScan.CodeOnly(File.ReadAllText(file)).Contains(".RequireRateLimiting(", StringComparison.Ordinal))
+            .Select(file => SourceScan.Relative(file).Split('/')[1]["Encore.Modules.".Length..])
+            .Where(module => EncoreTree.ComposedModules.Contains(module, StringComparer.Ordinal))
+            .Select(module => $"Map{module}Module")
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.NotEmpty(limited);
+
+        var named = HostFiles(host)
+            .SelectMany(file => SourceScan.Lines(SourceScan.CodeOnly(File.ReadAllText(file))))
+            .SelectMany(line => SourceScan.Identifiers(line.Text))
+            .ToHashSet(StringComparer.Ordinal);
+
+        if (!limited.Any(named.Contains))
+        {
+            return;
+        }
+
+        Assert.True(
+            named.Contains("UseRateLimiter"),
+            $"{host} maps a module whose routes carry rate-limit policies ({string.Join(", ", limited.Where(named.Contains))}) but never calls UseRateLimiter, so every policy is skipped.");
     }
 
     // Deliberately misses an alias and a using static, so both are reported.

@@ -34,32 +34,14 @@ internal sealed class CaptureSweeper(
             _options.PollInterval,
             _options.MinimumAge);
 
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                await SweepBatchAsync(stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Capture sweep failed. Retrying after {PollInterval}.", _options.PollInterval);
-            }
-
-            // Always sleep, even after a full batch: a capture that went unanswered once is
-            // still first in line, and asking a gateway faster does not make it answer.
-            try
-            {
-                await Task.Delay(_options.PollInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
+        await SweepLoop.RunAsync(
+                "Capture sweep",
+                SweepBatchAsync,
+                _options.PollInterval,
+                _timeProvider,
+                _logger,
+                stoppingToken)
+            .ConfigureAwait(false);
 
         _logger.LogInformation("Capture sweep stopped.");
     }

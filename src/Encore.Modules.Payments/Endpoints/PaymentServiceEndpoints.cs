@@ -1,4 +1,5 @@
 using Encore.Modules.Payments.Contracts;
+using Encore.Modules.Shared.Http;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -22,7 +23,12 @@ public static class PaymentServiceEndpoints
         // A literal: the OpenAPI drift test reads it from source.
         var service = endpoints
             .MapGroup("/internal/payments")
-            .AddEndpointFilter(new ServiceTokenEndpointFilter(serviceToken));
+            .AddEndpointFilter(new SharedSecretEndpointFilter(
+                PaymentsServiceApi.ServiceTokenHeader,
+                serviceToken,
+                title: "Unauthenticated service call",
+                detail: $"The {PaymentsServiceApi.ServiceTokenHeader} header is required and must be the configured service token.",
+                reason: "service_token_invalid"));
 
         service.MapPost("/authorize", AuthorizeAsync);
         service.MapPost("/capture", CaptureAsync);

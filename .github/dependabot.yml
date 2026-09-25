@@ -1,0 +1,37 @@
+# Weekly dependency updates. Versions live in Directory.Packages.props, so one NuGet PR moves
+# every project at once; groups keep packages that must move together in one PR.
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      ef-core-and-npgsql:
+        patterns:
+          - "Microsoft.EntityFrameworkCore*"
+          - "Npgsql*"
+      microsoft-extensions:
+        patterns:
+          - "Microsoft.Extensions.*"
+      opentelemetry:
+        patterns:
+          - "OpenTelemetry*"
+      test-tooling:
+        patterns:
+          - "xunit*"
+          - "Microsoft.NET.Test.Sdk"
+          - "Testcontainers*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directories:
+      - /tests
+      - /src/Encore.Api
+      - /src/Encore.Payments.Api
+    schedule:
+      interval: weekly

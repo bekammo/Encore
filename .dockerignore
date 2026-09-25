@@ -8,6 +8,9 @@
 .idea/
 .vscode/
 
+# Local overrides of docker-compose's variables may hold real secrets.
+.env
+
 # Not source, and no reason to rebuild the image when they change.
 *.md
 

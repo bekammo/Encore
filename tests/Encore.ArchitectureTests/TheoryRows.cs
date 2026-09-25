@@ -15,4 +15,6 @@ public static class TheoryRows
     public static TheoryData<string> ContractsAssemblies => new(EncoreTree.ContractsAssemblies);
 
     public static TheoryData<string> ZeroDependencyProjects => new(EncoreTree.ZeroDependencyProjects);
+
+    public static TheoryData<string> SharedModuleProjects => new(EncoreTree.SharedModuleProjects);
 }

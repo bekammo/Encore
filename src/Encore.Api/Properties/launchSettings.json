@@ -13,7 +13,9 @@
         "Inventory__MigrateOnStartup": "true",
         "Orders__MigrateOnStartup": "true",
         "Payments__MigrateOnStartup": "true",
-        "Notifications__MigrateOnStartup": "true"
+        "Notifications__MigrateOnStartup": "true",
+        "Operator__ApiKey": "local-operator-key",
+        "Inventory__ExposeSeatRoutes": "true"
       }
     },
     "https": {
@@ -28,7 +30,9 @@
         "Inventory__MigrateOnStartup": "true",
         "Orders__MigrateOnStartup": "true",
         "Payments__MigrateOnStartup": "true",
-        "Notifications__MigrateOnStartup": "true"
+        "Notifications__MigrateOnStartup": "true",
+        "Operator__ApiKey": "local-operator-key",
+        "Inventory__ExposeSeatRoutes": "true"
       }
     }
   }

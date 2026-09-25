@@ -77,6 +77,7 @@ services:
       # load: the sale must still sell every seat and oversell none.
       Inventory__Outbox__Enabled: "${OUTBOX_ENABLED:-true}"
       Inventory__ExpiredHoldSweep__Enabled: "${SWEEP_ENABLED:-true}"
+      Orders__OrderExpirySweep__Enabled: "${ORDER_EXPIRY_SWEEP_ENABLED:-true}"
       Payments__Reconciliation__Enabled: "${RECONCILER_ENABLED:-true}"
       # Overridden only by the chaos rig, to see whether the per-lock cost of a Redis
       # outage moves with it (019).
@@ -86,6 +87,14 @@ services:
       Inventory__RedisLock__Cooldown: "${REDIS_LOCK_COOLDOWN:-00:00:01}"
       # Who serialises the hold cap's count: Redis, or a Postgres advisory lock (005).
       Inventory__HoldCapLock: "${HOLD_CAP_LOCK:-Redis}"
+      # The harness drives the seat actions directly. They sell without an order or a
+      # payment, so they are off unless a deployment maps them, as this one does (030).
+      Inventory__ExposeSeatRoutes: "true"
+      # Operator writes need this key; k6's setup sends the same default (030).
+      Operator__ApiKey: "${OPERATOR_API_KEY:-local-operator-key}"
+      # Every k6 request comes from one address, so a per-IP limit would measure the limiter
+      # rather than contention. RATE_LIMIT_ENABLED=true turns it on (030).
+      RateLimiting__PerIp__Enabled: "${RATE_LIMIT_ENABLED:-false}"
       # Telemetry is off unless this names a collector, so a load run measures the system
       # without it. OTEL_ENDPOINT=http://lgtm:4317 with `--profile telemetry` turns it on (021).
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_ENDPOINT:-}"
@@ -154,6 +163,7 @@ services:
       Notifications__MigrateOnStartup: "true"
       Inventory__Outbox__Enabled: "${OUTBOX_ENABLED:-true}"
       Inventory__ExpiredHoldSweep__Enabled: "${SWEEP_ENABLED:-true}"
+      Orders__OrderExpirySweep__Enabled: "${ORDER_EXPIRY_SWEEP_ENABLED:-true}"
       # The strangling: Orders resolves HttpOrderPayments when a base address is set.
       Orders__Payments__BaseAddress: "http://payments-api:8080/internal/payments"
       Orders__Payments__ServiceToken: "${PAYMENTS_SERVICE_TOKEN:-local-development-token}"
@@ -167,6 +177,9 @@ services:
       Inventory__RedisLock__ConnectTimeoutMs: "${REDIS_CONNECT_TIMEOUT_MS:-1000}"
       Inventory__RedisLock__Cooldown: "${REDIS_LOCK_COOLDOWN:-00:00:01}"
       Inventory__HoldCapLock: "${HOLD_CAP_LOCK:-Redis}"
+      Inventory__ExposeSeatRoutes: "true"
+      Operator__ApiKey: "${OPERATOR_API_KEY:-local-operator-key}"
+      RateLimiting__PerIp__Enabled: "${RATE_LIMIT_ENABLED:-false}"
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_ENDPOINT:-}"
 
   # Grafana, Tempo, Prometheus and Loki in one container, behind its own profile so nothing
@@ -201,6 +214,7 @@ services:
       - ./load/results:/results
     environment:
       ENCORE_BASE_URL: "http://api:8080"
+      OPERATOR_KEY: "${OPERATOR_API_KEY:-local-operator-key}"
     # Knobs are environment variables because k6 ignores --vus and --duration when a
     # script defines scenarios:
     #   docker compose run --rm --build -e CONTENTION_VUS=200 load
@@ -221,6 +235,7 @@ services:
       - ./load/results:/results
     environment:
       ENCORE_BASE_URL: "http://api-strangled:8080"
+      OPERATOR_KEY: "${OPERATOR_API_KEY:-local-operator-key}"
     entrypoint: ["k6", "run", "/scripts/flash-sale.js"]
 
   # The test suite, on Linux because Smart App Control blocks freshly built assemblies on

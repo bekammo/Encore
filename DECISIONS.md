@@ -40,6 +40,9 @@ log is in git: `git show 2e5ad70:DECISIONS.md`.
 - [026](#026--what-remains-of-the-roadmap-restated) — What remains of the roadmap, restated
 - [027](#027--a-comment-carries-a-reason-never-the-name) — A comment carries a reason, never the name
 - [028](#028--an-event-is-never-free) — An event is never free
+- [029](#029--where-the-framework-already-does-the-job-it-does-it) — Where the framework already does the job, it does it
+- [030](#030--what-checkout-does-not-guard-is-closed-keyed-or-rate-limited) — What checkout does not guard is closed, keyed or rate-limited
+- [031](#031--an-abandoned-order-is-expired-by-a-sweep-that-asks-inventory-first) — An abandoned order is expired by a sweep that asks Inventory first
 
 ---
 
@@ -1192,3 +1195,133 @@ total is zero and sells the seats directly. It would support free events, but it
 path through authorise, sell, capture (010, 022, 025), the one sequence the repo treats as
 load-bearing, for a case nothing asks for. The cost is that a free event has to be modelled
 another way if one is ever wanted, and that decision starts from here.
+
+---
+
+## 029 — Where the framework already does the job, it does it
+
+A review put the repository's own argument back to it: architecture is paid for only where the
+optionality is spent (001), yet the hosts hand-rolled a readiness endpoint that ASP.NET Core
+ships, and three modules carried copies of one filter. Where the framework already does the job,
+it now does it.
+
+**Readiness is the framework's health checks.** A module registers an `IHealthCheck` with
+`AddHealthChecks().AddCheck<T>(name)`, and both hosts map the routes through one extension,
+`MapEncoreHealthChecks`, in `Encore.Telemetry`, the one project hosts already share. This
+supersedes 017's `IReadinessCheck` in `Encore.Shared`: the interface was a copy of one the shared
+framework already provides to every module with a database, and `Encore.Shared` goes back to
+holding only what the Domain needs. What 016 promised stays true. The host still counts votes
+without knowing which modules have a database, every registered check votes on `/health/ready`,
+a backlog goes in the description and never fails a check, and the JSON body and the 503 are
+unchanged. The framework runs each check in its own scope, so two checks never share a
+`DbContext`, which is why the old endpoint had to run them one at a time. `/health` runs no check
+at all, so a dependency's outage never gets a working process restarted. `MapHealthChecks`
+answers every method, so both routes are restricted to GET and HEAD, and `OpenApiDocumentTests`
+reads `MapHealthChecks` as a GET.
+
+**`ClientIdEndpointFilter` is shared, in `Encore.Modules.Shared.Http`.** This supersedes 017's
+"stays copied into three modules". 017's test for sharing was that the code is inert and sharing
+it teaches the shared project no module's name. The filter passes both halves. It was refused
+anyway, as a web-only project for one class. The project now holds two filters. The second is
+`SharedSecretEndpointFilter`, the Payments service token generalised, which hashes both sides
+before `FixedTimeEquals` so a wrong guess no longer learns the secret's length. The project takes
+Shared.Persistence's rules, and the same tests now check both: no `ProjectReference`, no module or
+contracts assembly named, no zero-dependency project referencing it, and no host naming it. The
+three copies stored the client id under three keys, so that two of them on one route could not
+collide. One filter writes one value from one header, so there is nothing left to collide.
+
+**The OpenAPI document stays hand-written, for a different reason than 008 gave.** 008 said the
+hosts hold no packages. That is true, but it borrows a rule written to keep infrastructure out of
+the Domain (002), and it is not what the document is for. The document promises two things endpoint
+metadata does not carry:
+- the closed vocabulary of `reason` values each route can answer, with its `retriable` flag;
+- which host serves which path, after the Payments extraction (018).
+
+A generated document would need a transformer per route for the first and a hand-kept `servers`
+map for the second. It would still need a test that it agrees with the C# enums. That is the
+hand-written document again, one step removed. The cost is unchanged: about 575 lines of JSON,
+kept honest by `OpenApiDocumentTests` in both directions.
+
+---
+
+## 030 — What checkout does not guard is closed, keyed or rate-limited
+
+008 and 012 left every route open until an Identity module could restrict it. 026 noticed what
+that meant for a deployment: anyone could create seats and buy them with no order and no money.
+This entry supersedes "open until Identity" for the three routes where the answer cannot wait.
+
+**The seat actions are off by default.** `/hold`, `/release` and `/purchase` sell without a
+price, a payment or an on-sale check. They exist because the load harness measures contention on
+the hot path directly, and checkout is the customer's way in. `MapSeatEndpoints` maps them only
+when `Inventory:ExposeSeatRoutes` is true. The compose services the harness drives set it, and
+so does the development launch profile, so Swagger can still try them.
+
+**Operator writes need a key.** Creating a venue, an event or a seat map requires `X-Operator-Key`
+to match `Operator:ApiKey`. It is checked by the same `SharedSecretEndpointFilter` as the Payments
+service token (029), with its own `reason`, `operator_key_invalid`. The same precedent applies as
+for that token (018): a host that maps these routes without a key refuses to start, rather than
+serving them open. Reads of the catalogue stay public.
+
+**Checkout and the hold route are rate-limited per IP address.** `X-Client-Id` is claimed, so the
+per-client hold cap (005) stops only a client who keeps its id. Rotating it held a whole venue for
+five minutes at a time. A token bucket per address, 10 a second with a burst of 20, stops one
+machine doing that. Each module registers its own named policy through `AddPerIpRateLimitPolicy`,
+and a refusal is `429` with `reason` `rate_limited`, `retriable` true and `Retry-After`. The host
+must call `UseRateLimiter`, since without the middleware every policy is skipped silently. A
+host-seam test fails any host that maps a rate-limited module without it. Confirm and cancel are
+not limited: they act on an order that checkout already admitted.
+
+**It is a floor, and the costs are named.**
+- A botnet has many addresses.
+- Behind a proxy every client shares one address, because `ForwardedHeaders` is not configured
+  and no proxy is deployed to configure it for.
+- The load harness turns limiting off, since every k6 request comes from one address.
+
+The answer to bots is identity with verified accounts and a waiting room in front of the sale.
+Neither exists, and this entry does not pretend to replace them. One more secret must be
+configured wherever the monolith runs, and compose and k6 carry a development default for it, as
+they do for the service token.
+
+---
+
+## 031 — An abandoned order is expired by a sweep that asks Inventory first
+
+Until now an order left `Pending` only when its customer confirmed or cancelled it. A customer
+who walked away left an order that read `Pending` forever. It blocked their next checkout for
+the event through the one-open-checkout index. If a confirm had authorised before dying, it also
+left their money held until the gateway gave up on it. Nothing in the system ended it.
+
+**An expiry sweep ends it, the way a cancel would.** `OrderExpirySweeper` looks for `Pending`
+orders whose `HoldsExpireAt` passed more than `Orders:OrderExpirySweep:Grace` ago (one minute).
+It uses the same advisory-lock lease as the capture sweep (025), and it calls
+`CheckoutService.ExpireAsync` for each order. `ExpireAsync` takes 012's order, seats before money:
+it releases the seats, voids the authorisation, and writes `Expired`, with `xmin` guarding the
+row. The order matters more here than for a customer's cancel. A confirm's sale commits in
+Inventory before the order row records it, so the order's own row version cannot fence it. Only
+asking Inventory first can. Two of Inventory's answers stop the sweep:
+- `SoldToYou`: a confirm sold the seats and died before recording it. The sale stands, so the
+  sweep finishes that confirm as the customer's next one would (025). Abandoning a sold seat
+  would be the worse harm.
+- `LostRace`: unlike a customer's cancel, the sweep backs off and leaves the order to its next
+  pass, since nobody is waiting on the answer.
+
+A confirm of an order the sweep expired answers `holds_expired`, exactly as one that found the
+holds lapsed itself.
+
+**This supersedes two clauses of 009.** "Orders never releases seats because a hold lapsed"
+becomes "Orders asks Inventory to release them and takes its answer". "Only `HoldExpired` moves
+an order to `Expired`" gains a second path. 009's reason still holds, which is that two clocks
+must not tell a customer different things. `HoldsExpireAt` only picks the candidates, the grace
+keeps the sweep behind any confirm that started in time, and each seat's answer comes from
+Inventory. `GET` still returns the stored status and derives nothing. A new partial index,
+`ix_orders_pending_holds_expire`, serves the candidate query.
+
+**What it costs, and what it leaves.**
+- A client can re-hold a lapsed seat through the direct hold route, and Orders never sees that
+  expiry. The sweep would release that live hold. The route is off unless a deployment maps it
+  (030), and the load harness never places orders on the seats it holds.
+- A void that times out still leaves `Authorized` behind an ended order. That is true for a
+  cancel, a failed confirm and this sweep alike, and it waits for the gateway's own expiry. The
+  composition test asserts no ended order is still authorised when the gateway answers. chaos.sh
+  reports the count as a statistic rather than an invariant, since its payments-stopped fault
+  produces exactly that case.

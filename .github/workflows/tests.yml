@@ -81,3 +81,19 @@ jobs:
           name: suite-log
           path: suite.log
           retention-days: 14
+
+  # Whitespace only, by folder, so it needs no restore. The style rules in .editorconfig are
+  # suggestions and the build enforces the rest; migrations are marked generated and skipped.
+  format:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Check whitespace formatting
+        run: dotnet format whitespace . --folder --verify-no-changes --verbosity normal

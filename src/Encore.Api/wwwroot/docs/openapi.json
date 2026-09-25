@@ -3,7 +3,7 @@
   "info": {
     "title": "Encore",
     "version": "0.1.0",
-    "description": "Event ticketing, as a modular monolith. Five modules, and since the Payments extraction two hosts: Encore.Api serves everything here except the three /internal/payments routes, which only Encore.Payments.Api maps. Paths that carry their own `servers` entry are the ones the host serving this page does not answer.\n\n**Actions, not resources.** The seat routes are `/hold`, `/release` and `/purchase` rather than a `/holds` collection: a hold is not an entity, it is two fields on the seat row, so it gets no URI of its own. All three are idempotent, which is what makes retrying a POST safe.\n\n**Branch on `reason`, not on status.** Every refusal about the state of the world is `409` with a machine-readable `reason` and a `retriable` flag. Only an addressed thing that is not there is `404`. A request that is wrong on its own terms is `400`. The statuses carry the class of failure; `reason` carries which one.\n\n**`X-Client-Id` is a claimed identity, not authentication.** Anyone can change it and reset their own hold cap. It stands in for the Identity module, which does not exist yet, which is also why no customer route returns 401 or 403. Only the three /internal/payments routes answer 401, when the service token is wrong.\n\nThis document is hand-maintained. `Encore.Api` holds zero NuGet packages by design, so nothing generates this from endpoint metadata. Tests fail when it and the mapped routes disagree, and when a documented status enum and the enum behind it disagree."
+    "description": "Event ticketing, as a modular monolith. Five modules, and since the Payments extraction two hosts: Encore.Api serves everything here except the three /internal/payments routes, which only Encore.Payments.Api maps. Paths that carry their own `servers` entry are the ones the host serving this page does not answer.\n\n**Actions, not resources.** The seat routes are `/hold`, `/release` and `/purchase` rather than a `/holds` collection: a hold is not an entity, it is two fields on the seat row, so it gets no URI of its own. All three are idempotent, which is what makes retrying a POST safe.\n\n**Branch on `reason`, not on status.** Every refusal about the state of the world is `409` with a machine-readable `reason` and a `retriable` flag. Only an addressed thing that is not there is `404`. A request that is wrong on its own terms is `400`. The statuses carry the class of failure; `reason` carries which one.\n\n**`X-Client-Id` is a claimed identity, not authentication.** Anyone can change it and reset their own hold cap. It stands in for the Identity module, which does not exist yet, which is also why no customer route returns 401 or 403. Two kinds of route do answer 401: the three /internal/payments routes, when the service token is wrong, and the operator's writes (venues, events, seat maps), when the operator key is. Checkout and seat holds are rate-limited per IP address and answer 429 with `reason` rate_limited.\n\nThis document is hand-maintained, because it promises more than endpoint metadata carries: the closed vocabulary of `reason` values each route can answer, and which host serves which path. Tests fail when it and the mapped routes disagree, and when a documented status enum and the enum behind it disagree."
   },
   "servers": [
     { "url": "/", "description": "Whichever instance served this page — 5107 from dotnet run, 8080 from the container." }
@@ -29,6 +29,12 @@
         "in": "header",
         "name": "X-Service-Token",
         "description": "The shared secret between Orders and Payments. This one IS authentication, and it is the only thing guarding a call that can move money. Not a customer credential — the /internal routes take no X-Client-Id at all."
+      },
+      "OperatorKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Operator-Key",
+        "description": "The operator's shared secret, required to create venues, events and seat maps. `dotnet run` and the compose stack both use `local-operator-key`. A host that maps these routes without one configured refuses to start."
       }
     },
     "schemas": {
@@ -172,7 +178,7 @@
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "eventId": { "type": "string", "format": "uuid" },
-          "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled", "expired", "failed", "awaiting_capture"], "description": "awaiting_capture is non-terminal: every seat is sold and the capture is owed. The next confirm resolves it, and so does the capture sweep, within a minute or two." },
+          "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled", "expired", "failed", "awaiting_capture"], "description": "awaiting_capture is non-terminal: every seat is sold and the capture is owed. The next confirm resolves it, and so does the capture sweep, within a minute or two. A pending order whose holds lapsed is expired by the expiry sweep a minute or so after holdsExpireAt: its seats are released and its authorisation voided, and a later confirm answers holds_expired." },
           "placedAt": { "type": "string", "format": "date-time" },
           "holdsExpireAt": { "type": ["string", "null"], "format": "date-time", "description": "When the first of the order's holds lapses. Null once the seats have sold or the order has ended." },
           "closedAt": { "type": ["string", "null"], "format": "date-time" },
@@ -232,6 +238,14 @@
       "BadServiceToken": {
         "description": "The X-Service-Token header is missing, malformed or wrong. One refusal for all three, with `reason` service_token_invalid: telling an unauthenticated caller which of those it got tells it how to get closer.",
         "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
+      },
+      "BadOperatorKey": {
+        "description": "The X-Operator-Key header is missing, malformed or wrong. One refusal for all three, with `reason` operator_key_invalid.",
+        "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
+      },
+      "RateLimited": {
+        "description": "Too many requests from this address. `reason` rate_limited, `retriable` true, and a Retry-After header in seconds. A token bucket per client IP address: a floor against one machine rotating client ids, not a defence against a botnet.",
+        "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
       }
     },
     "parameters": {
@@ -245,7 +259,7 @@
       "get": {
         "tags": ["health"],
         "summary": "Liveness.",
-        "description": "The host's own route, not a framework health check. A 200 means the pipeline is serving and the migrators have finished, because they run as IHostedLifecycleService before Kestrel opens the socket.",
+        "description": "ASP.NET Core's health-check middleware running no checks at all, so an outage in a dependency never gets a working process restarted. A 200 means the pipeline is serving and the migrators have finished, because they run as IHostedLifecycleService before Kestrel opens the socket.",
         "responses": {
           "200": {
             "description": "Serving.",
@@ -258,7 +272,7 @@
       "get": {
         "tags": ["health"],
         "summary": "Readiness, module by module.",
-        "description": "Asks every module that registered an IReadinessCheck whether it can work, and reports the answers together. 200 when all of them can, 503 when any cannot. The host itself knows none of this — it counts votes, because it is not allowed to know that a module has a database. The detail lines carry the numbers worth watching rather than alerting on: dead-lettered outbox messages, and timed-out payment attempts the reconciler has not settled. Both hosts serve this route.",
+        "description": "Runs every health check a module registered with ASP.NET Core's health checks, and reports the answers together. 200 when all of them can, 503 when any cannot. The host itself knows none of this — it counts votes, because it is not allowed to know that a module has a database. The detail lines carry the numbers worth watching rather than alerting on: dead-lettered outbox messages, and timed-out payment attempts the reconciler has not settled. Both hosts serve this route.",
         "responses": {
           "200": {
             "description": "Every module is ready.",
@@ -297,7 +311,8 @@
       "post": {
         "tags": ["catalog"],
         "summary": "Creates a venue and returns it.",
-        "description": "Operator-facing. Ids are generated here, not supplied.",
+        "description": "Operator-facing, behind the operator key. Ids are generated here, not supplied.",
+        "security": [{ "OperatorKey": [] }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateVenueRequest" } } } },
         "responses": {
           "201": {
@@ -307,7 +322,8 @@
           "400": {
             "description": "reason: invalid_name, invalid_address, invalid_capacity.",
             "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
-          }
+          },
+          "401": { "$ref": "#/components/responses/BadOperatorKey" }
         }
       },
       "get": {
@@ -336,6 +352,8 @@
       "post": {
         "tags": ["catalog"],
         "summary": "Creates an event at an existing venue and returns it.",
+        "description": "Operator-facing, behind the operator key.",
+        "security": [{ "OperatorKey": [] }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateEventRequest" } } } },
         "responses": {
           "201": { "description": "Created.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EventResponse" } } } },
@@ -343,6 +361,7 @@
             "description": "reason: invalid_name, invalid_price, invalid_currency, ambiguous_timestamp. The last one is a startsAt or onSaleAt with no timezone.",
             "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
           },
+          "401": { "$ref": "#/components/responses/BadOperatorKey" },
           "409": { "description": "reason: venue_not_found. Create the venue before the event.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
         }
       },
@@ -369,12 +388,14 @@
       "post": {
         "tags": ["inventory"],
         "summary": "Creates an event's seats and returns their ids.",
-        "description": "Operator-facing, and the only seat route with no client identity: creating a seat map is not something a customer does. Returns 201 with no Location header, because there is no GET for a seat map and a Location pointing at nothing is worse than none. Not safe to retry, unlike the seat actions: each call adds a fresh set of seats.",
+        "description": "Operator-facing, behind the operator key, and the only seat route with no client identity: creating a seat map is not something a customer does. Returns 201 with no Location header, because there is no GET for a seat map and a Location pointing at nothing is worse than none. Not safe to retry, unlike the seat actions: each call adds a fresh set of seats.",
+        "security": [{ "OperatorKey": [] }],
         "parameters": [{ "$ref": "#/components/parameters/EventId" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateSeatMapRequest" } } } },
         "responses": {
           "201": { "description": "The seats now exist.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateSeatMapResponse" } } } },
-          "400": { "description": "An empty event id, or a count outside 1..10000. No `reason` member on this one.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+          "400": { "description": "An empty event id, or a count outside 1..10000. No `reason` member on this one.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "$ref": "#/components/responses/BadOperatorKey" }
         }
       }
     },
@@ -382,7 +403,7 @@
       "post": {
         "tags": ["inventory"],
         "summary": "Holds a seat for the calling client for five minutes.",
-        "description": "Idempotent: the same client re-holding gets the same expiry back and raises no second event. A seat whose hold has lapsed is available again on this path whatever the stored status says, so an expired hold is reclaimed here rather than by waiting for a sweep.",
+        "description": "Idempotent: the same client re-holding gets the same expiry back and raises no second event. A seat whose hold has lapsed is available again on this path whatever the stored status says, so an expired hold is reclaimed here rather than by waiting for a sweep. Off by default: the seat actions sell without an order, a price or a payment, so a host maps them only when Inventory:ExposeSeatRoutes is true, as the load harness's does. Checkout is the customer's way in.",
         "security": [{ "ClientId": [] }],
         "parameters": [{ "$ref": "#/components/parameters/EventId" }, { "$ref": "#/components/parameters/SeatId" }],
         "responses": {
@@ -392,7 +413,8 @@
           "409": {
             "description": "reason: already_held (retriable), already_sold (not), hold_cap_reached (retriable, carries `limit`), lost_race (retriable), concurrent_request_in_flight (retriable).",
             "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
-          }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
     },
@@ -400,7 +422,7 @@
       "post": {
         "tags": ["inventory"],
         "summary": "Gives a held seat back.",
-        "description": "Only the holding client may release. Releasing a seat that is already available is a no-op success.",
+        "description": "Only the holding client may release. Releasing a seat that is already available is a no-op success. Off by default: the seat actions sell without an order, a price or a payment, so a host maps them only when Inventory:ExposeSeatRoutes is true, as the load harness's does. Checkout is the customer's way in.",
         "security": [{ "ClientId": [] }],
         "parameters": [{ "$ref": "#/components/parameters/EventId" }, { "$ref": "#/components/parameters/SeatId" }],
         "responses": {
@@ -415,7 +437,7 @@
       "post": {
         "tags": ["inventory"],
         "summary": "Converts the calling client's live hold into a sale.",
-        "description": "Requires a live, unexpired hold by the same client. There is no selling an available seat outright. Idempotent: re-buying a seat you already own returns 200.",
+        "description": "Requires a live, unexpired hold by the same client. There is no selling an available seat outright. Idempotent: re-buying a seat you already own returns 200. Off by default: the seat actions sell without an order, a price or a payment, so a host maps them only when Inventory:ExposeSeatRoutes is true, as the load harness's does. Checkout is the customer's way in.",
         "security": [{ "ClientId": [] }],
         "parameters": [{ "$ref": "#/components/parameters/EventId" }, { "$ref": "#/components/parameters/SeatId" }],
         "responses": {
@@ -439,7 +461,8 @@
           "409": {
             "description": "reason: event_not_found, not_on_sale, checkout_already_open (carries `orderId`), seats_unavailable (carries `seats`, each with its own reason: already_held, already_sold, seat_not_found, hold_cap_reached, concurrent_request_in_flight or lost_race).",
             "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
-          }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
     },

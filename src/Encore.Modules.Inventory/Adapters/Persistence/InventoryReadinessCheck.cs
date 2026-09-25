@@ -1,22 +1,27 @@
 using Encore.Modules.Inventory.Adapters.Messaging;
-using Encore.Shared;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 
 namespace Encore.Modules.Inventory.Adapters.Persistence;
 
+/// <summary>
+/// Unhealthy only for a real outage, since that takes the host out of rotation. The backlog goes
+/// in the description and never fails the check (016, 029).
+/// </summary>
 internal sealed class InventoryReadinessCheck(
-    InventoryDbContext context,
-    IOptions<OutboxOptions> outboxOptions) : IReadinessCheck
+    InventoryDbContext dbContext,
+    IOptions<OutboxOptions> outboxOptions) : IHealthCheck
 {
-    private readonly InventoryDbContext _context = context;
+    internal const string Name = "inventory";
+
+    private readonly InventoryDbContext _context = dbContext;
     private readonly OutboxOptions _outbox = outboxOptions.Value;
 
     /// <inheritdoc />
-    public string Name => "inventory";
-
-    /// <inheritdoc />
-    public async Task<ReadinessResult> CheckAsync(CancellationToken cancellationToken = default)
+    public async Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context,
+        CancellationToken cancellationToken = default)
     {
         var maxAttempts = _outbox.MaxAttempts;
 
@@ -37,12 +42,12 @@ internal sealed class InventoryReadinessCheck(
             var pending = backlog?.Pending ?? 0;
             var deadLettered = backlog?.DeadLettered ?? 0;
 
-            return ReadinessResult.Ok(
+            return HealthCheckResult.Healthy(
                 $"outbox: {pending} pending, {deadLettered} dead-lettered after {maxAttempts} attempts");
         }
         catch (Exception ex)
         {
-            return ReadinessResult.Failed($"inventory database unreachable: {ex.Message}");
+            return HealthCheckResult.Unhealthy($"inventory database unreachable: {ex.Message}");
         }
     }
 }
