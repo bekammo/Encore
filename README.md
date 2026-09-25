@@ -112,9 +112,10 @@ against the real routes (Strangler Fig, `DECISIONS.md` 018).
 src/
   Encore.Api                          monolith host
   Encore.Payments.Api                 Payments as its own service
-  Encore.Shared                       three BCL-only interfaces every module may see
-  Encore.Telemetry                    the hosts' OpenTelemetry wiring
+  Encore.Shared                       two BCL-only interfaces every module may see
+  Encore.Telemetry                    the hosts' OpenTelemetry and health-check wiring
   Encore.Modules.Shared.Persistence   migrator and schema wiring; may not name a module
+  Encore.Modules.Shared.Http          endpoint filters and per-IP rate limiting; may not name a module
   Encore.Modules.Inventory.Domain     Seat aggregate, events, exceptions; no packages
   Encore.Modules.Inventory            ports, adapters, use cases, outbox
   Encore.Modules.{Catalog,Orders,Payments,Notifications}
@@ -180,6 +181,12 @@ Or run the whole stack in containers:
 ```bash
 docker compose --profile load up -d --build api --wait    # http://localhost:8080/docs/
 ```
+
+To try a checkout from `/docs/`, enter two headers under **Authorize**:
+- `X-Operator-Key: local-operator-key` creates a venue, an event and its seats. The
+  development launch profile sets this key, and the containers default to it
+  (`OPERATOR_API_KEY` overrides it).
+- `X-Client-Id` can be any non-empty GUID. Use it to open an order, then confirm it.
 
 Postgres is published on host port **55432** rather than 5432, which is often taken by a
 local installation.
