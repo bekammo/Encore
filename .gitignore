@@ -17,7 +17,8 @@ Thumbs.db
 .env
 # Claude Code's per-user settings. Shared settings would go in .claude/settings.json.
 .claude/settings.local.json
-appsettings.Development.json
+# appsettings.Development.json is committed: it holds only the docker-compose Postgres and
+# Redis, whose credentials are public in docker-compose.yml. Real secrets go in a local file.
 appsettings.*.local.json
 
 ## Docs — the decision log ships, working notes stay local.

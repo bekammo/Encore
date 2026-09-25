@@ -10,7 +10,7 @@ WORKDIR /src
 # Project files first, restored as their own layer, so source edits do not re-restore.
 # Directory.Build.* carry the target framework and the ENCORE rules; Directory.Packages.props
 # carries every package version.
-COPY Directory.Build.props Directory.Build.targets Directory.Packages.props ./
+COPY .editorconfig Directory.Build.props Directory.Build.targets Directory.Packages.props ./
 COPY src/Encore.Api/Encore.Api.csproj                                                 src/Encore.Api/
 COPY src/Encore.Shared/Encore.Shared.csproj                                           src/Encore.Shared/
 COPY src/Encore.Telemetry/Encore.Telemetry.csproj                                     src/Encore.Telemetry/

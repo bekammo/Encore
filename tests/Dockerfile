@@ -8,7 +8,7 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0
 WORKDIR /src
 
 # Project files first, restored as their own layer, so source edits do not re-restore.
-COPY Directory.Build.props Directory.Build.targets Directory.Packages.props Encore.sln ./
+COPY .editorconfig Directory.Build.props Directory.Build.targets Directory.Packages.props Encore.sln ./
 COPY src/Encore.Api/Encore.Api.csproj                                          src/Encore.Api/
 COPY src/Encore.Payments.Api/Encore.Payments.Api.csproj                        src/Encore.Payments.Api/
 COPY src/Encore.Shared/Encore.Shared.csproj                                    src/Encore.Shared/

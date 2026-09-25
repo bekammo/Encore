@@ -8,7 +8,7 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 # Project files first, restored as their own layer. Only this host's graph.
-COPY Directory.Build.props Directory.Build.targets Directory.Packages.props ./
+COPY .editorconfig Directory.Build.props Directory.Build.targets Directory.Packages.props ./
 COPY src/Encore.Payments.Api/Encore.Payments.Api.csproj                              src/Encore.Payments.Api/
 COPY src/Encore.Shared/Encore.Shared.csproj                                          src/Encore.Shared/
 COPY src/Encore.Telemetry/Encore.Telemetry.csproj                                    src/Encore.Telemetry/
