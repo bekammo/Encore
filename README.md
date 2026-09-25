@@ -1,6 +1,20 @@
 # Encore
 
 [![tests](https://github.com/bekammo/Encore/actions/workflows/tests.yml/badge.svg)](https://github.com/bekammo/Encore/actions/workflows/tests.yml)
+[![licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+
+**A flash-sale ticketing backend that sells every seat exactly once, even with Redis killed
+mid-sale.**
+
+- **What:** a .NET 10 modular monolith for the moment thousands of clients click the same seats.
+  Payments also runs as its own service.
+- **Stack:** C# · ASP.NET Core minimal APIs · EF Core 10 on PostgreSQL 16 · Redis 7 · xUnit
+  with Testcontainers · k6 · OpenTelemetry and Grafana · Docker Compose · GitHub Actions.
+- **Result:** 500 of 500 seats sold and none oversold across 410,000–450,000 hold attempts a
+  run. Still no oversell with Redis stopped, and no order confirmed unpaid with the payment
+  service stopped.
+- **Run it:** `docker compose up -d && dotnet run --project src/Encore.Api`, then
+  http://localhost:5107/docs/.
 
 An event-ticketing backend in .NET 10, built around one hard problem: the flash-sale moment
 when thousands of clients contend for the same seats. It is a modular monolith in which four
@@ -9,8 +23,10 @@ project is **where architecture is worth paying for**.
 
 - [WRITEUP.md](WRITEUP.md) tells the story in one read: what was built, what broke under
   load, and what that changed.
-- [DECISIONS.md](DECISIONS.md) records 26 decisions, each with the alternative it beat and
+- [DECISIONS.md](DECISIONS.md) records 31 decisions, each with the alternative it beat and
   what it costs.
+- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) lists every setting, its default and where
+  it is set.
 
 ## Results
 
@@ -146,6 +162,9 @@ captures:
 - Two background jobs resolve what a crash leaves behind: a reconciler settles payments the
   gateway never answered, and a capture sweep finishes orders that sold but were never
   captured. Both are cleanup, and the system stays correct with either switched off.
+- A third ends what a customer abandons. An expiry sweep takes `Pending` orders whose holds
+  lapsed, gives their seats back, then voids their money, asking Inventory about each seat
+  first (031).
 
 ## Running it
 
@@ -181,12 +200,12 @@ every documented status enum to the C# enum behind it.
 
 | Route | Purpose |
 |---|---|
-| `GET /health` · `GET /health/ready` | Liveness; readiness, voted by each module. |
-| `POST /catalog/venues` · `POST /catalog/events` | Create a venue, or a priced event at one. |
+| `GET /health` · `GET /health/ready` | Liveness; readiness, voted by each module's health check. |
+| `POST /catalog/venues` · `POST /catalog/events` | Create a venue, or a priced event at one. Needs `X-Operator-Key`. |
 | `GET /catalog/venues[/{id}]` · `GET /catalog/events[/{id}]` | Browse the catalogue. |
-| `POST /events/{eventId}/seats` | Create an event's seats. |
-| `POST /events/{eventId}/seats/{seatId}/hold` · `release` · `purchase` | Seat actions. Each is idempotent. |
-| `POST /orders` | Open a checkout: price the event and hold every seat. |
+| `POST /events/{eventId}/seats` | Create an event's seats. Needs `X-Operator-Key`. |
+| `POST /events/{eventId}/seats/{seatId}/hold` · `release` · `purchase` | Seat actions, each idempotent. Off unless `Inventory:ExposeSeatRoutes` is set, since they sell without an order. |
+| `POST /orders` | Open a checkout: price the event and hold every seat. Rate-limited per IP. |
 | `GET /orders/{orderId}` | Read one of the caller's orders. |
 | `POST /orders/{orderId}/confirm` · `cancel` | Pay for the order, or end it. |
 | `GET /payments/{paymentId}` · `GET /payments?orderId=` | Read what happened to a payment. |
@@ -200,7 +219,7 @@ branch on `reason` rather than on status codes:
 
 ## Testing
 
-About 700 tests: unit tests for the domain and handlers, integration tests against real
+Over 700 tests: unit tests for the domain and handlers, integration tests against real
 Postgres and Redis through Testcontainers, and architecture tests. The suite runs in a
 container, the same way locally and in CI. CI does not rely on the exit code of
 `docker compose run`, which is 0 even when nothing ran. Instead it counts one summary line
@@ -233,9 +252,12 @@ edges:
 Scope was chosen to keep the depth in one place. These are deliberate, and each is reasoned
 in `DECISIONS.md`:
 
-- **No authentication.** `X-Client-Id` is a claimed identity, which is enough to exercise
-  contention and per-client rules. For the same reason, Inventory's direct seat routes are
-  open alongside the checkout flow, and they are what the load harness drives.
+- **No customer authentication.** `X-Client-Id` is a claimed identity, which is enough to
+  exercise contention and per-client rules. What that leaves open is closed another way (030):
+  - The direct seat routes the load harness drives are off by default.
+  - Operator writes need a shared key.
+  - Checkout and holds are rate-limited per IP address. That is a floor against one machine,
+    not a defence against a botnet; identity and a waiting room would be.
 - **Redis outages still cost something.** Losing Redis costs a purchase about 1.45× at the
   median. A Postgres advisory lock removes that cost and keeps the cap enforced without
   Redis, but it costs about 16% throughput while Redis is healthy. It is one configuration
@@ -246,3 +268,15 @@ in `DECISIONS.md`:
   delivery, and with it `Payment` domain events, waits for a consumer that needs it (013).
 - **The payment gateway is simulated.** It can decline, time out and lose requests, but it
   never refuses a capture, so that failure is untested end to end (014).
+
+## How this was built
+
+<!-- TODO(author): rewrite this section in your own words before merging. Say what you decided,
+what you measured and how you used AI tools. The draft below claims nothing the history does
+not show. -->
+
+Encore was built between 18 and 25 September 2026, in pull requests that each ran the full
+suite in CI before merging. It was developed with an AI coding assistant, Claude Code, whose
+co-author line appears on commits in the history. The decisions, the measurements they rest on
+and the wrong turns are recorded in [DECISIONS.md](DECISIONS.md) and
+[WRITEUP.md](WRITEUP.md).
