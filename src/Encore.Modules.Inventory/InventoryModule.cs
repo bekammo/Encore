@@ -8,6 +8,7 @@ using Encore.Modules.Inventory.Contracts;
 using Encore.Modules.Inventory.Contracts.Events;
 using Encore.Modules.Inventory.Endpoints;
 using Encore.Modules.Inventory.Ports;
+using Encore.Modules.Shared.Http;
 using Encore.Modules.Shared.Persistence;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
@@ -63,6 +64,8 @@ public static class InventoryModule
         services.AddScoped<CreateSeatMapCommandHandler>();
 
         services.AddScoped<ISeatReservations, InProcessSeatReservations>();
+
+        services.AddPerIpRateLimitPolicy(configuration, SeatEndpoints.HoldRateLimitPolicy);
 
         // Every registered check votes on /health/ready; the host never learns which modules
         // have a database (016, 029).

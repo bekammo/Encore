@@ -42,6 +42,10 @@ import { Counter, Rate, Trend } from 'k6/metrics';
 
 const BASE_URL = __ENV.ENCORE_BASE_URL || 'http://api:8080';
 
+// Venues, events and seat maps are the operator's writes (030). Compose passes the same
+// default to the API, so the two agree unless OPERATOR_API_KEY overrides both.
+const OPERATOR_KEY = __ENV.OPERATOR_KEY || 'local-operator-key';
+
 // Where handleSummary writes the summary. Empty runs without a mounted volume and
 // prints the digest on stdout only.
 const RESULTS_DIR = __ENV.ENCORE_RESULTS_DIR === undefined ? '/results' : __ENV.ENCORE_RESULTS_DIR;
@@ -456,9 +460,10 @@ function reasonOf(res) {
   }
 }
 
+// Setup's writes only: every caller is an operator route.
 function postJson(path, body) {
   return http.post(BASE_URL + path, JSON.stringify(body), {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-Operator-Key': OPERATOR_KEY },
   });
 }
 

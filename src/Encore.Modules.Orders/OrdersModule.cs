@@ -1,6 +1,7 @@
 using Encore.Modules.Orders.Data;
 using Encore.Modules.Orders.Endpoints;
 using Encore.Modules.Payments.Contracts;
+using Encore.Modules.Shared.Http;
 using Encore.Modules.Shared.Persistence;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
@@ -23,6 +24,8 @@ public static class OrdersModule
         services.TryAddSingleton(TimeProvider.System);
 
         services.AddScoped<CheckoutService>();
+
+        services.AddPerIpRateLimitPolicy(configuration, OrderEndpoints.CheckoutRateLimitPolicy);
 
         if (configuration.GetValue<bool>("Orders:MigrateOnStartup"))
         {

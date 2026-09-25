@@ -41,6 +41,7 @@ log is in git: `git show 2e5ad70:DECISIONS.md`.
 - [027](#027--a-comment-carries-a-reason-never-the-name) — A comment carries a reason, never the name
 - [028](#028--an-event-is-never-free) — An event is never free
 - [029](#029--where-the-framework-already-does-the-job-it-does-it) — Where the framework already does the job, it does it
+- [030](#030--what-checkout-does-not-guard-is-closed-keyed-or-rate-limited) — What checkout does not guard is closed, keyed or rate-limited
 
 ---
 
@@ -1239,3 +1240,43 @@ A generated document would need a transformer per route for the first and a hand
 map for the second. It would still need a test that it agrees with the C# enums. That is the
 hand-written document again, one step removed. The cost is unchanged: about 575 lines of JSON,
 kept honest by `OpenApiDocumentTests` in both directions.
+
+---
+
+## 030 — What checkout does not guard is closed, keyed or rate-limited
+
+008 and 012 left every route open until an Identity module could restrict it. 026 noticed what
+that meant for a deployment: anyone could create seats and buy them with no order and no money.
+This entry supersedes "open until Identity" for the three routes where the answer cannot wait.
+
+**The seat actions are off by default.** `/hold`, `/release` and `/purchase` sell without a
+price, a payment or an on-sale check. They exist because the load harness measures contention on
+the hot path directly, and checkout is the customer's way in. `MapSeatEndpoints` maps them only
+when `Inventory:ExposeSeatRoutes` is true. The compose services the harness drives set it, and
+so does the development launch profile, so Swagger can still try them.
+
+**Operator writes need a key.** Creating a venue, an event or a seat map requires `X-Operator-Key`
+to match `Operator:ApiKey`. It is checked by the same `SharedSecretEndpointFilter` as the Payments
+service token (029), with its own `reason`, `operator_key_invalid`. The same precedent applies as
+for that token (018): a host that maps these routes without a key refuses to start, rather than
+serving them open. Reads of the catalogue stay public.
+
+**Checkout and the hold route are rate-limited per IP address.** `X-Client-Id` is claimed, so the
+per-client hold cap (005) stops only a client who keeps its id. Rotating it held a whole venue for
+five minutes at a time. A token bucket per address, 10 a second with a burst of 20, stops one
+machine doing that. Each module registers its own named policy through `AddPerIpRateLimitPolicy`,
+and a refusal is `429` with `reason` `rate_limited`, `retriable` true and `Retry-After`. The host
+must call `UseRateLimiter`, since without the middleware every policy is skipped silently. A
+host-seam test fails any host that maps a rate-limited module without it. Confirm and cancel are
+not limited: they act on an order that checkout already admitted.
+
+**It is a floor, and the costs are named.**
+- A botnet has many addresses.
+- Behind a proxy every client shares one address, because `ForwardedHeaders` is not configured
+  and no proxy is deployed to configure it for.
+- The load harness turns limiting off, since every k6 request comes from one address.
+
+The answer to bots is identity with verified accounts and a waiting room in front of the sale.
+Neither exists, and this entry does not pretend to replace them. One more secret must be
+configured wherever the monolith runs, and compose and k6 carry a development default for it, as
+they do for the service token.

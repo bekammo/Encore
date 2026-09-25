@@ -24,6 +24,9 @@ var app = builder.Build();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 
+// Modules attach their policies to routes; without this middleware every policy is skipped (030).
+app.UseRateLimiter();
+
 // Swagger UI at /docs/ over the hand-written openapi.json (008), same-origin so "Try it out"
 // needs no CORS.
 app.UseDefaultFiles();

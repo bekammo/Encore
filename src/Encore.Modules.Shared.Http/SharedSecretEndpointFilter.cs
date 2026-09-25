@@ -6,7 +6,7 @@ namespace Encore.Modules.Shared.Http;
 
 /// <summary>
 /// A configured secret in a header: a floor until Identity or mTLS exists, and the routes would
-/// not change when one does (018, 029). One refusal for every way of failing, so a caller learns
+/// not change when one does (018, 029, 030). One refusal for every way of failing, so a caller learns
 /// nothing about which.
 /// </summary>
 public sealed class SharedSecretEndpointFilter : IEndpointFilter

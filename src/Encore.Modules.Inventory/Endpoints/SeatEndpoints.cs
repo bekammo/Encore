@@ -4,6 +4,8 @@ using Encore.Modules.Shared.Http;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Encore.Modules.Inventory.Endpoints;
 
@@ -12,23 +14,34 @@ namespace Encore.Modules.Inventory.Endpoints;
 /// an entity. The actions are idempotent; creating a seat map is not, and each call adds seats.
 /// </summary>
 /// <remarks>
-/// The actions go around the order: no price, no payment, no on-sale check. They stay open
-/// until Identity can restrict them, as every route does (008, 012).
+/// The actions go around the order: no price, no payment, no on-sale check. So they are mapped
+/// only when <see cref="ExposeSeatRoutesKey"/> asks for them, which the load harness does (030).
 /// </remarks>
 public static class SeatEndpoints
 {
+    public const string ExposeSeatRoutesKey = "Inventory:ExposeSeatRoutes";
+
+    public const string HoldRateLimitPolicy = "inventory-hold";
+
     public static IEndpointRouteBuilder MapSeatEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var events = endpoints.MapGroup("/events/{eventId:guid}");
 
-        // Operator-facing, so no client identity.
-        events.MapPost("/seats", CreateSeatMapAsync);
+        // Operator-facing: no client identity, and the operator key.
+        events.MapPost("/seats", CreateSeatMapAsync)
+            .AddEndpointFilter(OperatorKey.Filter(endpoints));
+
+        if (!endpoints.ServiceProvider.GetRequiredService<IConfiguration>().GetValue<bool>(ExposeSeatRoutesKey))
+        {
+            return endpoints;
+        }
 
         // On the group, so a route added later cannot forget the client filter.
         var seat = events.MapGroup("/seats/{seatId:guid}")
             .AddEndpointFilter<ClientIdEndpointFilter>();
 
-        seat.MapPost("/hold", HoldAsync);
+        seat.MapPost("/hold", HoldAsync)
+            .RequireRateLimiting(HoldRateLimitPolicy);
         seat.MapPost("/release", ReleaseAsync);
         seat.MapPost("/purchase", PurchaseAsync);
 
