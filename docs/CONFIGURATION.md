@@ -62,6 +62,7 @@ Each can be switched off, so a run can price it. Correctness never depends on an
 | `DeclineRate` | `0` | Share of authorisations declined. |
 | `TimeoutRate` | `0` | Share of calls that never answer. |
 | `LostRequestRate` | `0.5` | Of the unanswered, the share whose request never arrived. It has no effect while `TimeoutRate` is 0. |
+| `CaptureDeclineRate` | `0` | Of answered captures, the share refused; the order becomes `payment_due` (034). |
 | `MinLatency` / `MaxLatency` | `00:00:00.050` / `00:00:00.250` | Each call's simulated latency. |
 | `Seed` | unset | Fixes the random sequence. |
 
@@ -89,6 +90,7 @@ Each can be switched off, so a run can price it. Correctness never depends on an
 | `REDIS_LOCK_COOLDOWN` | `00:00:01` | `Inventory:RedisLock:Cooldown` |
 | `HOLD_CAP_LOCK` | `Redis` | `Inventory:HoldCapLock` |
 | `PAYMENTS_TIMEOUT_RATE` / `PAYMENTS_LOST_REQUEST_RATE` | `0` / `0.5` | `Payments:Simulation:*` on the Payments service |
+| `PAYMENTS_CAPTURE_DECLINE_RATE` | `0` | `Payments:Simulation:CaptureDeclineRate` on the Payments service |
 | `ENCORE_LOG_LEVEL` | `Information` | `Logging:LogLevel:Encore` |
 | `OTEL_ENDPOINT` | empty | `OTEL_EXPORTER_OTLP_ENDPOINT` |
 

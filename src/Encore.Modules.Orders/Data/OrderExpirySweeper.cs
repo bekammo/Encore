@@ -102,6 +102,12 @@ internal sealed class OrderExpirySweeper(
                 case OrderStatus.AwaitingCapture or OrderStatus.Confirmed:
                     _logger.LogInformation("Order {OrderId} had sold before it was recorded; the sweep finished its confirm.", order.Id);
                     break;
+
+                case OrderStatus.PaymentDue:
+                    _logger.LogWarning(
+                        "Order {OrderId} had sold before it was recorded, and the gateway refused its capture; the customer owes the payment.",
+                        order.Id);
+                    break;
             }
         }
 

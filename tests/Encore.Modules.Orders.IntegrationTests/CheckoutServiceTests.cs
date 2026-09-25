@@ -569,19 +569,113 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(2, payments.Captures.Count);
     }
 
+    [Theory]
+    [InlineData(CapturePaymentStatus.Declined)]
+    [InlineData(CapturePaymentStatus.NoAuthorization)]
+    public async Task Confirm_WhenTheCaptureTakesNoMoney_ShouldLeaveTheSeatsSoldAndThePaymentOwed(
+        CapturePaymentStatus capture)
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 2);
+
+        var seats = new FakeSeatReservations();
+        var payments = new FakeOrderPayments { CaptureWith = capture };
+
+        await using var context = new OrdersDbContext(_options);
+        var result = await ServiceFor(context, seats, payments: payments)
+            .ConfirmAsync(clientId, order.Id);
+
+        Assert.Equal(OrderActionOutcome.PaymentDue, result.Outcome);
+        Assert.Equal(OrderStatus.PaymentDue, result.Order!.Status);
+        Assert.Null(result.Order.ClosedAt);
+        Assert.Single(seats.Sells);
+        Assert.Empty(payments.Voids);
+
+        await using var reader = new OrdersDbContext(_options);
+        Assert.Equal(OrderStatus.PaymentDue, (await reader.Orders.SingleAsync(stored => stored.Id == order.Id)).Status);
+    }
+
     [Fact]
-    public async Task Confirm_WhenTheCaptureFindsNothingHeld_ShouldFailTheOrder()
+    public async Task Confirm_WhenPaymentIsDue_ShouldAuthoriseAgainAndCaptureWithoutSelling()
     {
         var clientId = Guid.NewGuid();
         var order = await AnOpenOrderAsync(clientId, seatCount: 1);
 
-        var payments = new FakeOrderPayments { CaptureWith = CapturePaymentStatus.NoAuthorization };
+        var payments = new FakeOrderPayments { CaptureWith = CapturePaymentStatus.Declined };
+
+        await using (var first = new OrdersDbContext(_options))
+        {
+            await ServiceFor(first, new FakeSeatReservations(), payments: payments)
+                .ConfirmAsync(clientId, order.Id);
+        }
+
+        payments.CaptureWith = CapturePaymentStatus.Captured;
+        var seats = new FakeSeatReservations();
+
+        await using var context = new OrdersDbContext(_options);
+        var result = await ServiceFor(context, seats, payments: payments)
+            .ConfirmAsync(clientId, order.Id);
+
+        Assert.Equal(OrderActionOutcome.Completed, result.Outcome);
+        Assert.Equal(OrderStatus.Confirmed, result.Order!.Status);
+        Assert.Equal(Now, result.Order.ClosedAt);
+
+        Assert.Empty(seats.Sells);
+        Assert.Equal(2, payments.Authorizations.Count);
+        Assert.Equal(2, payments.Captures.Count);
+    }
+
+    [Theory]
+    [InlineData(AuthorizePaymentStatus.Declined)]
+    [InlineData(AuthorizePaymentStatus.TimedOut)]
+    public async Task Confirm_WhenPaymentIsDueAndTheMoneyIsRefusedAgain_ShouldStayOwed(
+        AuthorizePaymentStatus authorize)
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 1);
+
+        var payments = new FakeOrderPayments { CaptureWith = CapturePaymentStatus.Declined };
+
+        await using (var first = new OrdersDbContext(_options))
+        {
+            await ServiceFor(first, new FakeSeatReservations(), payments: payments)
+                .ConfirmAsync(clientId, order.Id);
+        }
+
+        payments.AuthorizeWith = authorize;
 
         await using var context = new OrdersDbContext(_options);
         var result = await ServiceFor(context, new FakeSeatReservations(), payments: payments)
             .ConfirmAsync(clientId, order.Id);
 
-        Assert.Equal(OrderStatus.Failed, result.Order!.Status);
+        Assert.Equal(OrderActionOutcome.PaymentDue, result.Outcome);
+        Assert.Equal(OrderStatus.PaymentDue, result.Order!.Status);
+        Assert.Single(payments.Captures);
+    }
+
+    [Fact]
+    public async Task Cancel_WhenPaymentIsDue_ShouldRefuseBecauseTheSeatsAreSold()
+    {
+        var clientId = Guid.NewGuid();
+        var order = await AnOpenOrderAsync(clientId, seatCount: 1);
+
+        var payments = new FakeOrderPayments { CaptureWith = CapturePaymentStatus.Declined };
+
+        await using (var first = new OrdersDbContext(_options))
+        {
+            await ServiceFor(first, new FakeSeatReservations(), payments: payments)
+                .ConfirmAsync(clientId, order.Id);
+        }
+
+        var seats = new FakeSeatReservations();
+
+        await using var context = new OrdersDbContext(_options);
+        var result = await ServiceFor(context, seats, payments: payments)
+            .CancelAsync(clientId, order.Id);
+
+        Assert.Equal(OrderActionOutcome.NotPending, result.Outcome);
+        Assert.Empty(seats.Releases);
+        Assert.Empty(payments.Voids);
     }
 
     [Fact]

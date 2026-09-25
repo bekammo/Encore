@@ -45,6 +45,8 @@ log is in git: `git show 2e5ad70:DECISIONS.md`.
 - [031](#031--an-abandoned-order-is-expired-by-a-sweep-that-asks-inventory-first) — An abandoned order is expired by a sweep that asks Inventory first
 - [032](#032--a-holds-one-read-counts-its-rows-instead-of-compiling-a-predicate) — A hold's one read counts its rows instead of compiling a predicate
 - [033](#033--the-session-the-readme-quotes-is-committed-with-it) — The session the README quotes is committed with it
+- [034](#034--a-refused-capture-leaves-the-order-payment_due-never-failed) — A refused capture leaves the order `payment_due`, never `failed`
+- [035](#035--the-multi-host-run-is-dropped) — The multi-host run is dropped
 
 ---
 
@@ -660,8 +662,8 @@ Payments service emptied it, and the next sweep settled **120 of 121** timed-out
 tests moved to the integration suite as a result, deliberately — the alternative was an
 `IGatewayLedger` interface, which is the repository 001 forbids in a flat module.
 
-Known gap: the simulator never declines a capture or a void. A real gateway can, and modelling
-that honestly needs a real gateway's error vocabulary.
+Known gap: the simulator never declines a void. A real gateway can, and modelling that honestly
+needs a real gateway's error vocabulary. A refused capture is modelled since 034.
 
 ---
 
@@ -1377,3 +1379,47 @@ replaced in the same change, never kept beside the new one, so the repository ho
 run the README describes. The alternative was committing `load/results/` whole: 139 files, most
 of them runs that nothing cites. The cost is one more thing to keep in step with the README,
 which a reviewer has to check whenever a number moves.
+
+---
+
+## 034 — A refused capture leaves the order `payment_due`, never `failed`
+
+014 left a gap: the simulator never refused a capture, and a capture that found nothing held
+mapped the order to `Failed`. That would have labelled an order whose seats were sold as one that
+"could not be completed", with nothing to find it and nothing to collect the money. 010 puts the
+unrecoverable step in the middle on the promise that money can be settled afterwards, and a
+refused capture is where that promise is tested.
+
+**The order becomes `PaymentDue`: every seat sold, nothing held.** `Payment.DeclineCapture` spends
+the authorisation (`Authorized` to `Declined`), which frees the order's live slot. The customer's
+next confirm authorises again under a fresh attempt and captures it, without selling anything
+twice. A confirm that leaves the order owed answers `payment_due`, `409` and retriable, rather
+than `payment_declined`, which promises the seats are still only held. The simulator refuses a
+share of captures (`CaptureDeclineRate`), the composition test runs the whole path through the
+real modules, and chaos.sh's orders run refuses one capture in twenty.
+
+**What was rejected.**
+- Unselling the seats. `Sold` is terminal (003), and 010's whole argument is that a sale is the
+  step that cannot be undone.
+- A sweep that authorises again. It would charge a customer who did not ask, which is a
+  merchant's decision and not this system's.
+- A new `Payment` status. `Declined` already says what happened to the money, and a
+  `GatewayReference` tells a refused capture from a refused authorisation.
+
+**The cost.** Seats can now be sold with no money behind them, the state 011 and 012 exist to
+prevent, and the invariant is restated to allow it only when the order says so. chaos.sh's "sold,
+no money" row excludes `payment_due`, and a new row counts those orders. A customer who never
+confirms again keeps seats nobody paid for, and collecting is an operator's job outside this
+system. A confirm that dies between the new authorisation and its capture leaves money held under
+a `payment_due` order until the customer's next confirm, because no sweep pays on anyone's behalf.
+
+---
+
+## 035 — The multi-host run is dropped
+
+026 kept one item on the roadmap: a throwaway run with k6 and the collector on a second machine.
+The owner ruled it out on 2026-09-26, so it is dropped rather than deferred. Every number stays a
+one-laptop number, as 019 and the README already say. The run would have removed a caveat, not
+changed a claim: the invariants hold wherever k6 runs, and only the latencies depend on it. The
+alternative was a cloud machine for an afternoon, which is the deployment 026 kept off the list.
+Nothing is left on On Tour's roadmap. Closing the phase is the owner's call.

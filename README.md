@@ -23,7 +23,7 @@ project is **where architecture is worth paying for**.
 
 - [WRITEUP.md](WRITEUP.md) tells the story in one read: what was built, what broke under
   load, and what that changed.
-- [DECISIONS.md](DECISIONS.md) records 33 decisions, each with the alternative it beat and
+- [DECISIONS.md](DECISIONS.md) records 35 decisions, each with the alternative it beat and
   what it costs.
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) lists every setting, its default and where
   it is set.
@@ -159,6 +159,8 @@ converting a hold is always a change to one row.
 **Checkout** in Orders authorises the payment, sells every seat in one transaction, then
 captures:
 - Any path that does not end with every seat sold voids the authorisation.
+- A capture the gateway refuses leaves the order `payment_due`, never `failed`. The seats stay
+  sold, and the customer's next confirm authorises again and pays (034).
 - A cancel releases the seats before the money, so it can never refund a seat it could not
   release.
 - Once money has moved, no step is abandoned halfway, even if the client disconnects.
@@ -275,8 +277,11 @@ in `DECISIONS.md`:
   schema still lives in the shared database (018).
 - **No message bus.** Events are delivered in process from the outbox. Cross-process
   delivery, and with it `Payment` domain events, waits for a consumer that needs it (013).
-- **The payment gateway is simulated.** It can decline, time out and lose requests, but it
-  never refuses a capture, so that failure is untested end to end (014).
+- **The payment gateway is simulated.** It can decline, time out, lose requests and refuse a
+  capture, but it never refuses a void (014).
+- **A refused capture can leave seats sold and unpaid.** The order says so, as `payment_due`,
+  and nothing re-charges the customer unasked. Collecting from one who never confirms again
+  is an operator's job (034).
 
 ## How this was built
 

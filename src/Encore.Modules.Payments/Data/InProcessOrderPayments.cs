@@ -161,7 +161,16 @@ internal sealed class InProcessOrderPayments(
             return CapturePaymentResponse.TimedOut(payment.Id);
         }
 
-        payment.Capture(_timeProvider.GetUtcNow().UtcDateTime);
+        var answeredAt = _timeProvider.GetUtcNow().UtcDateTime;
+
+        if (outcome is GatewayOutcome.Declined)
+        {
+            payment.DeclineCapture(answeredAt);
+        }
+        else
+        {
+            payment.Capture(answeredAt);
+        }
 
         try
         {
@@ -171,13 +180,19 @@ internal sealed class InProcessOrderPayments(
         {
             await ReloadAsync(payment, CancellationToken.None).ConfigureAwait(false);
 
-            return payment.Status is PaymentStatus.Captured
-                ? CapturePaymentResponse.Captured(payment.Id)
-                : CapturePaymentResponse.NoAuthorization;
+            return CaptureAnswerFor(payment);
         }
 
-        return CapturePaymentResponse.Captured(payment.Id);
+        return CaptureAnswerFor(payment);
     }
+
+    private static CapturePaymentResponse CaptureAnswerFor(Payment payment) =>
+        payment.Status switch
+        {
+            PaymentStatus.Captured => CapturePaymentResponse.Captured(payment.Id),
+            PaymentStatus.Declined => CapturePaymentResponse.Declined(payment.Id),
+            _ => CapturePaymentResponse.NoAuthorization
+        };
 
     /// <inheritdoc />
     public async Task<VoidPaymentResponse> VoidAsync(
