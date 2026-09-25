@@ -1,4 +1,5 @@
 using Encore.Modules.Orders.Data;
+using Encore.Modules.Shared.Http;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;

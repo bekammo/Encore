@@ -1,5 +1,6 @@
 using Encore.Modules.Inventory.Adapters.Telemetry;
 using Encore.Modules.Inventory.Application;
+using Encore.Modules.Shared.Http;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;

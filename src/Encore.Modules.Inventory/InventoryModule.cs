@@ -9,7 +9,6 @@ using Encore.Modules.Inventory.Contracts.Events;
 using Encore.Modules.Inventory.Endpoints;
 using Encore.Modules.Inventory.Ports;
 using Encore.Modules.Shared.Persistence;
-using Encore.Shared;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -65,7 +64,9 @@ public static class InventoryModule
 
         services.AddScoped<ISeatReservations, InProcessSeatReservations>();
 
-        services.AddScoped<IReadinessCheck, InventoryReadinessCheck>();
+        // Every registered check votes on /health/ready; the host never learns which modules
+        // have a database (016, 029).
+        services.AddHealthChecks().AddCheck<InventoryReadinessCheck>(InventoryReadinessCheck.Name);
 
         if (configuration.GetValue<bool>("Inventory:MigrateOnStartup"))
         {

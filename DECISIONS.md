@@ -40,6 +40,7 @@ log is in git: `git show 2e5ad70:DECISIONS.md`.
 - [026](#026--what-remains-of-the-roadmap-restated) — What remains of the roadmap, restated
 - [027](#027--a-comment-carries-a-reason-never-the-name) — A comment carries a reason, never the name
 - [028](#028--an-event-is-never-free) — An event is never free
+- [029](#029--where-the-framework-already-does-the-job-it-does-it) — Where the framework already does the job, it does it
 
 ---
 
@@ -1192,3 +1193,49 @@ total is zero and sells the seats directly. It would support free events, but it
 path through authorise, sell, capture (010, 022, 025), the one sequence the repo treats as
 load-bearing, for a case nothing asks for. The cost is that a free event has to be modelled
 another way if one is ever wanted, and that decision starts from here.
+
+---
+
+## 029 — Where the framework already does the job, it does it
+
+A review put the repository's own argument back to it: architecture is paid for only where the
+optionality is spent (001), yet the hosts hand-rolled a readiness endpoint that ASP.NET Core
+ships, and three modules carried copies of one filter. Where the framework already does the job,
+it now does it.
+
+**Readiness is the framework's health checks.** A module registers an `IHealthCheck` with
+`AddHealthChecks().AddCheck<T>(name)`, and both hosts map the routes through one extension,
+`MapEncoreHealthChecks`, in `Encore.Telemetry`, the one project hosts already share. This
+supersedes 017's `IReadinessCheck` in `Encore.Shared`: the interface was a copy of one the shared
+framework already provides to every module with a database, and `Encore.Shared` goes back to
+holding only what the Domain needs. What 016 promised stays true. The host still counts votes
+without knowing which modules have a database, every registered check votes on `/health/ready`,
+a backlog goes in the description and never fails a check, and the JSON body and the 503 are
+unchanged. The framework runs each check in its own scope, so two checks never share a
+`DbContext`, which is why the old endpoint had to run them one at a time. `/health` runs no check
+at all, so a dependency's outage never gets a working process restarted. `MapHealthChecks`
+answers every method, so both routes are restricted to GET and HEAD, and `OpenApiDocumentTests`
+reads `MapHealthChecks` as a GET.
+
+**`ClientIdEndpointFilter` is shared, in `Encore.Modules.Shared.Http`.** This supersedes 017's
+"stays copied into three modules". 017's test for sharing was that the code is inert and sharing
+it teaches the shared project no module's name. The filter passes both halves. It was refused
+anyway, as a web-only project for one class. The project now holds two filters. The second is
+`SharedSecretEndpointFilter`, the Payments service token generalised, which hashes both sides
+before `FixedTimeEquals` so a wrong guess no longer learns the secret's length. The project takes
+Shared.Persistence's rules, and the same tests now check both: no `ProjectReference`, no module or
+contracts assembly named, no zero-dependency project referencing it, and no host naming it. The
+three copies stored the client id under three keys, so that two of them on one route could not
+collide. One filter writes one value from one header, so there is nothing left to collide.
+
+**The OpenAPI document stays hand-written, for a different reason than 008 gave.** 008 said the
+hosts hold no packages. That is true, but it borrows a rule written to keep infrastructure out of
+the Domain (002), and it is not what the document is for. The document promises two things endpoint
+metadata does not carry:
+- the closed vocabulary of `reason` values each route can answer, with its `retriable` flag;
+- which host serves which path, after the Payments extraction (018).
+
+A generated document would need a transformer per route for the first and a hand-kept `servers`
+map for the second. It would still need a test that it agrees with the C# enums. That is the
+hand-written document again, one step removed. The cost is unchanged: about 575 lines of JSON,
+kept honest by `OpenApiDocumentTests` in both directions.

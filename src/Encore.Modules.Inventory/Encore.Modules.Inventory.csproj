@@ -27,6 +27,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Shared.Persistence\Encore.Modules.Shared.Persistence.csproj" />
+    <ProjectReference Include="..\Encore.Modules.Shared.Http\Encore.Modules.Shared.Http.csproj" />
   </ItemGroup>
 
 </Project>

@@ -200,10 +200,11 @@ public sealed partial class OpenApiDocumentTests
     [GeneratedRegex(@"var\s+(?<name>\w+)\s*=\s*(?<parent>\w+)\s*\.\s*MapGroup\s*\(\s*""(?<pattern>[^""]*)""")]
     private static partial Regex GroupPattern();
 
-    [GeneratedRegex(@"(?<receiver>\w+)\s*\.\s*Map(?<method>Get|Post|Put|Delete|Patch)\s*\(\s*""(?<pattern>[^""]*)""")]
+    // MapHealthChecks is read as a GET: EncoreHealth restricts it to GET and HEAD (029).
+    [GeneratedRegex(@"(?<receiver>\w+)\s*\.\s*Map(?<method>Get|Post|Put|Delete|Patch|HealthChecks)\s*\(\s*""(?<pattern>[^""]*)""")]
     private static partial Regex MapPattern();
 
-    [GeneratedRegex(@"\.\s*Map(Get|Post|Put|Delete|Patch)\s*\(")]
+    [GeneratedRegex(@"\.\s*Map(Get|Post|Put|Delete|Patch|HealthChecks)\s*\(")]
     private static partial Regex AnyMapPattern();
 
     [GeneratedRegex(@"\.\s*MapGroup\s*\(")]
@@ -376,7 +377,7 @@ public sealed partial class OpenApiDocumentTests
     {
         var routes = MapPattern().Matches(source)
             .Select(match => new Route(
-                match.Groups["method"].Value.ToUpperInvariant(),
+                MethodOf(match.Groups["method"].Value),
                 Combine(
                     prefixes.TryGetValue(match.Groups["receiver"].Value, out var known) ? known : string.Empty,
                     match.Groups["pattern"].Value)))
@@ -393,8 +394,11 @@ public sealed partial class OpenApiDocumentTests
     [GeneratedRegex(@"static\s+IEndpointRouteBuilder\s+(?<name>Map\w+)\s*\(")]
     private static partial Regex ExtensionDeclarationPattern();
 
-    [GeneratedRegex(@"\.\s*(?<name>Map(?!Get\b|Put\b|Post\b|Delete\b|Patch\b|Group\b)[A-Z]\w+)\s*\(")]
+    [GeneratedRegex(@"\.\s*(?<name>Map(?!Get\b|Put\b|Post\b|Delete\b|Patch\b|Group\b|HealthChecks\b)[A-Z]\w+)\s*\(")]
     private static partial Regex ExtensionCallPattern();
+
+    private static string MethodOf(string mapped) =>
+        mapped == "HealthChecks" ? "GET" : mapped.ToUpperInvariant();
 
     private static List<string> SourceFiles() =>
         [.. SourceScan

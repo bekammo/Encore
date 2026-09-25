@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Not a module (029): inert HTTP plumbing that names no module or contracts assembly, as
+       Shared.Persistence is for storage. No ProjectReference and no packages; modules reference
+       this, never the reverse, and hosts never name it. -->
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>

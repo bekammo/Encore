@@ -13,6 +13,7 @@ COPY src/Encore.Payments.Api/Encore.Payments.Api.csproj                         
 COPY src/Encore.Shared/Encore.Shared.csproj                                          src/Encore.Shared/
 COPY src/Encore.Telemetry/Encore.Telemetry.csproj                                    src/Encore.Telemetry/
 COPY src/Encore.Modules.Shared.Persistence/Encore.Modules.Shared.Persistence.csproj   src/Encore.Modules.Shared.Persistence/
+COPY src/Encore.Modules.Shared.Http/Encore.Modules.Shared.Http.csproj                 src/Encore.Modules.Shared.Http/
 COPY src/Encore.Modules.Payments/Encore.Modules.Payments.csproj                      src/Encore.Modules.Payments/
 COPY src/Encore.Modules.Payments.Contracts/Encore.Modules.Payments.Contracts.csproj  src/Encore.Modules.Payments.Contracts/
 

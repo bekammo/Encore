@@ -89,7 +89,7 @@ public sealed partial class HostSeamTests
     {
         var guarded = EncoreTree.ModuleAssemblies
             .Concat(EncoreTree.ContractsAssemblies)
-            .Append(EncoreTree.SharedPersistence)
+            .Concat(EncoreTree.SharedModuleProjects)
             .ToHashSet(StringComparer.Ordinal);
 
         var seamTypes = EncoreTree.ComposedModules

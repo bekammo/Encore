@@ -35,20 +35,28 @@ public sealed class ProjectGraphTests
             $"{module} declares a ProjectReference to another module's implementation: {string.Join(", ", declared)}. The seam is that module's .Contracts assembly.");
     }
 
-    [Fact]
-    public void SharedPersistence_ShouldDeclareNoProjectReference()
+    [Theory]
+    [MemberData(nameof(TheoryRows.SharedModuleProjects), MemberType = typeof(TheoryRows))]
+    public void SharedModuleProject_ShouldDeclareNoProjectReference(string shared)
     {
-        var references = Declared(EncoreTree.SharedPersistence);
+        var references = Declared(shared);
 
         Assert.True(
             references.Count == 0,
-            $"{EncoreTree.SharedPersistence} must declare zero ProjectReference items — modules name it, it names nothing. Found: {string.Join(", ", references)}");
+            $"{shared} must declare zero ProjectReference items — modules name it, it names nothing. Found: {string.Join(", ", references)}");
     }
 
     [Theory]
     [MemberData(nameof(TheoryRows.ZeroDependencyProjects), MemberType = typeof(TheoryRows))]
-    public void ZeroDependencyProject_ShouldNotReferenceSharedPersistence(string project) =>
-        Assert.DoesNotContain(EncoreTree.SharedPersistence, Declared(project));
+    public void ZeroDependencyProject_ShouldNotReferenceASharedModuleProject(string project)
+    {
+        var declared = Declared(project);
+
+        foreach (var shared in EncoreTree.SharedModuleProjects)
+        {
+            Assert.DoesNotContain(shared, declared);
+        }
+    }
 
     [Fact]
     public void TheZeroDependencyListShouldMatchTheProjectsThatDeclareIt()
