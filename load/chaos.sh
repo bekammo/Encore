@@ -607,7 +607,8 @@ FROM (
     count(*) FILTER (WHERE sold > 0 AND status NOT IN (1, 5)) AS sold_not_confirmed,
     count(*) FILTER (WHERE sold > 0 AND NOT captured AND NOT authorized) AS sold_no_money,
     count(*) FILTER (WHERE captured AND sold < seats) AS paid_not_sold,
-    count(*) FILTER (WHERE status = 1 AND NOT captured) AS confirmed_not_captured
+    count(*) FILTER (WHERE status = 1 AND NOT captured) AS confirmed_not_captured,
+    count(*) FILTER (WHERE status IN (2, 3, 4) AND authorized) AS ended_still_authorized
   FROM checked
 ) AS c
 CROSS JOIN LATERAL (VALUES
@@ -617,7 +618,8 @@ CROSS JOIN LATERAL (VALUES
   (4, 'seats sold, order not confirmed (must be 0)', c.sold_not_confirmed),
   (5, 'seats sold, no money taken or held (must be 0)', c.sold_no_money),
   (6, 'money taken, seats not all sold (must be 0)', c.paid_not_sold),
-  (7, 'confirmed, money not taken (must be 0)', c.confirmed_not_captured)
+  (7, 'confirmed, money not taken (must be 0)', c.confirmed_not_captured),
+  (8, 'ended, authorisation still held (a void that timed out; 031)', c.ended_still_authorized)
 ) AS v(n, label, value)
 ORDER BY v.n;
 SQL

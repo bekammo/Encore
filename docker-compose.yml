@@ -77,6 +77,7 @@ services:
       # load: the sale must still sell every seat and oversell none.
       Inventory__Outbox__Enabled: "${OUTBOX_ENABLED:-true}"
       Inventory__ExpiredHoldSweep__Enabled: "${SWEEP_ENABLED:-true}"
+      Orders__OrderExpirySweep__Enabled: "${ORDER_EXPIRY_SWEEP_ENABLED:-true}"
       Payments__Reconciliation__Enabled: "${RECONCILER_ENABLED:-true}"
       # Overridden only by the chaos rig, to see whether the per-lock cost of a Redis
       # outage moves with it (019).
@@ -162,6 +163,7 @@ services:
       Notifications__MigrateOnStartup: "true"
       Inventory__Outbox__Enabled: "${OUTBOX_ENABLED:-true}"
       Inventory__ExpiredHoldSweep__Enabled: "${SWEEP_ENABLED:-true}"
+      Orders__OrderExpirySweep__Enabled: "${ORDER_EXPIRY_SWEEP_ENABLED:-true}"
       # The strangling: Orders resolves HttpOrderPayments when a base address is set.
       Orders__Payments__BaseAddress: "http://payments-api:8080/internal/payments"
       Orders__Payments__ServiceToken: "${PAYMENTS_SERVICE_TOKEN:-local-development-token}"

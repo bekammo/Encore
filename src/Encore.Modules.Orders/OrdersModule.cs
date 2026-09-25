@@ -34,8 +34,30 @@ public static class OrdersModule
 
         AddPaymentsClient(services, configuration);
         AddCaptureSweep(services, configuration);
+        AddOrderExpirySweep(services, configuration);
 
         return services;
+    }
+
+    private static void AddOrderExpirySweep(IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(OrderExpirySweepOptions.SectionName);
+
+        services.AddOptions<OrderExpirySweepOptions>()
+            .Bind(section)
+            .Validate(
+                sweep => sweep.BatchSize > 0
+                    && sweep.PollInterval > TimeSpan.Zero
+                    && sweep.Grace >= TimeSpan.Zero,
+                $"{OrderExpirySweepOptions.SectionName}: BatchSize and PollInterval must be positive, and Grace not negative.")
+            .ValidateOnStart();
+
+        var options = section.Get<OrderExpirySweepOptions>() ?? new OrderExpirySweepOptions();
+
+        if (options.Enabled)
+        {
+            services.AddHostedService<OrderExpirySweeper>();
+        }
     }
 
     private static void AddCaptureSweep(IServiceCollection services, IConfiguration configuration)

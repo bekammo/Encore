@@ -42,6 +42,7 @@ log is in git: `git show 2e5ad70:DECISIONS.md`.
 - [028](#028--an-event-is-never-free) — An event is never free
 - [029](#029--where-the-framework-already-does-the-job-it-does-it) — Where the framework already does the job, it does it
 - [030](#030--what-checkout-does-not-guard-is-closed-keyed-or-rate-limited) — What checkout does not guard is closed, keyed or rate-limited
+- [031](#031--an-abandoned-order-is-expired-by-a-sweep-that-asks-inventory-first) — An abandoned order is expired by a sweep that asks Inventory first
 
 ---
 
@@ -1280,3 +1281,47 @@ The answer to bots is identity with verified accounts and a waiting room in fron
 Neither exists, and this entry does not pretend to replace them. One more secret must be
 configured wherever the monolith runs, and compose and k6 carry a development default for it, as
 they do for the service token.
+
+---
+
+## 031 — An abandoned order is expired by a sweep that asks Inventory first
+
+Until now an order left `Pending` only when its customer confirmed or cancelled it. A customer
+who walked away left an order that read `Pending` forever. It blocked their next checkout for
+the event through the one-open-checkout index. If a confirm had authorised before dying, it also
+left their money held until the gateway gave up on it. Nothing in the system ended it.
+
+**An expiry sweep ends it, the way a cancel would.** `OrderExpirySweeper` looks for `Pending`
+orders whose `HoldsExpireAt` passed more than `Orders:OrderExpirySweep:Grace` ago (one minute).
+It uses the same advisory-lock lease as the capture sweep (025), and it calls
+`CheckoutService.ExpireAsync` for each order. `ExpireAsync` takes 012's order, seats before money:
+it releases the seats, voids the authorisation, and writes `Expired`, with `xmin` guarding the
+row. The order matters more here than for a customer's cancel. A confirm's sale commits in
+Inventory before the order row records it, so the order's own row version cannot fence it. Only
+asking Inventory first can. Two of Inventory's answers stop the sweep:
+- `SoldToYou`: a confirm sold the seats and died before recording it. The sale stands, so the
+  sweep finishes that confirm as the customer's next one would (025). Abandoning a sold seat
+  would be the worse harm.
+- `LostRace`: unlike a customer's cancel, the sweep backs off and leaves the order to its next
+  pass, since nobody is waiting on the answer.
+
+A confirm of an order the sweep expired answers `holds_expired`, exactly as one that found the
+holds lapsed itself.
+
+**This supersedes two clauses of 009.** "Orders never releases seats because a hold lapsed"
+becomes "Orders asks Inventory to release them and takes its answer". "Only `HoldExpired` moves
+an order to `Expired`" gains a second path. 009's reason still holds, which is that two clocks
+must not tell a customer different things. `HoldsExpireAt` only picks the candidates, the grace
+keeps the sweep behind any confirm that started in time, and each seat's answer comes from
+Inventory. `GET` still returns the stored status and derives nothing. A new partial index,
+`ix_orders_pending_holds_expire`, serves the candidate query.
+
+**What it costs, and what it leaves.**
+- A client can re-hold a lapsed seat through the direct hold route, and Orders never sees that
+  expiry. The sweep would release that live hold. The route is off unless a deployment maps it
+  (030), and the load harness never places orders on the seats it holds.
+- A void that times out still leaves `Authorized` behind an ended order. That is true for a
+  cancel, a failed confirm and this sweep alike, and it waits for the gateway's own expiry. The
+  composition test asserts no ended order is still authorised when the gateway answers. chaos.sh
+  reports the count as a statistic rather than an invariant, since its payments-stopped fault
+  produces exactly that case.

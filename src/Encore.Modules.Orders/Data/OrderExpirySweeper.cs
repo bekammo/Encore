@@ -8,34 +8,35 @@ using Microsoft.Extensions.Options;
 namespace Encore.Modules.Orders.Data;
 
 /// <summary>
-/// Cleanup in 006's sense (025): it runs the confirm a customer would, so with it off the next
-/// confirm still finishes the order. The advisory lock only stops two instances duplicating
-/// work; <c>xmin</c> guards each order.
+/// Ends <c>Pending</c> orders whose holds lapsed: seats released, then the authorisation voided,
+/// then the order expired (031). The recorded expiry only picks candidates; each seat's answer
+/// comes from Inventory. The advisory lock only stops two instances duplicating work;
+/// <c>xmin</c> guards each order.
 /// </summary>
-internal sealed class CaptureSweeper(
+internal sealed class OrderExpirySweeper(
     IServiceScopeFactory scopeFactory,
-    IOptions<CaptureSweepOptions> options,
+    IOptions<OrderExpirySweepOptions> options,
     TimeProvider timeProvider,
-    ILogger<CaptureSweeper> logger) : BackgroundService
+    ILogger<OrderExpirySweeper> logger) : BackgroundService
 {
     /// <summary>Arbitrary, but no other job's advisory lock in the same database may use it.</summary>
-    internal const long LeaseKey = 3_811_030_058;
+    internal const long LeaseKey = 3_811_030_059;
 
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
-    private readonly CaptureSweepOptions _options = options.Value;
+    private readonly OrderExpirySweepOptions _options = options.Value;
     private readonly TimeProvider _timeProvider = timeProvider;
-    private readonly ILogger<CaptureSweeper> _logger = logger;
+    private readonly ILogger<OrderExpirySweeper> _logger = logger;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
-            "Capture sweep started: batch {BatchSize}, poll {PollInterval}, minimum age {MinimumAge}.",
+            "Order expiry sweep started: batch {BatchSize}, poll {PollInterval}, grace {Grace}.",
             _options.BatchSize,
             _options.PollInterval,
-            _options.MinimumAge);
+            _options.Grace);
 
         await SweepLoop.RunAsync(
-                "Capture sweep",
+                "Order expiry sweep",
                 SweepBatchAsync,
                 _options.PollInterval,
                 _timeProvider,
@@ -43,7 +44,7 @@ internal sealed class CaptureSweeper(
                 stoppingToken)
             .ConfigureAwait(false);
 
-        _logger.LogInformation("Capture sweep stopped.");
+        _logger.LogInformation("Order expiry sweep stopped.");
     }
 
     internal async Task<int> SweepBatchAsync(CancellationToken cancellationToken)
@@ -62,24 +63,24 @@ internal sealed class CaptureSweeper(
 
         if (!acquired)
         {
-            _logger.LogDebug("Capture sweep skipped: another instance already holds the lease.");
+            _logger.LogDebug("Order expiry sweep skipped: another instance already holds the lease.");
             return 0;
         }
 
-        var cutoff = _timeProvider.GetUtcNow().UtcDateTime - _options.MinimumAge;
+        var cutoff = _timeProvider.GetUtcNow().UtcDateTime - _options.Grace;
 
-        var owed = await leaseContext.Orders
+        var lapsed = await leaseContext.Orders
             .AsNoTracking()
-            .Where(order => order.Status == OrderStatus.AwaitingCapture && order.SoldAt <= cutoff)
-            .OrderBy(order => order.SoldAt)
+            .Where(order => order.Status == OrderStatus.Pending && order.HoldsExpireAt <= cutoff)
+            .OrderBy(order => order.HoldsExpireAt)
             .Take(_options.BatchSize)
             .Select(order => new { order.Id, order.ClientId })
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        var confirmed = 0;
+        var expired = 0;
 
-        foreach (var order in owed)
+        foreach (var order in lapsed)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -88,22 +89,22 @@ internal sealed class CaptureSweeper(
 
             var result = await scope.ServiceProvider
                 .GetRequiredService<CheckoutService>()
-                .ConfirmAsync(order.ClientId, order.Id, cancellationToken)
+                .ExpireAsync(order.ClientId, order.Id)
                 .ConfigureAwait(false);
 
-            if (result.Order?.Status is OrderStatus.Confirmed)
+            switch (result.Order?.Status)
             {
-                confirmed++;
-                _logger.LogInformation("Order {OrderId} captured by the sweep and confirmed.", order.Id);
-            }
-            else if (result.Order?.Status is OrderStatus.Failed)
-            {
-                _logger.LogWarning(
-                    "Order {OrderId} has its seats but its authorisation is gone; it needs to be looked at.",
-                    order.Id);
+                case OrderStatus.Expired:
+                    expired++;
+                    _logger.LogInformation("Order {OrderId} expired by the sweep; its seats and money are released.", order.Id);
+                    break;
+
+                case OrderStatus.AwaitingCapture or OrderStatus.Confirmed:
+                    _logger.LogInformation("Order {OrderId} had sold before it was recorded; the sweep finished its confirm.", order.Id);
+                    break;
             }
         }
 
-        return confirmed;
+        return expired;
     }
 }

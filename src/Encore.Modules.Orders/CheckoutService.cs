@@ -152,7 +152,9 @@ public sealed class CheckoutService(
             return new OrderActionResult(OrderActionOutcome.OrderNotFound);
         }
 
-        if (order.Status is OrderStatus.Confirmed)
+        // Expired too, so a confirm after the expiry sweep answers exactly as one that found the
+        // holds lapsed itself (031).
+        if (order.Status is OrderStatus.Confirmed or OrderStatus.Expired)
         {
             return new OrderActionResult(OrderActionOutcome.Completed, order);
         }
@@ -272,11 +274,7 @@ public sealed class CheckoutService(
             return new OrderActionResult(OrderActionOutcome.NotPending, order);
         }
 
-        var release = await _seats
-            .ReleaseAsync(
-                new ReleaseSeatsRequest(order.EventId, [.. order.Lines.Select(line => line.SeatId)], clientId),
-                CancellationToken.None)
-            .ConfigureAwait(false);
+        var release = await ReleaseSeatsAsync(order, clientId).ConfigureAwait(false);
 
         if (release.Seats.Any(seat => seat.Status is ReleaseSeatStatus.SoldToYou))
         {
@@ -285,18 +283,65 @@ public sealed class CheckoutService(
             return new OrderActionResult(OrderActionOutcome.LostRace, order);
         }
 
+        return await VoidAndEndAsync(order, clientId, OrderStatus.Cancelled).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The expiry sweep's ending for a <c>Pending</c> order whose holds lapsed (031). Cancel's
+    /// order, seats before money, because only Inventory can fence a confirm whose sale is in
+    /// flight: that sale commits in Inventory before the order row records it.
+    /// </summary>
+    internal async Task<OrderActionResult> ExpireAsync(Guid clientId, Guid orderId)
+    {
+        var order = await LoadAsync(clientId, orderId, CancellationToken.None).ConfigureAwait(false);
+
+        if (order is null)
+        {
+            return new OrderActionResult(OrderActionOutcome.OrderNotFound);
+        }
+
+        if (order.Status is not OrderStatus.Pending)
+        {
+            return new OrderActionResult(OrderActionOutcome.NotPending, order);
+        }
+
+        var release = await ReleaseSeatsAsync(order, clientId).ConfigureAwait(false);
+
+        if (release.Seats.Any(seat => seat.Status is ReleaseSeatStatus.SoldToYou))
+        {
+            // A confirm sold the seats and died before recording it. The sale stands, so finish
+            // it as the customer's next confirm would (025).
+            return await ConfirmAsync(clientId, orderId).ConfigureAwait(false);
+        }
+
+        if (release.Seats.Any(seat => seat.Status is ReleaseSeatStatus.LostRace))
+        {
+            // Unattended, so any doubt leaves the order for the next sweep.
+            return new OrderActionResult(OrderActionOutcome.LostRace, order);
+        }
+
+        return await VoidAndEndAsync(order, clientId, OrderStatus.Expired).ConfigureAwait(false);
+    }
+
+    private Task<ReleaseSeatsResponse> ReleaseSeatsAsync(Order order, Guid clientId) =>
+        _seats.ReleaseAsync(
+            new ReleaseSeatsRequest(order.EventId, [.. order.Lines.Select(line => line.SeatId)], clientId),
+            CancellationToken.None);
+
+    private async Task<OrderActionResult> VoidAndEndAsync(Order order, Guid clientId, OrderStatus ending)
+    {
         var released = await _payments
             .VoidAsync(new VoidPaymentRequest(order.Id, clientId), CancellationToken.None)
             .ConfigureAwait(false);
 
         if (released.Status is VoidPaymentStatus.AlreadyCaptured)
         {
-            // Defensive, unreachable by this module's interleavings (012): never write a
-            // cancellation over money that has been taken.
+            // Defensive, unreachable by this module's interleavings (012): never write an ending
+            // over money that has been taken.
             return new OrderActionResult(OrderActionOutcome.LostRace, order);
         }
 
-        order.Status = OrderStatus.Cancelled;
+        order.Status = ending;
 
         return await CloseAsync(order).ConfigureAwait(false);
     }

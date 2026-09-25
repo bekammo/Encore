@@ -178,7 +178,7 @@
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "eventId": { "type": "string", "format": "uuid" },
-          "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled", "expired", "failed", "awaiting_capture"], "description": "awaiting_capture is non-terminal: every seat is sold and the capture is owed. The next confirm resolves it, and so does the capture sweep, within a minute or two." },
+          "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled", "expired", "failed", "awaiting_capture"], "description": "awaiting_capture is non-terminal: every seat is sold and the capture is owed. The next confirm resolves it, and so does the capture sweep, within a minute or two. A pending order whose holds lapsed is expired by the expiry sweep a minute or so after holdsExpireAt: its seats are released and its authorisation voided, and a later confirm answers holds_expired." },
           "placedAt": { "type": "string", "format": "date-time" },
           "holdsExpireAt": { "type": ["string", "null"], "format": "date-time", "description": "When the first of the order's holds lapses. Null once the seats have sold or the order has ended." },
           "closedAt": { "type": ["string", "null"], "format": "date-time" },
