@@ -1,4 +1,5 @@
 using Encore.Modules.Orders.Data;
+using Encore.Modules.Shared.Http;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -9,13 +10,17 @@ namespace Encore.Modules.Orders.Endpoints;
 /// <summary>Confirm and cancel are actions, not a status a client may write (008).</summary>
 public static class OrderEndpoints
 {
+    public const string CheckoutRateLimitPolicy = "orders-checkout";
+
     public static IEndpointRouteBuilder MapOrderEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var orders = endpoints.MapGroup("/orders")
             .AddEndpointFilter<ClientIdEndpointFilter>();
 
         // Empty pattern, so the route is exactly /orders.
-        orders.MapPost("", CheckoutAsync);
+        // Checkout takes holds, the writes a bot would hammer (030).
+        orders.MapPost("", CheckoutAsync)
+            .RequireRateLimiting(CheckoutRateLimitPolicy);
 
         orders.MapGet("/{orderId:guid}", GetAsync);
         orders.MapPost("/{orderId:guid}/confirm", ConfirmAsync);

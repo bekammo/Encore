@@ -3,7 +3,6 @@ using Encore.Modules.Payments.Data;
 using Encore.Modules.Payments.Endpoints;
 using Encore.Modules.Payments.Simulation;
 using Encore.Modules.Shared.Persistence;
-using Encore.Shared;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -33,7 +32,9 @@ public static class PaymentsModule
         // StranglerSwitchTests pins all four orders.
         services.TryAddScoped<IOrderPayments, InProcessOrderPayments>();
 
-        services.AddScoped<IReadinessCheck, PaymentsReadinessCheck>();
+        // Every registered check votes on /health/ready; the host never learns which modules
+        // have a database (016, 029).
+        services.AddHealthChecks().AddCheck<PaymentsReadinessCheck>(PaymentsReadinessCheck.Name);
 
         services.TryAddSingleton(TimeProvider.System);
 

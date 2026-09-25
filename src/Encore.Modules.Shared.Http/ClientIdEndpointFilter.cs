@@ -1,23 +1,26 @@
 using Microsoft.AspNetCore.Http;
 
-namespace Encore.Modules.Inventory.Endpoints;
+namespace Encore.Modules.Shared.Http;
 
 /// <summary>
 /// A claimed identity standing in for an Identity module, not authentication. A filter, not a
-/// bound parameter, so a bad header gets a readable 400. Copied, not shared (017):
-/// <c>Encore.Shared</c> must stay free of ASP.NET Core.
+/// bound parameter, so a bad header gets a readable 400.
 /// </summary>
-internal sealed class ClientIdEndpointFilter : IEndpointFilter
+public sealed class ClientIdEndpointFilter : IEndpointFilter
 {
-    internal const string HeaderName = "X-Client-Id";
+    public const string HeaderName = "X-Client-Id";
 
-    // Different in each copy, so two filters on one route cannot collide (017).
-    private const string ItemKey = "Encore.Inventory.ClientId";
+    // One key for every module: two copies of this filter on one route read the same header and
+    // store the same value (029).
+    private const string ItemKey = "Encore.ClientId";
 
     public async ValueTask<object?> InvokeAsync(
         EndpointFilterInvocationContext context,
         EndpointFilterDelegate next)
     {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(next);
+
         var header = context.HttpContext.Request.Headers[HeaderName];
 
         if (header.Count is 0)
@@ -40,11 +43,15 @@ internal sealed class ClientIdEndpointFilter : IEndpointFilter
         return await next(context).ConfigureAwait(false);
     }
 
-    internal static Guid ClientId(HttpContext context) =>
-        context.Items[ItemKey] is Guid clientId
+    public static Guid ClientId(HttpContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        return context.Items[ItemKey] is Guid clientId
             ? clientId
             : throw new InvalidOperationException(
                 $"No client id on this request. Is {nameof(ClientIdEndpointFilter)} applied to this route?");
+    }
 
     private static IResult Problem(EndpointFilterInvocationContext context, string detail) =>
         TypedResults.Problem(

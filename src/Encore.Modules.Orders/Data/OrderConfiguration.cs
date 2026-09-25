@@ -69,5 +69,11 @@ public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
             .HasIndex(order => order.SoldAt)
             .HasFilter($"\"Status\" = {(int)OrderStatus.AwaitingCapture}")
             .HasDatabaseName("ix_orders_awaiting_capture");
+
+        // The expiry sweep's candidates, oldest first (031).
+        builder
+            .HasIndex(order => order.HoldsExpireAt)
+            .HasFilter($"\"Status\" = {(int)OrderStatus.Pending}")
+            .HasDatabaseName("ix_orders_pending_holds_expire");
     }
 }

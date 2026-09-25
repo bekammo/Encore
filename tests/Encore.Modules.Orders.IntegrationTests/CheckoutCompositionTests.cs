@@ -4,8 +4,13 @@ using Encore.Modules.Inventory.Application;
 using Encore.Modules.Inventory.Contracts;
 using Encore.Modules.Payments;
 using Encore.Modules.Payments.Contracts;
+using Encore.Modules.Orders.Data;
+using Encore.Modules.Orders.Models;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Time.Testing;
 using Npgsql;
 
 namespace Encore.Modules.Orders.IntegrationTests;
@@ -28,6 +33,13 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
     {
         await _database.ResetAsync();
 
+        _provider = Compose(clock: null);
+    }
+
+    public async Task DisposeAsync() => await _provider.DisposeAsync();
+
+    private ServiceProvider Compose(TimeProvider? clock)
+    {
         var connectionString = _database.ConnectionString;
 
         var configuration = new ConfigurationBuilder()
@@ -45,11 +57,19 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
                 ["Payments:Simulation:TimeoutRate"] = "0",
                 ["Payments:Simulation:DeclineRate"] = "0",
                 ["Payments:Simulation:MinLatency"] = "00:00:00",
-                ["Payments:Simulation:MaxLatency"] = "00:00:00.020"
+
+                // The gateway waits on the injected clock, which a fake clock never advances.
+                ["Payments:Simulation:MaxLatency"] = clock is null ? "00:00:00.020" : "00:00:00"
             })
             .Build();
 
         var services = new ServiceCollection();
+
+        // Before the modules, whose TryAdd leaves it in place, so one clock lapses every hold.
+        if (clock is not null)
+        {
+            services.AddSingleton(clock);
+        }
 
         services.AddLogging();
         services.AddInventoryModule(configuration);
@@ -58,10 +78,8 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
 
         services.AddSingleton<IEventPricing, OnSale>();
 
-        _provider = services.BuildServiceProvider();
+        return services.BuildServiceProvider();
     }
-
-    public async Task DisposeAsync() => await _provider.DisposeAsync();
 
     [Fact]
     public async Task ConfirmRacingCancel_ShouldEndEveryOrderWithItsSeatsAndMoneyTogether()
@@ -92,7 +110,7 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
 
         Assert.Equal(OrderCount, evidence["orders"]);
         Assert.All(
-            new[] { "partly_sold", "sold_not_confirmed", "sold_no_money", "paid_not_sold", "confirmed_not_captured" },
+            new[] { "partly_sold", "sold_not_confirmed", "sold_no_money", "paid_not_sold", "confirmed_not_captured", "ended_still_authorized" },
             invariant => Assert.True(evidence[invariant] == 0, $"{invariant}: {evidence[invariant]}"));
     }
 
@@ -130,6 +148,64 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
         Assert.Equal(0, evidence["paid_not_sold"]);
         Assert.Equal(0, evidence["sold_no_money"]);
         Assert.Equal(0, evidence["confirmed_not_captured"]);
+    }
+
+    /// <summary>
+    /// An order authorised, then abandoned: once its holds lapse the sweep hands the seats back
+    /// and releases the money through the real modules (031).
+    /// </summary>
+    [Fact]
+    public async Task ExpirySweep_WhenAnAuthorisedOrderIsAbandoned_ShouldFreeItsSeatsAndItsMoney()
+    {
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        await _provider.DisposeAsync();
+        _provider = Compose(clock);
+
+        var eventId = Guid.NewGuid();
+        var seatIds = await SeatMapAsync(eventId, 2);
+        var clientId = Guid.NewGuid();
+
+        var placed = await WithCheckoutAsync(checkout => checkout.CheckoutAsync(clientId, eventId, seatIds));
+        var order = placed.Order!;
+
+        // A confirm that authorised and then died before it asked for the seats.
+        await using (var scope = _provider.CreateAsyncScope())
+        {
+            var authorized = await scope.ServiceProvider
+                .GetRequiredService<IOrderPayments>()
+                .AuthorizeAsync(new AuthorizePaymentRequest(order.Id, clientId, order.Total, order.Currency));
+
+            Assert.Equal(AuthorizePaymentStatus.Authorized, authorized.Status);
+        }
+
+        // Past the five-minute holds and the sweep's grace.
+        clock.Advance(TimeSpan.FromMinutes(7));
+
+        var sweeper = new OrderExpirySweeper(
+            _provider.GetRequiredService<IServiceScopeFactory>(),
+            Options.Create(new OrderExpirySweepOptions()),
+            clock,
+            NullLogger<OrderExpirySweeper>.Instance);
+
+        Assert.Equal(1, await sweeper.SweepBatchAsync(CancellationToken.None));
+
+        var evidence = await OrderEvidenceAsync();
+        Assert.Equal(0, evidence["ended_still_authorized"]);
+        Assert.Equal(0, evidence["sold_not_confirmed"]);
+
+        var expired = await WithCheckoutAsync(checkout => checkout.ConfirmAsync(clientId, order.Id));
+        Assert.Equal(OrderActionOutcome.Completed, expired.Outcome);
+        Assert.Equal(OrderStatus.Expired, expired.Order!.Status);
+
+        // Another customer can have the seats.
+        await using (var scope = _provider.CreateAsyncScope())
+        {
+            var held = await scope.ServiceProvider
+                .GetRequiredService<ISeatReservations>()
+                .HoldAsync(new HoldSeatsRequest(eventId, seatIds, Guid.NewGuid()));
+
+            Assert.All(held.Seats, seat => Assert.Equal(HoldSeatStatus.Held, seat.Status));
+        }
     }
 
     // -- Helpers ----------------------------------------------------------
@@ -185,7 +261,8 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
               count(*) FILTER (WHERE sold > 0 AND status NOT IN (1, 5)) AS sold_not_confirmed,
               count(*) FILTER (WHERE sold > 0 AND NOT captured AND NOT authorized) AS sold_no_money,
               count(*) FILTER (WHERE captured AND sold < seats) AS paid_not_sold,
-              count(*) FILTER (WHERE status = 1 AND NOT captured) AS confirmed_not_captured
+              count(*) FILTER (WHERE status = 1 AND NOT captured) AS confirmed_not_captured,
+              count(*) FILTER (WHERE status IN (2, 3, 4) AND authorized) AS ended_still_authorized
             FROM checked;
             """;
 

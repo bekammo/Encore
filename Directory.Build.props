@@ -11,6 +11,14 @@
          enum, is a case nobody writes; it still throws at run time. -->
     <NoWarn>$(NoWarn);CS8524</NoWarn>
     <WarningsAsErrors>$(WarningsAsErrors);CS8509</WarningsAsErrors>
+
+    <!-- A warning is an error on every build, not only in the images' -warnaserror. The one
+         exception is a NuGet vulnerability advisory: it arrives from outside on no schedule,
+         so it would fail unrelated pull requests. Dependabot answers those. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
 
 </Project>

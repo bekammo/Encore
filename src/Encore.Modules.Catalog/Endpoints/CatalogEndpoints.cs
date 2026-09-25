@@ -1,5 +1,6 @@
 using Encore.Modules.Catalog.Data;
 using Encore.Modules.Catalog.Models;
+using Encore.Modules.Shared.Http;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -7,7 +8,10 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Catalog.Endpoints;
 
-/// <summary>No client identity: the catalogue is public and writes are operator-facing.</summary>
+/// <summary>
+/// No client identity: the catalogue is public, and writes are the operator's, behind the
+/// operator key (030).
+/// </summary>
 public static class CatalogEndpoints
 {
     private const int MaxNameLength = 200;
@@ -21,11 +25,14 @@ public static class CatalogEndpoints
     public static IEndpointRouteBuilder MapCatalogEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var catalog = endpoints.MapGroup("/catalog");
+        var operatorKey = OperatorKey.Filter(endpoints);
 
-        catalog.MapPost("/venues", CreateVenueAsync);
+        catalog.MapPost("/venues", CreateVenueAsync)
+            .AddEndpointFilter(operatorKey);
         catalog.MapGet("/venues", ListVenuesAsync);
         catalog.MapGet("/venues/{venueId:guid}", GetVenueAsync);
-        catalog.MapPost("/events", CreateEventAsync);
+        catalog.MapPost("/events", CreateEventAsync)
+            .AddEndpointFilter(operatorKey);
         catalog.MapGet("/events", ListEventsAsync);
         catalog.MapGet("/events/{eventId:guid}", GetEventAsync);
 

@@ -8,12 +8,14 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 # Project files first, restored as their own layer, so source edits do not re-restore.
-# Directory.Build.* carry the target framework and the ENCORE rules.
-COPY Directory.Build.props Directory.Build.targets ./
+# Directory.Build.* carry the target framework and the ENCORE rules; Directory.Packages.props
+# carries every package version.
+COPY .editorconfig Directory.Build.props Directory.Build.targets Directory.Packages.props ./
 COPY src/Encore.Api/Encore.Api.csproj                                                 src/Encore.Api/
 COPY src/Encore.Shared/Encore.Shared.csproj                                           src/Encore.Shared/
 COPY src/Encore.Telemetry/Encore.Telemetry.csproj                                     src/Encore.Telemetry/
 COPY src/Encore.Modules.Shared.Persistence/Encore.Modules.Shared.Persistence.csproj    src/Encore.Modules.Shared.Persistence/
+COPY src/Encore.Modules.Shared.Http/Encore.Modules.Shared.Http.csproj                  src/Encore.Modules.Shared.Http/
 COPY src/Encore.Modules.Catalog/Encore.Modules.Catalog.csproj                         src/Encore.Modules.Catalog/
 COPY src/Encore.Modules.Orders/Encore.Modules.Orders.csproj                           src/Encore.Modules.Orders/
 COPY src/Encore.Modules.Payments/Encore.Modules.Payments.csproj                       src/Encore.Modules.Payments/

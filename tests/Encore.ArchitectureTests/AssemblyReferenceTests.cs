@@ -122,21 +122,22 @@ public sealed class AssemblyReferenceTests
         Assert.Equal(EncoreTree.Hosts.Order(StringComparer.Ordinal), webProjects);
     }
 
-    [Fact]
-    public void SharedPersistence_ShouldNameNoModuleOrContractsAssembly()
+    [Theory]
+    [MemberData(nameof(TheoryRows.SharedModuleProjects), MemberType = typeof(TheoryRows))]
+    public void SharedModuleProject_ShouldNameNoModuleOrContractsAssembly(string shared)
     {
         var forbidden = EncoreTree.ModuleAssemblies
             .Concat(EncoreTree.ContractsAssemblies)
             .ToHashSet(StringComparer.Ordinal);
 
         var named = EncoreTree
-            .ReferencedNames(EncoreTree.SharedPersistence)
+            .ReferencedNames(shared)
             .Where(forbidden.Contains)
             .ToList();
 
         Assert.True(
             named.Count == 0,
-            $"{EncoreTree.SharedPersistence} knows what a DbContext and a schema are and may not know that a module exists. Found: {string.Join(", ", named)}");
+            $"{shared} is shared by every module and may not know that a module exists. Found: {string.Join(", ", named)}");
     }
 
     /// <summary>
@@ -148,7 +149,7 @@ public sealed class AssemblyReferenceTests
     {
         var forbidden = EncoreTree.ModuleAssemblies
             .Concat(EncoreTree.ContractsAssemblies)
-            .Append(EncoreTree.SharedPersistence)
+            .Concat(EncoreTree.SharedModuleProjects)
             .Append("Encore.Shared")
             .ToHashSet(StringComparer.Ordinal);
 
@@ -176,11 +177,18 @@ public sealed class AssemblyReferenceTests
             $"{assembly} emits through System.Diagnostics; exporters belong to the host. Found: {string.Join(", ", leaked)}");
     }
 
-    /// <summary>Each module registers its own migrator (017).</summary>
+    /// <summary>Each module registers its own migrator and filters (017, 029).</summary>
     [Theory]
     [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]
-    public void Host_ShouldNotNameTheSharedPersistenceAssembly(string host) =>
-        Assert.DoesNotContain(EncoreTree.SharedPersistence, EncoreTree.ReferencedNames(host));
+    public void Host_ShouldNotNameASharedModuleProject(string host)
+    {
+        var referenced = EncoreTree.ReferencedNames(host);
+
+        foreach (var shared in EncoreTree.SharedModuleProjects)
+        {
+            Assert.DoesNotContain(shared, referenced);
+        }
+    }
 
     [Fact]
     public void InventoryDomain_ShouldDeclareEveryTypeInItsOwnNamespace()

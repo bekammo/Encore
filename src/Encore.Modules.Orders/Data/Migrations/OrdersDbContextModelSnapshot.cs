@@ -65,6 +65,10 @@ namespace Encore.Modules.Orders.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("HoldsExpireAt")
+                        .HasDatabaseName("ix_orders_pending_holds_expire")
+                        .HasFilter("\"Status\" = 0");
+
                     b.HasIndex("SoldAt")
                         .HasDatabaseName("ix_orders_awaiting_capture")
                         .HasFilter("\"Status\" = 5");

@@ -22,10 +22,16 @@ internal static class EncoreTree
         "Encore.Modules.Inventory.Contracts",
         "Encore.Modules.Inventory.Domain",
         "Encore.Modules.Shared.Persistence",
+        "Encore.Modules.Shared.Http",
         "Encore.Telemetry"
     ];
 
     internal const string SharedPersistence = "Encore.Modules.Shared.Persistence";
+
+    internal const string SharedHttp = "Encore.Modules.Shared.Http";
+
+    /// <summary>Not modules: inert code every module may share, which may not know a module exists (017, 029).</summary>
+    internal static readonly string[] SharedModuleProjects = [SharedPersistence, SharedHttp];
 
     internal const string Telemetry = "Encore.Telemetry";
 

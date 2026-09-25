@@ -16,16 +16,17 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.4">
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Encore.Modules.Shared.Persistence\Encore.Modules.Shared.Persistence.csproj" />
+    <ProjectReference Include="..\Encore.Modules.Shared.Http\Encore.Modules.Shared.Http.csproj" />
   </ItemGroup>
 
 </Project>
