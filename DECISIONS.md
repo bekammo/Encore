@@ -1347,7 +1347,10 @@ only by the query. Two runs each in the same session:
 - a purchase's cost of losing Redis was 1.82× and 1.91×;
 - holds won while Redis was gone returned to ~72% of the healthy window, as before the audit;
 - a contended hold's median fell to 33–34 ms, below the pre-audit 46 ms, so the single read
-  now pays for itself.
+  now pays for itself;
+- the monolith baseline made 730,000–770,000 hold attempts a run, against 329,000–366,000 for
+  the unfixed code earlier that day, and a contended hold's p99 fell to 29–30 ms. The compile
+  had cost the whole hot path, not only the fault.
 
 The alternative was the pre-audit pair of queries, which costs a round trip per hold that the
 audit was right to remove. The cost here is that the answer rests on `UNION ALL`'s duplicates.
