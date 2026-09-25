@@ -258,6 +258,17 @@ edges:
 | `encore.inventory.outbox.deliveries` | Delivered, failed, dead-lettered, by event type |
 | `encore.inventory.outbox.delivery.lag` | How late delivery runs, from seat change to handler |
 
+![The flash-sale dashboard over a Redis fault run and an orders run](docs/images/dashboard.png)
+
+*A Redis fault run, then an orders run, with telemetry on, so slower than the results above.
+While Redis is stopped, the lock's answers switch from `Acquired` to `CoolingDown` and the
+seats keep selling.*
+
+![One confirm as a single trace across both processes](docs/images/confirm-trace.png)
+
+*One confirm: the authorisation in `encore-payments`, the seats' sale in `encore-api`, then the
+capture. It is the order 010 argues for, in one trace.*
+
 ## Trade-offs and limitations
 
 Scope was chosen to keep the depth in one place. These are deliberate, and each is reasoned
