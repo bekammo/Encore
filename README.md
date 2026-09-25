@@ -10,7 +10,7 @@ mid-sale.**
   Payments also runs as its own service.
 - **Stack:** C# · ASP.NET Core minimal APIs · EF Core 10 on PostgreSQL 16 · Redis 7 · xUnit
   with Testcontainers · k6 · OpenTelemetry and Grafana · Docker Compose · GitHub Actions.
-- **Result:** 500 of 500 seats sold and none oversold across 730,000–770,000 hold attempts a
+- **Result:** 500 of 500 seats sold and none oversold across 690,000–740,000 hold attempts a
   run. Still no oversell with Redis stopped, and no order confirmed unpaid with the payment
   service stopped.
 - **Run it:** `docker compose up -d && dotnet run --project src/Encore.Api`, then
@@ -36,12 +36,12 @@ session's report and baseline digests are in [`load/evidence/`](load/evidence/20
 
 | Scenario | Outcome |
 |---|---|
-| Flash sale: 100 clients, 500 seats | 500 of 500 sold, **none oversold**, 730,000–770,000 hold attempts per run across two one-minute scenarios. Contended hold p99 29–30 ms. |
+| Flash sale: 100 clients, 500 seats | 500 of 500 sold, **none oversold**, 690,000–740,000 hold attempts per run across two one-minute scenarios. Contended hold p99 31–36 ms. |
 | Redis stopped mid-sale | **No oversell.** Seats kept selling on Postgres alone; a hold costs no more at the median, a purchase about 2×. |
 | Payments service stopped | **No order confirmed without payment**, and every seat still held maps to an open order. |
-| Event dispatcher stalled for 20 s | Request path unaffected (hold p99 4.7 ms). Events arrived late; none were lost. |
+| Event dispatcher stalled for 20 s | Request path unaffected (hold p99 6.2 ms). Events arrived late; none were lost. |
 | Two payment reconcilers on one table | **No payment settled twice.** |
-| 1,860 orders with confirm and cancel racing | **None partly sold, sold unpaid, or paid unsold.** |
+| 965 orders with confirm and cancel racing, one capture in twenty refused | **None partly sold or paid unsold, and no seat sold unpaid unless its order reads `payment_due`.** 33 captures were refused; the customers who confirmed again paid. |
 
 These are single-machine numbers, useful for comparing one run with the next rather than as
 a capacity claim: the same code has moved by a sixth between sessions on the machine alone
