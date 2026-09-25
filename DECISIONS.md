@@ -43,6 +43,7 @@ log is in git: `git show 2e5ad70:DECISIONS.md`.
 - [029](#029--where-the-framework-already-does-the-job-it-does-it) — Where the framework already does the job, it does it
 - [030](#030--what-checkout-does-not-guard-is-closed-keyed-or-rate-limited) — What checkout does not guard is closed, keyed or rate-limited
 - [031](#031--an-abandoned-order-is-expired-by-a-sweep-that-asks-inventory-first) — An abandoned order is expired by a sweep that asks Inventory first
+- [032](#032--a-holds-one-read-counts-its-rows-instead-of-compiling-a-predicate) — A hold's one read counts its rows instead of compiling a predicate
 
 ---
 
@@ -1325,3 +1326,34 @@ Inventory. `GET` still returns the stored status and derives nothing. A new part
   composition test asserts no ended order is still authorised when the gateway answers. chaos.sh
   reports the count as a statistic rather than an invariant, since its payments-stopped fault
   produces exactly that case.
+
+---
+
+## 032 — A hold's one read counts its rows instead of compiling a predicate
+
+019's rig was run again after 029–031. Every invariant held, and it found a regression that
+none of those three entries made. With Redis stopped, a purchase cost 2.6–4.3× its median in the
+healthy window. The code from before the audit cost 1.75× and 1.87× in the same session. A
+contended hold's median had risen from 46 ms to 62–88 ms with Redis healthy. Measuring commit by
+commit put the cause in the audit's "one read per hold". `GetForHoldAsync` loads the requested
+seats and the client's live holds in one `UNION ALL`, then compiled the live-hold predicate into
+a delegate on every request to sort the rows in memory. The audit's fresh baseline ran 50 VUs,
+where that cost hid. The Redis fault runs 250.
+
+**The read counts rows instead.** `UNION ALL` keeps duplicates. A requested seat the client
+already holds comes back from both halves, and an unrequested row comes back only from the
+second, so the count answers which rows are live holds. The predicate is one expression, used
+only by the query. Two runs each in the same session:
+- a purchase's cost of losing Redis was 1.82× and 1.91×;
+- holds won while Redis was gone returned to ~72% of the healthy window, as before the audit;
+- a contended hold's median fell to 33–34 ms, below the pre-audit 46 ms, so the single read
+  now pays for itself.
+
+The alternative was the pre-audit pair of queries, which costs a round trip per hold that the
+audit was right to remove. The cost here is that the answer rests on `UNION ALL`'s duplicates.
+A `Union` or a `Distinct` added to the query would break it silently, and
+`Hold_WhenAskedForSeatsItAlreadyHolds_ShouldCountOnlyTheLiveOnesOnce` fails if one is.
+
+The same session also showed how far a number moves between sessions on the machine alone. The
+monolith baseline ran about 17% below 2026-09-24's, both for this code and for the code before
+029–031. That is 019's caveat, and the reason the README quotes ranges rather than one number.

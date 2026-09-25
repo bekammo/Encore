@@ -23,7 +23,7 @@ project is **where architecture is worth paying for**.
 
 - [WRITEUP.md](WRITEUP.md) tells the story in one read: what was built, what broke under
   load, and what that changed.
-- [DECISIONS.md](DECISIONS.md) records 31 decisions, each with the alternative it beat and
+- [DECISIONS.md](DECISIONS.md) records 32 decisions, each with the alternative it beat and
   what it costs.
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) lists every setting, its default and where
   it is set.
