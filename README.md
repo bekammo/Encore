@@ -10,7 +10,7 @@ mid-sale.**
   Payments also runs as its own service.
 - **Stack:** C# · ASP.NET Core minimal APIs · EF Core 10 on PostgreSQL 16 · Redis 7 · xUnit
   with Testcontainers · k6 · OpenTelemetry and Grafana · Docker Compose · GitHub Actions.
-- **Result:** 500 of 500 seats sold and none oversold across 410,000–450,000 hold attempts a
+- **Result:** 500 of 500 seats sold and none oversold across 730,000–770,000 hold attempts a
   run. Still no oversell with Redis stopped, and no order confirmed unpaid with the payment
   service stopped.
 - **Run it:** `docker compose up -d && dotnet run --project src/Encore.Api`, then
@@ -23,27 +23,29 @@ project is **where architecture is worth paying for**.
 
 - [WRITEUP.md](WRITEUP.md) tells the story in one read: what was built, what broke under
   load, and what that changed.
-- [DECISIONS.md](DECISIONS.md) records 31 decisions, each with the alternative it beat and
+- [DECISIONS.md](DECISIONS.md) records 33 decisions, each with the alternative it beat and
   what it costs.
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) lists every setting, its default and where
   it is set.
 
 ## Results
 
-Measured with k6 against the containerised system, with faults injected by
-[`load/chaos.sh`](load/chaos.sh) and the aftermath read back from Postgres.
+Measured on 2026-09-25 with k6 against the containerised system as it stands, with faults
+injected by [`load/chaos.sh`](load/chaos.sh) and the aftermath read back from Postgres. The
+session's report and baseline digests are in [`load/evidence/`](load/evidence/2026-09-25/).
 
 | Scenario | Outcome |
 |---|---|
-| Flash sale: 100 clients, 500 seats | 500 of 500 sold, **none oversold**, 410,000–450,000 hold attempts per run across two one-minute scenarios. Contended hold p99 34–44 ms. |
-| Redis stopped mid-sale | **No oversell.** Seats kept selling on Postgres alone; a hold costs 6% more at the median. |
+| Flash sale: 100 clients, 500 seats | 500 of 500 sold, **none oversold**, 730,000–770,000 hold attempts per run across two one-minute scenarios. Contended hold p99 29–30 ms. |
+| Redis stopped mid-sale | **No oversell.** Seats kept selling on Postgres alone; a hold costs no more at the median, a purchase about 2×. |
 | Payments service stopped | **No order confirmed without payment**, and every seat still held maps to an open order. |
-| Event dispatcher stalled for 20 s | Request path unaffected (hold p99 23.6 ms). Events arrived late; none were lost. |
+| Event dispatcher stalled for 20 s | Request path unaffected (hold p99 4.7 ms). Events arrived late; none were lost. |
 | Two payment reconcilers on one table | **No payment settled twice.** |
-| 1,943 orders with confirm and cancel racing | **None partly sold, sold unpaid, or paid unsold.** |
+| 1,860 orders with confirm and cancel racing | **None partly sold, sold unpaid, or paid unsold.** |
 
 These are single-machine numbers, useful for comparing one run with the next rather than as
-a capacity claim. The same order invariants are asserted on every CI run by
+a capacity claim: the same code has moved by a sixth between sessions on the machine alone
+(032). The same order invariants are asserted on every CI run by
 `CheckoutCompositionTests`, and the chaos script exits non-zero if any of them breaks.
 
 ## Architecture
@@ -112,9 +114,10 @@ against the real routes (Strangler Fig, `DECISIONS.md` 018).
 src/
   Encore.Api                          monolith host
   Encore.Payments.Api                 Payments as its own service
-  Encore.Shared                       three BCL-only interfaces every module may see
-  Encore.Telemetry                    the hosts' OpenTelemetry wiring
+  Encore.Shared                       two BCL-only interfaces every module may see
+  Encore.Telemetry                    the hosts' OpenTelemetry and health-check wiring
   Encore.Modules.Shared.Persistence   migrator and schema wiring; may not name a module
+  Encore.Modules.Shared.Http          endpoint filters and per-IP rate limiting; may not name a module
   Encore.Modules.Inventory.Domain     Seat aggregate, events, exceptions; no packages
   Encore.Modules.Inventory            ports, adapters, use cases, outbox
   Encore.Modules.{Catalog,Orders,Payments,Notifications}
@@ -180,6 +183,12 @@ Or run the whole stack in containers:
 ```bash
 docker compose --profile load up -d --build api --wait    # http://localhost:8080/docs/
 ```
+
+To try a checkout from `/docs/`, enter two headers under **Authorize**:
+- `X-Operator-Key: local-operator-key` creates a venue, an event and its seats. The
+  development launch profile sets this key, and the containers default to it
+  (`OPERATOR_API_KEY` overrides it).
+- `X-Client-Id` can be any non-empty GUID. Use it to open an order, then confirm it.
 
 Postgres is published on host port **55432** rather than 5432, which is often taken by a
 local installation.
@@ -258,7 +267,7 @@ in `DECISIONS.md`:
   - Operator writes need a shared key.
   - Checkout and holds are rate-limited per IP address. That is a floor against one machine,
     not a defence against a botnet; identity and a waiting room would be.
-- **Redis outages still cost something.** Losing Redis costs a purchase about 1.45× at the
+- **Redis outages still cost something.** Losing Redis costs a purchase about 2× at the
   median. A Postgres advisory lock removes that cost and keeps the cap enforced without
   Redis, but it costs about 16% throughput while Redis is healthy. It is one configuration
   key away, and Redis stays the default (005).

@@ -210,7 +210,8 @@ services:
         condition: service_healthy
     volumes:
       - ./load:/scripts:ro
-      # One summary per run. Gitignored: one machine on one day is not a claim.
+      # One summary per run. Gitignored: one machine on one day is not a claim. The session
+      # the README quotes is copied to load/evidence/ (033).
       - ./load/results:/results
     environment:
       ENCORE_BASE_URL: "http://api:8080"
