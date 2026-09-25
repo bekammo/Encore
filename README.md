@@ -271,12 +271,14 @@ in `DECISIONS.md`:
 
 ## How this was built
 
-<!-- TODO(author): rewrite this section in your own words before merging. Say what you decided,
-what you measured and how you used AI tools. The draft below claims nothing the history does
-not show. -->
+I built Encore between 18 and 25 September 2026 with an AI coding assistant, Claude Code,
+whose co-author line appears on commits in the history. I chose the problem and the
+architecture:
+- the flash sale as the one hard problem;
+- the invariants the system must never break;
+- the thesis that only Inventory earns ports and adapters.
 
-Encore was built between 18 and 25 September 2026, in pull requests that each ran the full
-suite in CI before merging. It was developed with an AI coding assistant, Claude Code, whose
-co-author line appears on commits in the history. The decisions, the measurements they rest on
-and the wrong turns are recorded in [DECISIONS.md](DECISIONS.md) and
-[WRITEUP.md](WRITEUP.md).
+I reviewed the assistant's changes as they came, accepting, rejecting and redirecting them.
+Each change landed as a pull request that ran the full suite in CI before it merged.
+[DECISIONS.md](DECISIONS.md) records the reasoning behind those calls, including the wrong
+turns, and [WRITEUP.md](WRITEUP.md) tells the story in one read.
