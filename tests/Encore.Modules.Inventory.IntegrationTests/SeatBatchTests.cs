@@ -237,6 +237,24 @@ public sealed class SeatBatchTests(InventoryDatabase database) : IClassFixture<I
         Assert.Equal(asked, context.ChangeTracker.Entries<Seat>().Select(entry => entry.Entity.Id));
     }
 
+    /// <summary>A requested seat the client holds comes back from both halves of the read.</summary>
+    [Fact]
+    public async Task Hold_WhenAskedForSeatsItAlreadyHolds_ShouldCountOnlyTheLiveOnesOnce()
+    {
+        var clientId = Guid.NewGuid();
+        var held = await SeedHeldAsync(clientId, _now, count: 1);
+        var lapsed = await SeedHeldAsync(clientId, _now - Seat.HoldDuration - TimeSpan.FromMinutes(1), count: 1);
+        var other = await SeedHeldAsync(clientId, _now, count: 1);
+        List<Guid> asked = [.. held, .. lapsed];
+
+        await using var context = new InventoryDbContext(_options);
+
+        var loaded = await new EfSeatRepository(context).GetForHoldAsync(asked, clientId, _eventId, _now);
+
+        Assert.Equal(asked.Order(), loaded.Seats.Select(seat => seat.Id).Order());
+        Assert.Equal(held.Concat(other).Order(), loaded.LiveHolds.Order());
+    }
+
     [Fact]
     public async Task Release_WhenBothAttemptsLoseTheRace_ShouldLeaveNothingForALaterSaveToWrite()
     {

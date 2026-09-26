@@ -178,7 +178,7 @@
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "eventId": { "type": "string", "format": "uuid" },
-          "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled", "expired", "failed", "awaiting_capture"], "description": "awaiting_capture is non-terminal: every seat is sold and the capture is owed. The next confirm resolves it, and so does the capture sweep, within a minute or two. A pending order whose holds lapsed is expired by the expiry sweep a minute or so after holdsExpireAt: its seats are released and its authorisation voided, and a later confirm answers holds_expired." },
+          "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled", "expired", "failed", "awaiting_capture", "payment_due"], "description": "awaiting_capture is non-terminal: every seat is sold and the capture is owed. The next confirm resolves it, and so does the capture sweep, within a minute or two. payment_due is non-terminal too: every seat is sold, the gateway refused the capture, and nothing is held. Only the customer's next confirm resolves it, by authorising again. A pending order whose holds lapsed is expired by the expiry sweep a minute or so after holdsExpireAt: its seats are released and its authorisation voided, and a later confirm answers holds_expired." },
           "placedAt": { "type": "string", "format": "date-time" },
           "holdsExpireAt": { "type": ["string", "null"], "format": "date-time", "description": "When the first of the order's holds lapses. Null once the seats have sold or the order has ended." },
           "closedAt": { "type": ["string", "null"], "format": "date-time" },
@@ -484,7 +484,7 @@
       "post": {
         "tags": ["orders"],
         "summary": "Authorises the total, sells the seats, then captures.",
-        "description": "In that order, because a sold seat is terminal and money is the one of the two that can be given back. Any path that does not end in every seat sold voids the authorisation, so a customer is never charged for an order they did not get. The sale is recorded as awaiting_capture before the capture is asked for; a capture that gets no answer leaves it there, and the next confirm or the capture sweep resolves it.",
+        "description": "In that order, because a sold seat is terminal and money is the one of the two that can be given back. Any path that does not end in every seat sold voids the authorisation, so a customer is never charged for an order they did not get. The sale is recorded as awaiting_capture before the capture is asked for; a capture that gets no answer leaves it there, and the next confirm or the capture sweep resolves it. A capture the gateway refuses leaves the order payment_due: the seats stay sold, and the next confirm authorises again and captures without selling anything twice.",
         "security": [{ "ClientId": [] }],
         "parameters": [{ "$ref": "#/components/parameters/OrderId" }],
         "responses": {
@@ -492,7 +492,7 @@
           "400": { "$ref": "#/components/responses/BadClientId" },
           "404": { "description": "reason: order_not_found.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
           "409": {
-            "description": "reason: order_not_pending, holds_expired, payment_declined (retriable), payment_timed_out (retriable), order_failed, lost_race (retriable).",
+            "description": "reason: order_not_pending, holds_expired, payment_declined (retriable), payment_timed_out (retriable), payment_due (retriable), order_failed, lost_race (retriable).",
             "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
           }
         }
@@ -571,6 +571,7 @@
         "responses": {
           "200": { "description": "captured.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentOutcomeResponse" } } } },
           "401": { "$ref": "#/components/responses/BadServiceToken" },
+          "402": { "description": "declined. The gateway refused the capture, and the attempt holds nothing any more; the order becomes payment_due.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
           "409": { "description": "no_authorization.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
           "504": { "description": "timed_out. The order is left awaiting capture and the next confirm resolves it.", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
         }
