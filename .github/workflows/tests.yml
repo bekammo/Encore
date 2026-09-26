@@ -25,7 +25,7 @@ jobs:
       # The image is built first, with its layers cached between runs, so the restore layer
       # is reused whenever no project file changed. The container copies each test project by
       # name, so a project missing from tests/Dockerfile fails here, as it does locally.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build the test image
         uses: docker/build-push-action@v7
