@@ -493,6 +493,45 @@ public sealed class PaymentTests
         Assert.Equal(PaymentTransitionReason.NotAuthorized, ex.Reason);
     }
 
+    // -- DeclineCapture ---------------------------------------------------
+
+    [Fact]
+    public void DeclineCapture_WhenAuthorized_ShouldSpendTheAuthorisation()
+    {
+        var payment = Authorized();
+
+        payment.DeclineCapture(Later.AddSeconds(1));
+
+        Assert.Equal(PaymentStatus.Declined, payment.Status);
+        Assert.Equal(Later.AddSeconds(1), payment.ResolvedAt);
+        Assert.Equal(GatewayReference, payment.GatewayReference);
+        Assert.False(payment.IsLive);
+    }
+
+    [Fact]
+    public void DeclineCapture_WhenCaptured_ShouldRefuse()
+    {
+        var payment = Captured();
+
+        var ex = Assert.Throws<PaymentTransitionException>(() => payment.DeclineCapture(Later));
+
+        Assert.Equal(PaymentTransitionReason.AlreadyCaptured, ex.Reason);
+    }
+
+    [Theory]
+    [InlineData(PaymentStatus.Pending)]
+    [InlineData(PaymentStatus.Declined)]
+    [InlineData(PaymentStatus.TimedOut)]
+    [InlineData(PaymentStatus.Voided)]
+    public void DeclineCapture_WithoutALiveAuthorization_ShouldRefuse(PaymentStatus status)
+    {
+        var payment = InStatus(status);
+
+        var ex = Assert.Throws<PaymentTransitionException>(() => payment.DeclineCapture(Later));
+
+        Assert.Equal(PaymentTransitionReason.NotAuthorized, ex.Reason);
+    }
+
     // -- Void -------------------------------------------------------------
 
     [Fact]
@@ -651,6 +690,18 @@ public sealed class PaymentTests
         var payment = Authorized();
 
         var ex = Assert.Throws<ArgumentException>(() => payment.Capture(NotUtc(kind)));
+
+        Assert.Equal("utcNow", ex.ParamName);
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    public void DeclineCapture_WhenUtcNowIsNotUtc_ShouldThrow(DateTimeKind kind)
+    {
+        var payment = Authorized();
+
+        var ex = Assert.Throws<ArgumentException>(() => payment.DeclineCapture(NotUtc(kind)));
 
         Assert.Equal("utcNow", ex.ParamName);
     }

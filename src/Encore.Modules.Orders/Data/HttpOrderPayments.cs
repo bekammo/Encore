@@ -48,6 +48,7 @@ internal sealed class HttpOrderPayments(HttpClient client) : IOrderPayments
         {
             Outcomes.Captured => CapturePaymentResponse.Captured(outcome.RequirePaymentId()),
             Outcomes.NoAuthorization => CapturePaymentResponse.NoAuthorization,
+            Outcomes.Declined => CapturePaymentResponse.Declined(outcome.RequirePaymentId()),
             _ => CapturePaymentResponse.TimedOut(outcome.PaymentId ?? Guid.Empty)
         };
     }

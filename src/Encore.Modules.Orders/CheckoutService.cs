@@ -164,6 +164,11 @@ public sealed class CheckoutService(
             return await CaptureAsync(order, clientId).ConfigureAwait(false);
         }
 
+        if (order.Status is OrderStatus.PaymentDue)
+        {
+            return await PayAgainAsync(order, clientId).ConfigureAwait(false);
+        }
+
         if (order.Status is not OrderStatus.Pending)
         {
             return new OrderActionResult(OrderActionOutcome.NotPending, order);
@@ -241,10 +246,39 @@ public sealed class CheckoutService(
         {
             CapturePaymentStatus.Captured => OrderStatus.Confirmed,
             CapturePaymentStatus.TimedOut => OrderStatus.AwaitingCapture,
-            CapturePaymentStatus.NoAuthorization => OrderStatus.Failed
+
+            // Every seat is sold, so the order is owed its money, never Failed (034).
+            CapturePaymentStatus.Declined or CapturePaymentStatus.NoAuthorization => OrderStatus.PaymentDue
         };
 
-        return await CloseAsync(order).ConfigureAwait(false);
+        var closed = await CloseAsync(order).ConfigureAwait(false);
+
+        return closed.Outcome is OrderActionOutcome.Completed && order.Status is OrderStatus.PaymentDue
+            ? new OrderActionResult(OrderActionOutcome.PaymentDue, order)
+            : closed;
+    }
+
+    // The seats are sold and stay sold (003), so only the money is asked for again. Nothing but
+    // the customer's own confirm comes here: a sweep would be charging them unasked (034).
+    private async Task<OrderActionResult> PayAgainAsync(Order order, Guid clientId)
+    {
+        var authorized = await _payments
+            .AuthorizeAsync(
+                new AuthorizePaymentRequest(order.Id, clientId, order.Total, order.Currency),
+                CancellationToken.None)
+            .ConfigureAwait(false);
+
+        return authorized.Status switch
+        {
+            AuthorizePaymentStatus.Authorized or AuthorizePaymentStatus.AlreadyCaptured =>
+                await CaptureAsync(order, clientId).ConfigureAwait(false),
+
+            AuthorizePaymentStatus.Declined or AuthorizePaymentStatus.TimedOut =>
+                new OrderActionResult(OrderActionOutcome.PaymentDue, order),
+
+            AuthorizePaymentStatus.ConcurrentAttemptInFlight =>
+                new OrderActionResult(OrderActionOutcome.LostRace, order)
+        };
     }
 
     /// <summary>
@@ -355,7 +389,7 @@ public sealed class CheckoutService(
 
     private async Task<OrderActionResult> CloseAsync(Order order)
     {
-        if (order.Status is not OrderStatus.AwaitingCapture)
+        if (order.Status is not (OrderStatus.AwaitingCapture or OrderStatus.PaymentDue))
         {
             order.ClosedAt = _timeProvider.GetUtcNow().UtcDateTime;
         }
