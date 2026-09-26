@@ -100,6 +100,7 @@ public sealed class HttpOrderPaymentsTests : IAsyncLifetime
     [Theory]
     [InlineData(200, "captured", CapturePaymentStatus.Captured)]
     [InlineData(504, "timed_out", CapturePaymentStatus.TimedOut)]
+    [InlineData(402, "declined", CapturePaymentStatus.Declined)]
     public async Task Capture_ShouldMapEveryAnswerThatNamesAnAttempt(
         int status,
         string reason,

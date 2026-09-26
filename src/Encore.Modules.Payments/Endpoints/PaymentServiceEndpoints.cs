@@ -89,7 +89,11 @@ public static class PaymentServiceEndpoints
 
             CapturePaymentStatus.NoAuthorization => Refused(
                 context, StatusCodes.Status409Conflict,
-                "There is nothing held for this order", Outcomes.NoAuthorization, response.PaymentId)
+                "There is nothing held for this order", Outcomes.NoAuthorization, response.PaymentId),
+
+            CapturePaymentStatus.Declined => Refused(
+                context, StatusCodes.Status402PaymentRequired,
+                "Capture declined", Outcomes.Declined, response.PaymentId)
         };
     }
 

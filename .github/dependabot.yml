@@ -1,11 +1,11 @@
-# Weekly dependency updates. Versions live in Directory.Packages.props, so one NuGet PR moves
+# Monthly dependency updates. Versions live in Directory.Packages.props, so one NuGet PR moves
 # every project at once; groups keep packages that must move together in one PR.
 version: 2
 updates:
   - package-ecosystem: nuget
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       ef-core-and-npgsql:
         patterns:
@@ -26,7 +26,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
 
   - package-ecosystem: docker
     directories:
@@ -34,4 +34,4 @@ updates:
       - /src/Encore.Api
       - /src/Encore.Payments.Api
     schedule:
-      interval: weekly
+      interval: monthly

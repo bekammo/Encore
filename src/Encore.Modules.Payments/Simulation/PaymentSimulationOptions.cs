@@ -9,6 +9,12 @@ public sealed class PaymentSimulationOptions
     public double TimeoutRate { get; set; }
 
     /// <summary>
+    /// Of answered captures, the share refused, as for an authorisation that lapsed or was
+    /// reversed: nothing is held afterwards (034).
+    /// </summary>
+    public double CaptureDeclineRate { get; set; }
+
+    /// <summary>
     /// Of unanswered authorisations, the share whose request never arrived; the rest arrived and
     /// lost only the answer. Keeps both reconciliation branches reachable (014).
     /// </summary>

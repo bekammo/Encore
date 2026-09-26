@@ -96,10 +96,10 @@ internal sealed class CaptureSweeper(
                 confirmed++;
                 _logger.LogInformation("Order {OrderId} captured by the sweep and confirmed.", order.Id);
             }
-            else if (result.Order?.Status is OrderStatus.Failed)
+            else if (result.Order?.Status is OrderStatus.PaymentDue)
             {
                 _logger.LogWarning(
-                    "Order {OrderId} has its seats but its authorisation is gone; it needs to be looked at.",
+                    "Order {OrderId} has its seats but the gateway refused the capture; the customer owes the payment.",
                     order.Id);
             }
         }
