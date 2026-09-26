@@ -37,8 +37,9 @@ would fake away the partial unique index that stops a client opening two checkou
 A hold isn't an entity. It's two columns on the seat row, `HeldByClientId` and
 `HoldExpiresAt`, so taking, losing or converting a hold always changes one row. `Seat` is the
 aggregate root and the only consistency boundary. It starts `Available`, and a closed set of
-transitions moves it: hold, release, sell. A seat's refusal carries a closed reason enum all
-the way out to the `409` and its machine-readable `reason`.
+transitions moves it: hold, release, sell. A refusal is one exception type carrying a closed
+reason enum. The handlers turn it into a closed outcome, and HTTP turns that into a `409`
+with a machine-readable `reason`.
 
 Expiry is lazy. A `Held` row whose `HoldExpiresAt` has passed counts as `Available` on every
 read and write path, whatever the column says. A background sweep tidies the rows, but it's

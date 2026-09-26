@@ -173,8 +173,9 @@ then captures. The one step that can't be undone, the sale, sits between two tha
 - Once money has moved, no step is abandoned halfway, even if the client disconnects.
 - Two background jobs clean up after a crash: a reconciler settles payments the gateway never
   answered, and a capture sweep finishes orders that sold but were never captured. No
-  invariant depends on either. Switch one off and nothing is oversold or charged twice; the
-  loose end just waits for the customer's next confirm.
+  invariant depends on either: switch one off and nothing is oversold or charged twice. But
+  the loose end then waits for the customer to confirm again, and if they never do, funds
+  stay held or the authorisation lapses with the seats already sold.
 - A third job ends what a customer abandons. An expiry sweep finds `Pending` orders whose
   holds lapsed, gives their seats back, then voids their money, asking Inventory about each
   seat first ([031][d031]).
