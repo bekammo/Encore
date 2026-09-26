@@ -137,7 +137,7 @@ outbox_evidence() {
 money_evidence() {
   report ''
   report '```'
-  report 'orders by status (0 pending, 1 confirmed, 2 cancelled, 3 expired, 4 failed, 5 awaiting_capture)'
+  report 'orders by status (0 pending, 1 confirmed, 2 cancelled, 3 expired, 4 failed, 5 awaiting_capture, 6 payment_due)'
   report "$(psql_q 'SELECT "Status", count(*) FROM orders.orders GROUP BY 1 ORDER BY 1;')"
   report ''
   report 'payments by status (0 pending, 1 authorized, 2 captured, 3 declined, 4 timed_out, 5 voided, 6 abandoned)'
@@ -248,6 +248,7 @@ run_payments() {
   reset_data
 
   export PAYMENTS_TIMEOUT_RATE=0.35
+  export PAYMENTS_CAPTURE_DECLINE_RATE=0
   export RECONCILER_MIN_AGE=00:00:20
   export RECONCILER_POLL=00:00:05
   # The reconciler logs an unanswered lookup and a lost xmin race at Debug; both are counted.
@@ -457,6 +458,7 @@ run_reconcilers() {
   reset_data
 
   export PAYMENTS_TIMEOUT_RATE=0.5
+  export PAYMENTS_CAPTURE_DECLINE_RATE=0
   export RECONCILER_MIN_AGE=00:00:20
   export RECONCILER_POLL=00:00:05
   export RECONCILER_EVERYWHERE=true
@@ -530,12 +532,14 @@ run_reconcilers() {
 
 # Multi-seat orders: confirmed, cancelled, and both at once. No fault is injected; the
 # customer is the fault. Puts the all-or-none sale (011) and the seats-before-money cancel
-# (012) under load. The gateway answers everything, so every order has a readable ending.
+# (012) under load. The gateway answers everything and refuses one capture in twenty, so
+# every order has a readable ending, payment_due included (034).
 run_orders() {
   say 'orders — multi-seat checkouts, confirm racing cancel'
   reset_data
 
   export PAYMENTS_TIMEOUT_RATE=0
+  export PAYMENTS_CAPTURE_DECLINE_RATE=0.05
   export RECONCILER_EVERYWHERE=false
   export ENCORE_LOG_LEVEL=Information
   bring_up 'orders'
@@ -555,7 +559,8 @@ run_orders() {
   report 'One to four seats per order, then a confirm, a cancel, or both sent at once.'
   report 'k6 can only see answers. What has to hold is about rows: no order partly sold'
   report '(011), no order whose seats sold without the money being taken or held, and no'
-  report 'money taken for seats that did not sell (012). Those are read below.'
+  report 'money taken for seats that did not sell (012). One capture in twenty is refused; that'
+  report 'order must read payment_due, and its customer confirms once more (034). Those are read below.'
   report ''
   report "k6 exit status: ${k6status} (0 means every invariant it asserts held)"
   report ''
@@ -604,11 +609,13 @@ FROM (
     count(*) AS orders,
     count(*) FILTER (WHERE seats > 1) AS multi_seat,
     count(*) FILTER (WHERE sold > 0 AND sold < seats) AS partly_sold,
-    count(*) FILTER (WHERE sold > 0 AND status NOT IN (1, 5)) AS sold_not_confirmed,
-    count(*) FILTER (WHERE sold > 0 AND NOT captured AND NOT authorized) AS sold_no_money,
+    count(*) FILTER (WHERE sold > 0 AND status NOT IN (1, 5, 6)) AS sold_not_confirmed,
+    count(*) FILTER (WHERE sold > 0 AND NOT captured AND NOT authorized AND status <> 6) AS sold_no_money,
     count(*) FILTER (WHERE captured AND sold < seats) AS paid_not_sold,
     count(*) FILTER (WHERE status = 1 AND NOT captured) AS confirmed_not_captured,
-    count(*) FILTER (WHERE status IN (2, 3, 4) AND authorized) AS ended_still_authorized
+    count(*) FILTER (WHERE status IN (2, 3, 4) AND authorized) AS ended_still_authorized,
+    count(*) FILTER (WHERE status = 6) AS payment_due,
+    count(*) FILTER (WHERE status = 6 AND sold < seats) AS payment_due_not_sold
   FROM checked
 ) AS c
 CROSS JOIN LATERAL (VALUES
@@ -616,10 +623,12 @@ CROSS JOIN LATERAL (VALUES
   (2, 'of them multi-seat', c.multi_seat),
   (3, 'partly sold (must be 0)', c.partly_sold),
   (4, 'seats sold, order not confirmed (must be 0)', c.sold_not_confirmed),
-  (5, 'seats sold, no money taken or held (must be 0)', c.sold_no_money),
+  (5, 'seats sold, no money taken or held, not payment_due (must be 0)', c.sold_no_money),
   (6, 'money taken, seats not all sold (must be 0)', c.paid_not_sold),
   (7, 'confirmed, money not taken (must be 0)', c.confirmed_not_captured),
-  (8, 'ended, authorisation still held (a void that timed out; 031)', c.ended_still_authorized)
+  (8, 'ended, authorisation still held (a void that timed out; 031)', c.ended_still_authorized),
+  (9, 'payment_due: sold, capture refused, still owed (034)', c.payment_due),
+  (10, 'payment_due, seats not all sold (must be 0)', c.payment_due_not_sold)
 ) AS v(n, label, value)
 ORDER BY v.n;
 SQL

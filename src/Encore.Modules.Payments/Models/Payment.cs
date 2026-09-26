@@ -187,6 +187,28 @@ public sealed class Payment
         ResolvedAt = utcNow;
     }
 
+    /// <summary>
+    /// The gateway refused to take the money it had authorised, so nothing is held any more (034).
+    /// Not live, so the order's next confirm starts a fresh attempt.
+    /// </summary>
+    /// <exception cref="PaymentTransitionException">
+    /// The money has been taken, or there is no live authorisation.
+    /// </exception>
+    public void DeclineCapture(DateTime utcNow)
+    {
+        GuardUtc(utcNow);
+
+        if (Status is PaymentStatus.Captured)
+        {
+            throw new PaymentTransitionException(Id, PaymentTransitionReason.AlreadyCaptured);
+        }
+
+        GuardAuthorized();
+
+        Status = PaymentStatus.Declined;
+        ResolvedAt = utcNow;
+    }
+
     /// <exception cref="PaymentTransitionException">
     /// The money has been taken, or there was never an authorisation.
     /// </exception>

@@ -64,6 +64,24 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
         Assert.Equal(GatewayOutcome.TimedOut, await gateway.VoidAsync("auth_1"));
     }
 
+    [Fact]
+    public async Task Capture_WhenAlwaysRefusingCaptures_ShouldDeclineItButStillVoid()
+    {
+        var gateway = Gateway(captureDeclineRate: 1);
+
+        Assert.Equal(GatewayOutcome.Declined, await gateway.CaptureAsync("auth_1"));
+        Assert.Equal(GatewayOutcome.Succeeded, await gateway.VoidAsync("auth_1"));
+    }
+
+    /// <summary>An unanswered capture has no answer to refuse with.</summary>
+    [Fact]
+    public async Task Capture_WhenAlwaysTimingOut_ShouldTimeOutEvenIfAlsoAlwaysRefusing()
+    {
+        var gateway = Gateway(timeoutRate: 1, captureDeclineRate: 1);
+
+        Assert.Equal(GatewayOutcome.TimedOut, await gateway.CaptureAsync("auth_1"));
+    }
+
     // -- Idempotency ------------------------------------------------------
 
     /// <summary>At a 50% decline rate, fifty agreeing answers cannot be luck: the key decides.</summary>
@@ -310,19 +328,22 @@ public sealed class SimulatedPaymentGatewayTests(PaymentsDatabase database)
         double declineRate = 0,
         double timeoutRate = 0,
         double lostRequestRate = 0.5,
-        int? seed = null) =>
-        Configured(declineRate, timeoutRate, lostRequestRate, seed).Gateway;
+        int? seed = null,
+        double captureDeclineRate = 0) =>
+        Configured(declineRate, timeoutRate, lostRequestRate, seed, captureDeclineRate).Gateway;
 
     private (SimulatedPaymentGateway Gateway, PaymentSimulationOptions Options) Configured(
         double declineRate = 0,
         double timeoutRate = 0,
         double lostRequestRate = 0.5,
-        int? seed = null)
+        int? seed = null,
+        double captureDeclineRate = 0)
     {
         var options = new PaymentSimulationOptions
         {
             DeclineRate = declineRate,
             TimeoutRate = timeoutRate,
+            CaptureDeclineRate = captureDeclineRate,
             LostRequestRate = lostRequestRate,
             MinLatency = TimeSpan.Zero,
             MaxLatency = TimeSpan.Zero,

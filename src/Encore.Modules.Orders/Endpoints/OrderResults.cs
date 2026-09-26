@@ -86,6 +86,8 @@ internal static class OrderResults
                 "This order could not be completed and needs to be looked at.",
                 retriable: false),
 
+            OrderStatus.PaymentDue => PaymentDue(path),
+
             OrderStatus.Pending or OrderStatus.Cancelled => throw new ArgumentOutOfRangeException(
                 nameof(order), order.Status, "A confirm never leaves an order Pending or Cancelled.")
         };
@@ -121,9 +123,19 @@ internal static class OrderResults
                 + "and nothing has been charged that will not be released.",
                 retriable: true),
 
+            OrderActionOutcome.PaymentDue => PaymentDue(path),
+
             OrderActionOutcome.Completed => throw new ArgumentOutOfRangeException(
                 nameof(result), result.Outcome, "Completed is not a failed action.")
         };
+
+    private static IResult PaymentDue(PathString path) =>
+        Conflict(
+            path,
+            "payment_due",
+            "Your seats are sold to you, but the payment provider refused the payment. "
+            + "Confirm again to pay.",
+            retriable: true);
 
     private static IResult SeatsUnavailable(IReadOnlyList<HoldSeatResponse> refusals, PathString path)
     {

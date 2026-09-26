@@ -49,19 +49,22 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
             .Select(entry => entry.Entity.Id)
             .ToHashSet();
 
-        var liveHold = LiveHoldOf(clientId, eventId, utcNow);
+        var halves = await _context.Seats
+            .Where(seat => seatIds.Contains(seat.Id))
+            .Concat(_context.Seats.Where(LiveHoldOf(clientId, eventId, utcNow)))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
 
-        // A requested seat the client already holds comes back from both halves of the UNION ALL.
-        var rows = (await _context.Seats
-                .Where(seat => seatIds.Contains(seat.Id))
-                .Concat(_context.Seats.Where(liveHold))
-                .ToListAsync(cancellationToken)
-                .ConfigureAwait(false))
-            .DistinctBy(seat => seat.Id)
+        // UNION ALL keeps duplicates: a requested seat the client already holds comes back from
+        // both halves, and an unrequested row only from the second. Counting rows finds the live
+        // holds; compiling the predicate to test them again cost every hold under load (032).
+        var liveHolds = halves
+            .GroupBy(seat => seat.Id)
+            .Where(group => !seatIds.Contains(group.Key) || group.Count() > 1)
+            .Select(group => group.Key)
             .ToList();
 
-        var isLiveHold = liveHold.Compile();
-        var liveHolds = rows.Where(isLiveHold).Select(seat => seat.Id).ToList();
+        var rows = halves.DistinctBy(seat => seat.Id).ToList();
 
         // Untracked, so no later save can write a seat the cap only counted.
         foreach (var counted in rows.Where(seat => !seatIds.Contains(seat.Id) && !alreadyTracked.Contains(seat.Id)))
@@ -124,8 +127,7 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
         await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    // One definition for the query and the in-memory check. Expiry is in it, so a lapsed Held
-    // row is never a live hold (006).
+    // Expiry is in it, so a lapsed Held row is never a live hold (006).
     private static Expression<Func<Seat, bool>> LiveHoldOf(Guid clientId, Guid eventId, DateTime utcNow) =>
         seat => seat.EventId == eventId
             && seat.HeldByClientId == clientId

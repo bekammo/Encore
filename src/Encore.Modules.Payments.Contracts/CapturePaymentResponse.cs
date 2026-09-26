@@ -12,4 +12,7 @@ public sealed record CapturePaymentResponse(
 
     public static CapturePaymentResponse TimedOut(Guid paymentId) =>
         new(CapturePaymentStatus.TimedOut, paymentId);
+
+    public static CapturePaymentResponse Declined(Guid paymentId) =>
+        new(CapturePaymentStatus.Declined, paymentId);
 }
