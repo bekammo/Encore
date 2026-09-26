@@ -10,7 +10,7 @@ mid-sale.**
   Payments also runs as its own service.
 - **Stack:** C# · ASP.NET Core minimal APIs · EF Core 10 on PostgreSQL 16 · Redis 7 · xUnit
   with Testcontainers · k6 · OpenTelemetry and Grafana · Docker Compose · GitHub Actions.
-- **Result:** 500 of 500 seats sold and none oversold across 730,000–770,000 hold attempts a
+- **Result:** 500 of 500 seats sold and none oversold across 690,000–740,000 hold attempts a
   run. Still no oversell with Redis stopped, and no order confirmed unpaid with the payment
   service stopped.
 - **Run it:** `docker compose up -d && dotnet run --project src/Encore.Api`, then
@@ -23,7 +23,7 @@ project is **where architecture is worth paying for**.
 
 - [WRITEUP.md](WRITEUP.md) tells the story in one read: what was built, what broke under
   load, and what that changed.
-- [DECISIONS.md](DECISIONS.md) records 33 decisions, each with the alternative it beat and
+- [DECISIONS.md](DECISIONS.md) records 35 decisions, each with the alternative it beat and
   what it costs.
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) lists every setting, its default and where
   it is set.
@@ -36,12 +36,12 @@ session's report and baseline digests are in [`load/evidence/`](load/evidence/20
 
 | Scenario | Outcome |
 |---|---|
-| Flash sale: 100 clients, 500 seats | 500 of 500 sold, **none oversold**, 730,000–770,000 hold attempts per run across two one-minute scenarios. Contended hold p99 29–30 ms. |
+| Flash sale: 100 clients, 500 seats | 500 of 500 sold, **none oversold**, 690,000–740,000 hold attempts per run across two one-minute scenarios. Contended hold p99 31–36 ms. |
 | Redis stopped mid-sale | **No oversell.** Seats kept selling on Postgres alone; a hold costs no more at the median, a purchase about 2×. |
 | Payments service stopped | **No order confirmed without payment**, and every seat still held maps to an open order. |
-| Event dispatcher stalled for 20 s | Request path unaffected (hold p99 4.7 ms). Events arrived late; none were lost. |
+| Event dispatcher stalled for 20 s | Request path unaffected (hold p99 6.2 ms). Events arrived late; none were lost. |
 | Two payment reconcilers on one table | **No payment settled twice.** |
-| 1,860 orders with confirm and cancel racing | **None partly sold, sold unpaid, or paid unsold.** |
+| 965 orders with confirm and cancel racing, one capture in twenty refused | **None partly sold or paid unsold, and no seat sold unpaid unless its order reads `payment_due`.** 33 captures were refused; the customers who confirmed again paid. |
 
 These are single-machine numbers, useful for comparing one run with the next rather than as
 a capacity claim: the same code has moved by a sixth between sessions on the machine alone
@@ -159,6 +159,8 @@ converting a hold is always a change to one row.
 **Checkout** in Orders authorises the payment, sells every seat in one transaction, then
 captures:
 - Any path that does not end with every seat sold voids the authorisation.
+- A capture the gateway refuses leaves the order `payment_due`, never `failed`. The seats stay
+  sold, and the customer's next confirm authorises again and pays (034).
 - A cancel releases the seats before the money, so it can never refund a seat it could not
   release.
 - Once money has moved, no step is abandoned halfway, even if the client disconnects.
@@ -256,6 +258,17 @@ edges:
 | `encore.inventory.outbox.deliveries` | Delivered, failed, dead-lettered, by event type |
 | `encore.inventory.outbox.delivery.lag` | How late delivery runs, from seat change to handler |
 
+![The flash-sale dashboard over a Redis fault run and an orders run](docs/images/dashboard.png)
+
+*A Redis fault run, then an orders run, with telemetry on, so slower than the results above.
+While Redis is stopped, the lock's answers switch from `Acquired` to `CoolingDown` and the
+seats keep selling.*
+
+![One confirm as a single trace across both processes](docs/images/confirm-trace.png)
+
+*One confirm: the authorisation in `encore-payments`, the seats' sale in `encore-api`, then the
+capture. It is the order 010 argues for, in one trace.*
+
 ## Trade-offs and limitations
 
 Scope was chosen to keep the depth in one place. These are deliberate, and each is reasoned
@@ -275,8 +288,11 @@ in `DECISIONS.md`:
   schema still lives in the shared database (018).
 - **No message bus.** Events are delivered in process from the outbox. Cross-process
   delivery, and with it `Payment` domain events, waits for a consumer that needs it (013).
-- **The payment gateway is simulated.** It can decline, time out and lose requests, but it
-  never refuses a capture, so that failure is untested end to end (014).
+- **The payment gateway is simulated.** It can decline, time out, lose requests and refuse a
+  capture, but it never refuses a void (014).
+- **A refused capture can leave seats sold and unpaid.** The order says so, as `payment_due`,
+  and nothing re-charges the customer unasked. Collecting from one who never confirms again
+  is an operator's job (034).
 
 ## How this was built
 

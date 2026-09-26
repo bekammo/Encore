@@ -108,6 +108,14 @@ none had money without seats. In 92 of them the cancel arrived after the sale an
 stepped back. The same three invariants are now a test that composes the real modules and
 races every confirm against its cancel, so the claim is checked on every run, not only here.
 
+The ordering has one failure it cannot prevent: a gateway that authorised the money and then
+refuses to hand it over. For most of the project the simulator never did that, and the code
+would have called such an order `failed` with its seats sold and nobody looking for the money.
+Now the order reads **`payment_due`**: every seat sold, nothing held, and the customer's next
+confirm authorises again and captures without selling anything twice. Unselling the seats would
+break the one rule the ordering exists to protect, and a job that re-charged the card would be
+charging a customer who had not asked.
+
 ## The sale and its announcement cannot disagree
 
 Every seat transition is written to an outbox table in the seat's own transaction, by the unit
@@ -174,6 +182,15 @@ the ranges do not overlap, and small. What remains belongs to losing the lock ra
 asking for it, and I have not attributed it — which is a more honest place to stop than a
 number I cannot explain.
 
+The most useful run came after the project felt finished. Re-measured before its numbers were
+quoted again, a purchase with Redis gone cost 2.6–4.3× instead of 1.8×. Running the same fault
+against older commits in the same session put the cause in an architecture audit. The audit had
+merged a hold's two reads into one query and, to sort the rows it returned, compiled an
+expression tree on every request. Its own baseline ran 50 clients, where the cost hid; the Redis
+fault runs 250. Counting the rows instead doubled the baseline's throughput, to 730,000–770,000
+hold attempts a run. The regression was a performance change nobody had measured under load,
+and only the harness, run again, could have found it.
+
 ## Watching it
 
 OpenTelemetry follows the same asymmetry. Every module gets the framework's spans — HTTP in and
@@ -203,4 +220,5 @@ than oversight. The client identity is a claimed header, a stand-in for an Ident
 not exist. Payments still shares the database: the process boundary moved and the data boundary
 did not. And everything above was measured on one laptop, mostly one run per configuration —
 the counts and the mechanisms behind them are strong; latency comparisons across sessions are
-not. The next step is to repeat the runs with the load generator on a machine of its own.
+not. A repeat with the load generator on a machine of its own was planned and then dropped
+(035), so that caveat stays.

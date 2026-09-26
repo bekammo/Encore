@@ -6,22 +6,22 @@ Encore flash-sale harness — run "final-3"
   contention                50 vus, 5 seats, 60s
   sale                      100 vus, 500 seats, 60s
 
-  hold ms, contention       med 9.4  p95 21.1  p99 30.2  max 111.5
-  hold ms, sale             med 11.7  p95 18.9  p99 24.8  max 104.3
-  purchase ms               med 16.7  p95 44.3  p99 76.8  max 81.8
+  hold ms, contention       med 9.1  p95 21.6  p99 31.9  max 81.6
+  hold ms, sale             med 12.0  p95 20.7  p99 27.6  max 124.0
+  purchase ms               med 17.9  p95 35.6  p99 50.8  max 106.5
 
-  holds won                 17579
-  holds refused             715112
+  holds won                 17442
+  holds refused             699112
   win rate                  0.024
 
-  already held              236486
-  already sold              476867
-  lost race                 1759
+  already held              239056
+  already sold              458007
+  lost race                 2049
   hold cap reached          0
   lock contended            0
 
   seats sold                500 of 500 sellable
-  sold out after            first 52.0 ms, last 634.0 ms
+  sold out after            first 65.0 ms, last 654.0 ms
   sale refused              0
   release refused           0
   unexpected                0

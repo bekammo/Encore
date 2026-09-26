@@ -124,7 +124,7 @@ const RACE_DELAY_MAX_MS = Number(__ENV.RACE_DELAY_MAX_MS || 700);
 // Every answer a confirm or cancel is documented to give. Declared up front because k6
 // reports a tagged submetric only when a threshold names it.
 const CONFIRM_ANSWERS = ['confirmed', 'awaiting_capture', 'order_failed', 'holds_expired', 'lost_race',
-  'order_not_pending', 'payment_declined', 'payment_timed_out'];
+  'order_not_pending', 'payment_declined', 'payment_timed_out', 'payment_due'];
 const CANCEL_ANSWERS = ['cancelled', 'lost_race', 'order_not_pending'];
 
 // When set, setup() creates a venue with this name as its very last act. chaos.sh
@@ -779,7 +779,8 @@ function recordCancel(res) {
 }
 
 // One customer, one order of one to four seats, then one of three endings. Nothing is
-// retried, as in checkout above; chaos.sh reads what actually happened from Postgres.
+// retried, as in checkout above, except a payment_due: confirming again is the customer's
+// documented next step (034). chaos.sh reads what actually happened from Postgres.
 export async function orders(data) {
   const clientId = uuid();
   const seatIds = pickDistinct(data.orders, 1 + Math.floor(Math.random() * 4));
@@ -828,7 +829,12 @@ export async function orders(data) {
   } else if (roll < RACE_SHARE + CANCEL_SHARE) {
     recordCancel(http.post(orderUrl(orderId, 'cancel'), null, orderParams(clientId, 'cancel')));
   } else {
-    recordConfirm(http.post(orderUrl(orderId, 'confirm'), null, orderParams(clientId, 'confirm')));
+    const answer = recordConfirm(
+      http.post(orderUrl(orderId, 'confirm'), null, orderParams(clientId, 'confirm')));
+
+    if (answer === 'payment_due') {
+      recordConfirm(http.post(orderUrl(orderId, 'confirm'), null, orderParams(clientId, 'confirm')));
+    }
   }
 }
 
