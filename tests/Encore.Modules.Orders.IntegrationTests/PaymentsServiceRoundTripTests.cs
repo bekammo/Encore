@@ -102,7 +102,24 @@ public sealed class PaymentsServiceRoundTripTests(OrdersDatabase database)
         Assert.NotEqual(Guid.Empty, timedOut.PaymentId);
     }
 
-    private async Task<HttpOrderPayments> ClientAsync(double declineRate = 0, double timeoutRate = 0)
+    /// <summary>Read as a timeout, it would leave a sold order waiting on money nobody holds.</summary>
+    [Fact]
+    public async Task ARefusedCapture_ShouldCrossTheWireIntact()
+    {
+        var payments = await ClientAsync(captureDeclineRate: 1);
+        var (orderId, clientId) = (Guid.NewGuid(), Guid.NewGuid());
+
+        var authorized = await payments.AuthorizeAsync(new AuthorizePaymentRequest(orderId, clientId, 25m, "GBP"));
+        var refused = await payments.CaptureAsync(new CapturePaymentRequest(orderId, clientId));
+
+        Assert.Equal(CapturePaymentStatus.Declined, refused.Status);
+        Assert.Equal(authorized.PaymentId, refused.PaymentId);
+    }
+
+    private async Task<HttpOrderPayments> ClientAsync(
+        double declineRate = 0,
+        double timeoutRate = 0,
+        double captureDeclineRate = 0)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -114,6 +131,7 @@ public sealed class PaymentsServiceRoundTripTests(OrdersDatabase database)
             ["Payments:Reconciliation:Enabled"] = "false",
             ["Payments:Simulation:DeclineRate"] = declineRate.ToString(CultureInfo.InvariantCulture),
             ["Payments:Simulation:TimeoutRate"] = timeoutRate.ToString(CultureInfo.InvariantCulture),
+            ["Payments:Simulation:CaptureDeclineRate"] = captureDeclineRate.ToString(CultureInfo.InvariantCulture),
             ["Payments:Simulation:LostRequestRate"] = "0",
             ["Payments:Simulation:MinLatency"] = "00:00:00",
             ["Payments:Simulation:MaxLatency"] = "00:00:00"

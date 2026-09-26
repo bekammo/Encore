@@ -36,4 +36,5 @@ CLAUDE.md
 ## A summary is one machine's numbers on one day. It is worth keeping locally to
 ## compare against the next run, and worth nothing to a reader of the repo, who
 ## cannot tell it apart from a claim about how the system performs generally.
+## The one session the README quotes is copied to load/evidence/ instead (033).
 load/results/
