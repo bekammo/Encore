@@ -94,7 +94,14 @@ internal sealed class SimulatedPaymentGateway(
 
         await DelayAsync(cancellationToken).ConfigureAwait(false);
 
-        return HangsUp() ? GatewayOutcome.TimedOut : GatewayOutcome.Succeeded;
+        if (HangsUp())
+        {
+            return GatewayOutcome.TimedOut;
+        }
+
+        return NextDouble() < _options.CaptureDeclineRate
+            ? GatewayOutcome.Declined
+            : GatewayOutcome.Succeeded;
     }
 
     /// <summary>The ledger row is kept, but nothing looks up a key after it has been reconciled.</summary>

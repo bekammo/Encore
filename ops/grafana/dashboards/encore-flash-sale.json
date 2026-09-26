@@ -1,7 +1,7 @@
 {
   "uid": "encore-flash-sale",
   "title": "Encore — flash sale",
-  "description": "The seat under contention: what each seat answered, who answered for the lock, how late the outbox is, and what a hold, a purchase and a confirm cost. DECISIONS 019 and 021.",
+  "description": "The seat under contention: what each seat answered, who answered for the lock, how late the outbox is, and what a hold, a purchase and a confirm cost. DECISIONS 019 and 021. Every panel steps at 5 s and rates over 20 s, four of the SDK's 5 s exports. $__rate_interval would follow the image's 60 s scrape default to four minutes and turn a one-minute sale into a ramp.",
   "tags": ["encore"],
   "timezone": "utc",
   "refresh": "5s",
@@ -19,11 +19,12 @@
       "description": "Server-side request duration. Hold and purchase are the hot path; confirm crosses into Payments.",
       "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "interval": "5s",
       "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.99, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{http_route=~\".*(hold|purchase|confirm|release)\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{http_route=~\".*(hold|purchase|confirm|release)\"}[20s])))",
           "legendFormat": "{{http_route}}"
         }
       ]
@@ -35,12 +36,13 @@
       "description": "encore.inventory.seat.outcomes: every seat's answer, by action. Under contention, AlreadyHeld and LostRace are the system working.",
       "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "interval": "5s",
       "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
       "options": { "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (action, outcome) (rate(encore_inventory_seat_outcomes_total[$__rate_interval]))",
+          "expr": "sum by (action, outcome) (rate(encore_inventory_seat_outcomes_total[20s]))",
           "legendFormat": "{{action}} {{outcome}}"
         }
       ]
@@ -52,11 +54,12 @@
       "description": "encore.inventory.lock.attempts: Redis's answers, and CoolingDown when the cooldown answered for it. A Redis outage shows as Unavailable followed by CoolingDown.",
       "gridPos": { "h": 9, "w": 12, "x": 0, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "interval": "5s",
       "fieldConfig": { "defaults": { "unit": "ops", "custom": { "stacking": { "mode": "normal" }, "fillOpacity": 30 } }, "overrides": [] },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (outcome) (rate(encore_inventory_lock_attempts_total{operation=\"acquire\"}[$__rate_interval]))",
+          "expr": "sum by (outcome) (rate(encore_inventory_lock_attempts_total{operation=\"acquire\"}[20s]))",
           "legendFormat": "{{outcome}}"
         }
       ]
@@ -68,16 +71,17 @@
       "description": "encore.inventory.outbox.delivery.lag: from the seat change to its delivery. Late is not wrong (016); this says how late.",
       "gridPos": { "h": 9, "w": 12, "x": 12, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "interval": "5s",
       "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(encore_inventory_outbox_delivery_lag_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(encore_inventory_outbox_delivery_lag_seconds_bucket[20s])))",
           "legendFormat": "p50"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(encore_inventory_outbox_delivery_lag_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(encore_inventory_outbox_delivery_lag_seconds_bucket[20s])))",
           "legendFormat": "p99"
         }
       ]
@@ -89,11 +93,12 @@
       "description": "encore.inventory.outbox.deliveries by outcome. DeadLettered should stay at zero.",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "interval": "5s",
       "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (outcome) (rate(encore_inventory_outbox_deliveries_total[$__rate_interval]))",
+          "expr": "sum by (outcome) (rate(encore_inventory_outbox_deliveries_total[20s]))",
           "legendFormat": "{{outcome}}"
         }
       ]
@@ -105,11 +110,12 @@
       "description": "5xx by service. A 409 is the system answering; a 5xx is not (019).",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "interval": "5s",
       "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (job) (rate(http_server_request_duration_seconds_count{http_response_status_code=~\"5..\"}[$__rate_interval]))",
+          "expr": "sum by (job) (rate(http_server_request_duration_seconds_count{http_response_status_code=~\"5..\"}[20s]))",
           "legendFormat": "{{job}}"
         }
       ]

@@ -131,6 +131,8 @@ services:
       # raises the rate to produce TimedOut rows for reconciliation to settle.
       Payments__Simulation__TimeoutRate: "${PAYMENTS_TIMEOUT_RATE:-0}"
       Payments__Simulation__LostRequestRate: "${PAYMENTS_LOST_REQUEST_RATE:-0.5}"
+      # Off by default for the same reason; the orders run raises it to produce payment_due (034).
+      Payments__Simulation__CaptureDeclineRate: "${PAYMENTS_CAPTURE_DECLINE_RATE:-0}"
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_ENDPOINT:-}"
 
   # The monolith with Payments cut out: same image as `api`, different configuration, so
@@ -210,7 +212,8 @@ services:
         condition: service_healthy
     volumes:
       - ./load:/scripts:ro
-      # One summary per run. Gitignored: one machine on one day is not a claim.
+      # One summary per run. Gitignored: one machine on one day is not a claim. The session
+      # the README quotes is copied to load/evidence/ (033).
       - ./load/results:/results
     environment:
       ENCORE_BASE_URL: "http://api:8080"
