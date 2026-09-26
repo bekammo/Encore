@@ -183,8 +183,7 @@ shows correctness surviving Redis being gone entirely, under load.
 A client may hold at most four seats per event. The rule spans four rows and `Seat` is a
 one-row boundary, so it lives in the application layer: a Postgres count of the client's live
 holds, serialised by a Redis lock on client and event. Counting in Postgres keeps the count
-right about expiry, with no counter to drift. That lock is the cap's only guard, and the only
-lock Inventory takes.
+right about expiry, with no counter to drift. That lock is the cap's only guard.
 
 **The first version enforced nothing, and a test found it.** One client, twelve simultaneous
 requests, cap of four: twelve holds. The lock doesn't wait, so one request took it, eleven got
@@ -286,16 +285,19 @@ timestamp without a timezone is refused rather than assumed to be UTC, which wou
 at the wrong instant.
 
 **`X-Client-Id` is a claimed identity, not authentication.** It stands in for an Identity
-module that doesn't exist, so no route answers 401 or 403, and it arrives through a
+module that doesn't exist, so no customer route answers 401 or 403, and it arrives through a
 route-group filter the next endpoint can't forget. Payments' routes are read-only for
 customers, because **a client that can charge itself has walked around the order flow**.
+*030 later closed the direct seat routes and put operator writes behind a key, without waiting
+for Identity.*
 
 **Framework responses get the same shape.** `AddProblemDetails` alone still left an unmatched
 route's 404, a 405, a 415 and an unbindable body's 400 empty; `UseStatusCodePages` is what
 asks for a body.
 
-**The OpenAPI document is written by hand** and served with Swagger UI at `/docs/` (029 gives
-the current reason). `OpenApiDocumentTests` checks it both ways: every mapped route is
+**The OpenAPI document is written by hand** and served with Swagger UI at `/docs/`, because
+the hosts hold no packages of their own (002). *029 gives a better reason.*
+`OpenApiDocumentTests` checks it both ways: every mapped route is
 documented, and every documented path is mapped. One document covers two hosts (018), so a
 path carries a `servers` entry exactly when the monolith doesn't map it. Response shapes
 aren't checked, apart from each status enum, which is pinned to the C# enum it's rendered
@@ -416,6 +418,10 @@ confirm can't be cancelled while its seats are sold, and a retried confirm compl
 customer has the seats, so the customer pays. *Since 025 the sale is recorded on the order,
 and a cancel after it answers `order_not_pending`.*
 
+**Cost:** a client that bought seats through Inventory's direct purchase route, around the
+order, can't cancel a `Pending` order for them. *030 has since turned that route off by
+default.*
+
 Under load (019), 92 cancels landed after their confirm's sale and stepped back, and none left
 seats sold without money. The rig fires each racing cancel at a random point inside its
 confirm, since one sent at the same instant finishes before the sale.
@@ -478,7 +484,9 @@ and sleeps even after a full batch, since asking a gateway faster doesn't make i
 `payments-api` owns it, and a per-sweep advisory lock is the guard if a second one runs, not
 the plan. The first version of that lock passed every test and threw on every sweep in a real
 two-process run (`SqlQuery<bool>` wants a column named `Value`), so neither process settled
-anything. A test now holds the lock from a second connection.
+anything. A test now holds the lock from a second connection. *022 amends this entry: the
+reconciler now holds a row lock from the lookup to the save, and also claims `Pending`
+attempts a crash left behind.*
 
 **The simulated gateway had to become honest first.** A timeout is two events under one name:
 `TimeoutRate` decides whether the caller hears back, and `LostRequestRate` whether an
@@ -487,7 +495,8 @@ the "funds are held" branch was unreachable while its tests passed. Then its mem
 dictionary on a singleton, and after a restart of the Payments service the next sweep
 settled **120 of 121** timed-out attempts as `Abandoned`. Answers now live in
 `payments.gateway_ledger`, keyed on the idempotency key. The simulator still never declines a
-void; modelling that honestly needs a real gateway's error vocabulary.
+void; modelling that honestly needs a real gateway's error vocabulary. A refused capture has
+been modelled since 034.
 
 ---
 
@@ -546,9 +555,9 @@ The textbook alternative, delivering outside the claim under a lease, adds the l
 No MediatR: handlers are registered through `OutboxEventCatalog.Register<T>`, so the compiler
 checks that payload and handler agree, and an unregistered name becomes a visible dead letter.
 **Notifications exists so there's somewhere to deliver**: one handler, one table. Delivery is
-at least once, so idempotency is a unique index on `MessageId`, and the gap between the
-event's `OccurredAt` and the row's `CreatedAt` is the system's one measure of delivery
-latency.
+at least once, so idempotency is a unique index on `MessageId`. The gap between the event's
+`OccurredAt` and the row's `CreatedAt` gives delivery latency straight from the database,
+which is how the chaos rig reads it.
 
 **Readiness is voted by modules**, and the host counts the votes without knowing which
 modules have a database (017). A backlog is reported but never fails the check: taking a host
@@ -649,11 +658,14 @@ The drain stays inside the baseline's spread, because only ~15,000 of 304,000 it
 at all. **The dispatcher is the whole cost**, as a second workload on the same database, so
 don't "optimise" the outbox by weakening the drain's atomicity. Most of that cost later proved
 fixable: the claim read the whole due backlog every tick, and EF Core logged every statement.
-With both fixed, three runs on 2026-09-24 came in inside the pre-outbox spread or below it.
+With both fixed, three runs on 2026-09-24 came in inside the pre-outbox spread or below it,
+apart from one 86 ms purchase p99. And with the dispatcher switched off, 21,948 events piled
+up undelivered while the sale still sold exactly 500 of 500.
 
 **The chaos rig** (`load/chaos.sh`) injects one fault per run; k6 asserts, and the script
-reads the aftermath from Postgres. A fault measured as a number runs beside a control window
-of the same shape, which separates the outage from plain overload.
+reads the aftermath from Postgres. A fault measured as a number runs as a healthy window and
+a broken window of the same shape, so its cost is read against a same-day control rather than
+a mixture of both states.
 
 | Fault | Invariants | What it exposed |
 |---|---|---|
@@ -666,7 +678,7 @@ of the same shape, which separates the outage from plain overload.
 **The Redis cost took four sessions to remove, and the order is the lesson.** Each host had a
 connection pool of 100 against a Postgres allowing 97 in total, so the budget is now written
 down (`max_connections=300`, pools of 100 and 50). Cutting Redis timeouts from 5 s to 250 ms
-took a hold from 85× to 22×, because each attempt still cost about a second. Tripling
+took a hold from 85× to 22× and no lower, because each attempt still cost about a second. Tripling
 `ConnectTimeout` moved nothing, which ruled it out. `BacklogPolicy.FailFast` removed it, and a
 hold's median cost of losing Redis fell to 6%. Logging an outage's edges instead of every
 refusal took that to zero, but a purchase's only from 2.0× to 1.78×. **A change is never
@@ -677,6 +689,9 @@ for a second and answers "unavailable" itself. Against its own control
 (`REDIS_LOCK_COOLDOWN=00:00:00`), a purchase's median cost of losing Redis fell from
 1.53–1.73× to 1.42–1.47×: real, since the ranges don't overlap, but small. What remains
 belongs to losing Redis, not asking it, and is unattributed.
+
+The seat lock's removal was measured the same way: three runs against six, 18% more attempts,
+and lost races up from 0.10% to 0.23% (004).
 
 **What this isn't:** one laptop, mostly one run per configuration. The counts and the
 mechanisms behind them are strong; latency comparisons across sessions are not.
@@ -837,8 +852,9 @@ Every claim here is a load or chaos result with the same caveat: one laptop, wit
 system and the telemetry collector sharing a CPU (019, 021). A standing cloud deployment
 wouldn't remove that caveat, and it would add cost without adding evidence. The chaos rig
 stops containers with `docker compose`, so it couldn't reproduce its faults against managed
-services, and a public deployment needs Identity and secrets work that's out of scope. The
-plan became a throwaway run instead, with k6 and the collector on a second machine. *035
+services. A public deployment would also expose `/purchase` and seat-map creation to anyone,
+and closing them properly is Identity and secrets work that's out of scope (030 has since
+closed or keyed both). The plan became a throwaway run instead, with k6 and the collector on a second machine. *035
 dropped that too.*
 
 **Notifications stays in process.** Moving it into its own process would need a transport,
@@ -1034,9 +1050,9 @@ tested.
 
 **The order becomes `PaymentDue`: every seat sold, nothing held.** `Payment.DeclineCapture`
 spends the authorisation, which frees the order's live slot, so the customer's next confirm
-authorises again under a fresh attempt and captures without selling anything twice. That
-confirm answers `payment_due` (409, retriable), not `payment_declined`, which would suggest
-the seats are still only held. The simulator refuses a share of captures
+authorises again under a fresh attempt and captures without selling anything twice. The
+confirm whose capture is refused answers `payment_due` (409, retriable), not
+`payment_declined`, which would suggest the seats are still only held. The simulator refuses a share of captures
 (`CaptureDeclineRate`), and chaos.sh's orders run refuses one in twenty.
 
 **Rejected:**
