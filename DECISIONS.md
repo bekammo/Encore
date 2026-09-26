@@ -1,21 +1,27 @@
 # Decisions
 
-The choices in Encore that are worth defending, each with the alternative it beat and what
-it costs. A decision that changes is superseded by a new entry, never rewritten. Two edits
-happen in place: an entry's own open or deferred item is closed where it was raised, and a
-statement of fact the code has since overtaken, such as a test's name, is corrected.
+The choices in Encore worth defending, each with the alternative it beat and what it costs.
+Code comments cite entries by number, so a comment ending in `(014)` points here.
 
-This log was consolidated on 2026-09-23 from an 80-entry working log into 001–020; later entries follow them.
-Corrections, audits and re-measurements were folded into the decision they concerned, and
-the wrong turns worth learning from were kept (018 is the best of them). The full working
-log is in git: `git show 2e5ad70:DECISIONS.md`.
+If you only read five, read [001](#001--inventory-is-hexagonal-and-everything-else-is-flat)
+for the thesis, [005](#005--the-hold-cap-is-a-policy-not-an-invariant) for a rule that is
+allowed to fail open, [010](#010--authorise-sell-capture) for why the sale sits between
+authorise and capture,
+[018](#018--payments-becomes-a-service-and-a-seam-is-not-proven-by-testing-each-side-of-it)
+for an extraction that did nothing for four days, and
+[032](#032--a-holds-one-read-counts-its-rows-instead-of-compiling-a-predicate) for a
+regression found by measuring again.
+
+A decision that changes gets a new entry, and the entry it supersedes says so. The log was
+consolidated from an 80-entry working log on 2026-09-23 (`git show 2e5ad70:DECISIONS.md`) and
+condensed on 2026-09-26; the unabridged entries are at `git show 8f3159f:DECISIONS.md`.
 
 ## Index
 
 - [001](#001--inventory-is-hexagonal-and-everything-else-is-flat) — Inventory is hexagonal, and everything else is flat
 - [002](#002--the-domains-purity-is-enforced-by-the-compiler-the-build-and-a-test) — The domain's purity is enforced by the compiler, the build and a test
 - [003](#003--the-seat-state-machine) — The seat state machine
-- [004](#004--postgres-settles-a-race-for-a-seat-redis-only-thins-the-crowd) — Postgres settles a race for a seat; Redis only thins the crowd
+- [004](#004--postgres-alone-settles-a-race-for-a-seat) — Postgres alone settles a race for a seat
 - [005](#005--the-hold-cap-is-a-policy-not-an-invariant) — The hold cap is a policy, not an invariant
 - [006](#006--expiry-is-lazy-and-the-sweep-is-cleanup) — Expiry is lazy, and the sweep is cleanup
 - [007](#007--exceptions-inside-the-aggregate-closed-outcomes-above-it) — Exceptions inside the aggregate, closed outcomes above it
@@ -31,14 +37,14 @@ log is in git: `git show 2e5ad70:DECISIONS.md`.
 - [017](#017--modules-meet-through-contracts-and-the-one-shared-project-may-not-name-a-module) — Modules meet through contracts, and the one shared project may not name a module
 - [018](#018--payments-becomes-a-service-and-a-seam-is-not-proven-by-testing-each-side-of-it) — Payments becomes a service, and a seam is not proven by testing each side of it
 - [019](#019--measure-first-then-break-it-on-purpose) — Measure first, then break it on purpose
-- [020](#020--a-claim-nothing-checks-reads-like-a-claim-that-holds) — A claim nothing checks reads like a claim that holds
+- [020](#020--how-the-suite-runs-and-how-ci-knows-it-ran) — How the suite runs, and how CI knows it ran
 - [021](#021--telemetry-follows-the-asymmetry) — Telemetry follows the asymmetry
 - [022](#022--once-money-has-moved-nothing-stops-the-step-halfway) — Once money has moved, nothing stops the step halfway
 - [023](#023--a-swept-seat-keeps-the-record-of-its-lapsed-hold) — A swept seat keeps the record of its lapsed hold
 - [024](#024--the-outbox-promises-delivery-not-order) — The outbox promises delivery, not order
 - [025](#025--an-order-owed-its-capture-is-finished-by-a-sweep) — An order owed its capture is finished by a sweep
-- [026](#026--what-remains-of-the-roadmap-restated) — What remains of the roadmap, restated
-- [027](#027--a-comment-carries-a-reason-never-the-name) — A comment carries a reason, never the name
+- [026](#026--why-there-is-no-deployment) — Why there is no deployment
+- [027](#027--comments-only-where-they-prevent-a-mistake) — Comments only where they prevent a mistake
 - [028](#028--an-event-is-never-free) — An event is never free
 - [029](#029--where-the-framework-already-does-the-job-it-does-it) — Where the framework already does the job, it does it
 - [030](#030--what-checkout-does-not-guard-is-closed-keyed-or-rate-limited) — What checkout does not guard is closed, keyed or rate-limited
@@ -52,580 +58,407 @@ log is in git: `git show 2e5ad70:DECISIONS.md`.
 
 ## 001 — Inventory is hexagonal, and everything else is flat
 
-Inventory holds the one genuinely hard problem here: two people clicking the same seat in
-the same millisecond must not both get it. The mechanism for preventing that will change —
-and did, several times — so ports and adapters buy the ability to change it, and to test the
-seat rules against a fake clock in microseconds, without touching the rules. Catalog,
-Orders, Payments and Notifications are CRUD over tables nobody contends for. The same
-structure there would be three folders and an interface to say "save this row", with no
-invariant protected and no substitution ever performed.
+Inventory holds the one hard problem: two people clicking the same seat in the same
+millisecond must not both get it. The mechanism that prevents it was always going to change,
+and it did, several times. Ports and adapters let it change without touching the seat rules,
+which are tested against a fake clock in microseconds. Catalog, Orders, Payments and
+Notifications are CRUD over tables nobody contends for. The same structure there would be an
+interface to say "save this row", protecting nothing and never swapped.
 
-**Architecture is a cost you pay for optionality, and you should only pay it where you will
-spend the optionality.** That asymmetry is the argument this repository makes, and it is
-what I would want to be asked about in a review.
+**Architecture is a cost paid for optionality, so pay it only where the optionality gets
+spent.** That's the argument this repository makes, and the one I'd most like to be asked
+about.
 
-It is applied honestly rather than selectively. `CheckoutService` takes `OrdersDbContext`
-concretely and there is no `IOrderRepository`. The interfaces Orders does use —
-`IEventPricing`, `ISeatReservations`, `IOrderPayments` — exist because they cross a module
-boundary that will one day be a process boundary, which is a different argument that
-Orders does not get to borrow for its own storage. The bill arrives in the tests:
-`CheckoutService` can only be tested against real Postgres. `EntityFrameworkCore.InMemory`
-was rejected because it does not enforce a partial unique index, and would fake away the
-most load-bearing line in the module's schema.
+The flat modules don't get to borrow it. `CheckoutService` takes `OrdersDbContext` directly,
+with no `IOrderRepository`; the interfaces Orders does use exist because they cross module
+boundaries. The bill arrives in the tests: `CheckoutService` can only be tested against real
+Postgres, because EF Core's in-memory provider doesn't enforce the partial unique index that
+stops a client opening two checkouts.
 
-**Money is a `decimal` and a currency code, not a value object.** A `Money` type earns its
-keep by preventing something — mixing currencies, rounding at the wrong step — and nothing
-here does arithmetic beyond summing one order, whose lines share a currency by construction.
-The column is `numeric(19,4)`: never a float, which drifts silently, and never Postgres's
-`money`, whose scale is a server setting. `Money` arrives when tax, fees or a second
-currency make the arithmetic hard, and not before.
-
-Orders and Payments were built as real modules during the first phase, out of order,
-because Strangler Fig needs something to strangle (018) and an aggregate with no caller
-proves nothing. They were built flat. `Payment` is the one exception to "flat means POCO",
-and 013 says why that is not a crack in this rule.
+**Money is a `decimal` and a currency code, not a value object**, stored as `numeric(19,4)`.
+A `Money` type earns its keep by preventing something, and nothing here does more than sum one
+order in one currency; it arrives with tax, fees or a second currency. `Payment` is the one
+flat type with guarded transitions, and 013 explains why that doesn't break this rule.
 
 ---
 
 ## 002 — The domain's purity is enforced by the compiler, the build and a test
 
-`Encore.Modules.Inventory.Domain` is its own assembly rather than a folder. A folder makes
-"no infrastructure in the domain" a convention that lasts as long as everyone remembers it.
-A separate project makes it a fact: domain code cannot name a type from an assembly it does
-not reference. When I say the domain is infrastructure-free, the build is the evidence.
+`Encore.Modules.Inventory.Domain` is its own assembly, not a folder. In a folder, "no
+infrastructure in the domain" is a convention that lasts as long as everyone remembers it. In
+its own project, code can't name a type from an assembly it doesn't reference.
 
-**Three build rules, one file.** `Directory.Build.targets` fails the build with `ENCORE001`
-for any `PackageReference`, `ENCORE002` for a `FrameworkReference` other than the implicit
-BCL one, and `ENCORE003` for anything outside the BCL in the *resolved* reference closure.
-The third is the one that matters: the first two read what a csproj declares, and
-infrastructure arriving transitively through a `ProjectReference` passes them cleanly.
-`ENCORE003` reads what the compiler is about to be handed. BCL assemblies carry
-`NuGetPackageId = Microsoft.NETCore.App.Ref`, every package carries its own id, and a
-project's output carries none — so "has a package id that is not the base targeting pack" is
-exactly "came from outside the BCL and outside this repo". Verified against the SDK, and
-proven by making it fail: `StackExchange.Redis` added to `Encore.Shared` produces `ENCORE003`
-on the Domain, naming Redis and its transitive dependencies.
+**Three build rules in `Directory.Build.targets`.** `ENCORE001` fails the build on any
+`PackageReference`, `ENCORE002` on a `FrameworkReference` beyond the BCL, and `ENCORE003` on
+anything outside the BCL in the *resolved* reference closure. The third is the one that
+matters, because infrastructure arriving transitively through a `ProjectReference` slips past
+rules that only read what a csproj declares. It works because BCL assemblies carry
+`NuGetPackageId = Microsoft.NETCore.App.Ref`, packages carry their own id, and project outputs
+carry none. Adding `StackExchange.Redis` to `Encore.Shared` proves it: `ENCORE003` fails the
+Domain, naming Redis and its dependencies. Projects opt in by property, not by name, so a
+rename can't change what's checked, and `Encore.Shared` and the three `.Contracts` assemblies
+opt in too.
 
-A project opts in with `<EncoreZeroDependency>true</EncoreZeroDependency>`, sitting directly
-under the comment that claims the property, rather than being selected by name — a rename
-should not silently change what the build checks. `Encore.Shared` and the three
-`.Contracts` assemblies opt in too. `Encore.Shared` matters most: it is the Domain's only
-project reference, so anything reaching it reaches the Domain. `Encore.Api` takes
-`ENCORE001` alone; a host composes modules, so EF Core arriving transitively is its job.
+**The architecture tests use no library**, since nearly every assertion is a
+`GetReferencedAssemblies()` one-liner. They read both compiled metadata and the csprojs,
+because only a csproj shows a declared but unused reference, and they compare module names
+exactly: `Inventory.Contracts` starts with `Inventory`.
 
-**The architecture tests use no architecture-test library.** Nearly every assertion is an
-assembly-reference question `GetReferencedAssemblies()` answers in a line, and a fluent DSL
-for that would be the pattern the problem does not justify. Two mechanisms, because they
-answer different questions: `AssemblyReferenceTests` reads compiled metadata, which cannot
-see a declared-but-unused `ProjectReference`; `ProjectGraphTests` parses the csprojs, which
-can. Module names are compared exactly, never by prefix — `Inventory.Contracts` starts with
-`Inventory`, and a prefix match would ban the seam the rule exists to permit.
+**A port never names an adapter's type**, not even in a doc comment. `ISeatRepository` once
+documented EF Core's `DbUpdateConcurrencyException`, tying every caller that handles a lost
+race to EF Core. It now throws the Domain's `ConcurrentSeatModificationException`, and the
+adapter translates.
 
-**A port never names an adapter's type**, including in an XML doc comment. `ISeatRepository`
-once documented that it throws EF Core's `DbUpdateConcurrencyException`, which coupled every
-caller that handles a lost race to EF Core through the one interface whose job is to hide
-it. It now throws `ConcurrentSeatModificationException`, a Domain type, and `EfSeatRepository`
-translates, keeping the original as the inner exception. No project graph can catch a leak
-that travels through a type *name*.
-
-**The cost.** The build now depends on SDK item metadata, so an SDK that stopped populating
-`NuGetPackageId` would break it — loudly, on the first build, which is the right direction.
+**Cost:** the build relies on SDK item metadata. If an SDK stopped populating
+`NuGetPackageId`, the build would break loudly on the first run, which is the right way round.
 
 ---
 
 ## 003 — The seat state machine
 
-`Seat` is the aggregate root and the only consistency boundary. A hold is not an entity: it
-is the `HeldByClientId` / `HoldExpiresAt` pair on the seat row. Every rule about when a seat
-changes hands lives in the transitions, and nothing above the aggregate may re-decide one.
-The tests for these were written before the transitions.
+`Seat` is the aggregate root and the only consistency boundary. A hold isn't an entity: it's
+the `HeldByClientId` / `HoldExpiresAt` pair on the seat row. Every rule about when a seat
+changes hands lives in the transitions, nothing above the aggregate re-decides one, and the
+tests came first.
 
-**Construction is by factory only.** `Seat.Create(id, eventId)`, a private constructor, and
-a private parameterless one for EF Core. A public constructor with settable properties is a
-hole straight through the rules — `new Seat { Status = Sold }` reaches a state nothing
-approved. `Create` also refuses `Guid.Empty` for either id, with an `ArgumentException`
-rather than a transition refusal, because no HTTP request can produce it.
+**The aggregate owns construction and duration.** `Seat.Create` is the only way in, so
+nothing can write `new Seat { Status = Sold }`. `Hold(clientId, utcNow)` takes the current
+instant, never an expiry, or a caller could hold a seat until the year 3000. Holds last five
+minutes, and `utcNow` must be UTC: a time with no zone is a different instant in London and
+Los Angeles.
 
-**The aggregate owns the duration.** `Hold(clientId, utcNow)` takes the current instant and
-never an expiry; a caller-supplied expiry would let anyone hold a seat until the year 3000.
-Holds last five minutes. `utcNow` must be UTC — `Local` and `Unspecified` are both refused,
-because a wall-clock time with no zone is a different instant in London and Los Angeles.
-The check sits in the aggregate because it is a precondition of these methods, and every
-`OccurredAt` is UTC by construction as a result.
+**The rules a reviewer would push back on:**
+- *Re-holding your own seat is a no-op, and the expiry doesn't move*, so a retry never says
+  your own seat is taken and a hold can't be stretched forever.
+- *Reclaiming a lapsed hold raises `SeatReleased(Expired)` before `SeatHeld`*, even for its
+  own holder. One event alone would leave the old claim looking live, and history can't be
+  backfilled.
+- *There's no route from `Available` to `Sold`.* A sale that skipped the hold would be a
+  double-sell `xmin` can't catch, because the two writers never contend on the same row
+  version.
+- *`Sold` keeps `HeldByClientId`*, so a repeated purchase succeeds (007) and a cancel
+  recognises its own confirm (012). `Sold` is terminal.
+- *Only the holder may release.* Releasing an `Available` seat or a lapsed hold is a silent
+  no-op, and the release path has no opinion about expiry (006).
+- *Expiry is exclusive:* `HoldExpiresAt <= utcNow` has expired, pinned by four tests one tick
+  apart.
 
-**The rules, and the reason for each one a reviewer would push back on:**
-
-- *Re-holding a seat you hold is an idempotent no-op, and the expiry does not move.* A retry
-  must not tell a client their own seat is taken, and a hold must not be extendable forever
-  by repeating the request.
-- *Reclaiming a lapsed hold raises `SeatReleased(Expired)` before `SeatHeld`.* One event
-  would leave the old claim looking live forever. Event history cannot be backfilled, which
-  is also why `SeatReleased` carried a `Reason` from the start. A client reclaiming their
-  *own* lapsed hold reclaims it too: by then the seat was available to anyone.
-- *There is no route from `Available` to `Sold`.* `Sell` needs a live hold by the same
-  client. A sale that skipped the hold is a double-sell `xmin` cannot catch, because the two
-  writers never contend on the same row version.
-- *`Sold` keeps `HeldByClientId`.* Nulling it would throw away who owns the seat, which is
-  what lets a repeated purchase succeed (007) and a cancel recognise its own confirm (012).
-  `Sold` is terminal.
-- *Only the holder may release.* Releasing an `Available` seat, or a lapsed hold, is a no-op
-  success with no event, and the lapsed row is deliberately left as it is — tidying it would
-  give the release path an opinion about expiry (006).
-- *Expiry is exclusive:* `HoldExpiresAt <= utcNow` has expired. Four tests sit one tick
-  apart; flipping the comparison would otherwise break nothing.
-
-**Refusals throw one `SeatTransitionException` carrying a closed reason enum**, not a type
-per refusal. Callers branch on *why*, and a closed enum makes that a `switch` the compiler
-checks, where an exception hierarchy makes it `catch` blocks whose order matters.
-
-`ExpireHold(utcNow)` is a fourth method but not a fourth rule; 006 explains it.
+**Refusals throw one `SeatTransitionException` with a closed reason enum**, not a type per
+refusal, so callers branch with a `switch` the compiler checks instead of `catch` blocks whose
+order matters.
 
 ---
 
-## 004 — Postgres settles a race for a seat; Redis only thins the crowd
+## 004 — Postgres alone settles a race for a seat
 
-Postgres is the source of truth for seat state, and optimistic concurrency is what makes a
-seat write atomic. `RowVersion` maps to the `xmin` system column, so the database maintains
-the token and no code has to remember to. Because `xmin` is a system column it must never
-appear in a migration's `CreateTable` — the provider happens to strip it today, but a
-hand-written script or a different provider turns it into an error, so
-`MigrationConventionTests` refuses the line in every migration.
+Postgres is the source of truth for seat state. `RowVersion` maps to the `xmin` system column,
+so the database maintains the concurrency token and no code has to. Being a system column,
+`xmin` must never appear in a migration's `CreateTable`, and `MigrationConventionTests`
+rejects it in every migration.
 
-**A lost race is retried exactly once.** Losing means someone else wrote the row first, so
-reloading and re-asking turns a bare "you lost a race" into the accurate "somebody has it".
-Retrying harder when the system is busiest is how a thundering herd gets worse. The retry
-only means something with a genuinely fresh read: EF Core's identity map hands back the
-tracked instance with its stale token, so `EfSeatRepository` detaches a tracked seat and
-reads it again — otherwise the retry re-attempts exactly the state that just lost. Domain
-events are cleared before each attempt, so a rejected attempt cannot publish a hold that never
-happened.
+**There's no per-seat lock.** Every handler used to take a Redis lock per seat and then carry
+on whatever it answered, because `xmin` would settle the race anyway. It excluded nobody and
+cost two round trips per action. Removing it bought 18% more throughput and raised lost races
+from 0.10% to 0.23% of attempts (019), because its round trips had been spreading writers out.
+No invariant moved, and the lock shouldn't come back to buy those races back. The client lock
+(005) is the one lock doing a job no row's token can.
 
-**The lock can say "I don't know".** `IDistributedLock.TryAcquireAsync` returns a
-`LockAcquisition`: `Acquired`, `HeldByAnother` or `Unavailable`. The first version returned
-a token or `null`, which could not tell "someone has it" from "Redis did not answer", and
-that cost both correctness (005) and availability — an unhandled Redis exception took every
-hold down while three documents claimed correctness survived Redis. The adapter translates
-`RedisConnectionException` and `RedisTimeoutException` and nothing wider, so a malformed Lua
-script is not filed as "unavailable". It also had to be built with `AbortOnConnectFail =
-false`: with Redis absent, `Connect` threw inside the DI factory, before the adapter existed
-to catch anything. **A component's own construction is part of its failure surface.**
+**A lost race is retried exactly once.** One reload turns "you lost a race" into the accurate
+"somebody has it", and retrying harder at peak load is how a thundering herd gets worse. The
+retry detaches the tracked seat, or EF Core's identity map would hand back the stale token,
+and it clears domain events so a rejected attempt can't publish a hold that never happened.
 
-**Releases ignore the request's cancellation.** A client hanging up used to cancel the
-release in the `finally` and strand the lock until its TTL. The release helper now takes no
-`CancellationToken` at all, so the next caller cannot pass the wrong one.
-
-**There is no per-seat lock.** Every handler used to take one and then proceed whatever it
-answered — because `xmin` would settle the race anyway — so it excluded nobody and cost two
-Redis round trips per hold, sale and release. It was removed. Measured (019): 18% more
-throughput, and lost races up from 0.10% to 0.23% of attempts. The lock never excluded
-anyone, but its round trips spread writers out; removing it gives that delay back as races
-`xmin` settles with a retriable 409. No invariant moved. That trade is taken, and the lock
-should not be restored to buy it back. The client lock (005) is the one lock with a job no
-row's token can do.
-
-Correctness must survive Redis being gone entirely, and 019 shows it doing so under load.
+**Redis is never a correctness dependency.** The lock answers `Acquired`, `HeldByAnother` or
+`Unavailable` (005), and the adapter translates only Redis's connection and timeout
+exceptions, so a malformed script isn't filed as "unavailable". It's built with
+`AbortOnConnectFail = false`, because otherwise a missing Redis threw inside the DI factory and
+stopped the host: a component's construction is part of its failure surface. Releases ignore
+the request's cancellation, so a client hanging up can't strand a lock until its TTL. 019
+shows correctness surviving Redis being gone entirely, under load.
 
 ---
 
 ## 005 — The hold cap is a policy, not an invariant
 
-A client may hold at most four seats per event. That rule spans four rows and `Seat` is a
-one-row boundary, so it lives in the Application layer: a Postgres read of the client's live
-holds (`Held` and not yet expired), serialised by a Redis lock on client + event. Counting in
-Postgres means the count is automatically right about expiry, with no counter to drift.
+A client may hold at most four seats per event. The rule spans four rows and `Seat` is a
+one-row boundary, so it lives in the application layer: a Postgres count of the client's live
+holds, serialised by a Redis lock on client and event. Counting in Postgres keeps the count
+right about expiry, with no counter to drift. That lock is the cap's only guard, and the only
+lock Inventory takes.
 
-**The first version enforced nothing, and a test found it.** One client, twelve seats, twelve
-simultaneous requests, cap of four: **twelve holds**. The lock does not wait, so one request
-took it and eleven got `null`, and the handler proceeded on `null` — right for a lock with a
-concurrency token behind it, catastrophic for one with nothing. The failure hid itself: the
-lock is only contended when one client has several requests in flight, which is exactly what
-the cap exists to catch. With the three-valued lock (004) the policy is now explicit:
+**The first version enforced nothing, and a test found it.** One client, twelve simultaneous
+requests, cap of four: twelve holds. The lock doesn't wait, so one request took it, eleven got
+`null`, and the handler proceeded on `null`. That's right for a lock backed by a concurrency
+token and catastrophic for one backed by nothing. The bug hid itself, because the lock is only
+contended when one client has several requests in flight, exactly the case the cap exists
+for. The lock now has three answers (004), and the policy is explicit:
 
 | Client + event lock | Answer |
 |---|---|
 | `HeldByAnother` | refuse with `ConcurrentRequestInFlight`, retriable |
 | `Unavailable` | proceed, and accept that the cap may be breached |
 
-**That second row is the decision.** If Redis is down, two simultaneous holds can both pass
-the count and a client can take a fifth seat. A cap breach is a refund email; an oversell is
-a customer outside a sold-out venue. Refusing every hold in the system because Redis blinked
-would turn the first into an outage to prevent the lesser harm.
+**The second row is the decision.** With Redis down, two simultaneous holds can both pass the
+count and a client can take a fifth seat. A cap breach is a refund email; an oversell is a
+customer outside a sold-out venue. Refusing every hold because Redis blinked would turn the
+lesser harm into an outage.
 
-**The cost.** A burst of twelve now yields as few as one hold, and a client that retries
-converges on four. Both integration tests pin it, because "no more than four" is also
-satisfied by granting one.
+**Cost:** a burst of twelve can yield a single hold, and a client that retries converges on
+four. Tests pin both, because "no more than four" is also satisfied by granting one.
 
-The cap counts concurrent *holds*, not purchases: sold seats are no longer held. Re-holding a
-seat you already hold is free, so the port returns the ids of live holds rather than a count —
-a count could not tell a re-hold from a fifth seat.
+The limit is published as `SeatReservationLimits.MaxHoldsPerClientPerEvent` so Orders can
+size a checkout up front. It's `static readonly`, not `const`, because a `const` is baked into
+the caller at compile time and would go stale once the call crosses a process.
 
-**The limit is published** as `SeatReservationLimits.MaxHoldsPerClientPerEvent`, so Orders can
-size a checkout instead of sending five holds and compensating four. The test for a value on a
-contract: a caller needs it *before* acting, and it is already observable afterwards — every
-`hold_cap_reached` response ships it. It is `static readonly`, not `const`, because a `const`
-is copied into the consumer at compile time and would go stale silently once the call crosses
-a process.
+**Measured against a Postgres advisory lock.** `PostgresAdvisoryLock` implements the same port
+(`Inventory:HoldCapLock = Postgres`), and the cap suite runs against both. Over two runs each,
+alternated, it cost about 16% of throughput on the monolith baseline, where no client contends
+with itself, because each hold takes a second pooled connection to the busiest server. With
+Redis stopped it paid off: a purchase cost what it did with Redis up (0.94–0.96× at the
+median, against 1.4–1.7× for the Redis lock), and the cap stayed enforced. Under 200
+contending VUs it also cut lost races from 4,200–5,500 a run to about 1,300, for the reason
+the per-seat lock's removal raised them (004).
 
-**Measured against a Postgres advisory lock.** `PostgresAdvisoryLock` is the same port on
-`pg_try_advisory_lock`, selected with `Inventory:HoldCapLock = Postgres`. It ran twice per
-configuration, runs alternated, and the cap suite runs against both locks.
-
-- **It costs where the lock does nothing.** On the monolith baseline no client ever contends
-  with itself. There throughput fell about 16% (353k and 319k iterations, against 426k and
-  376k), and a purchase's median rose from 21–26 ms to 28–33 ms. Each hold takes a second
-  pooled connection and a round trip to the busiest server.
-- **It pays where Redis fails.** With Redis stopped, a purchase costs what it did with Redis up
-  (0.94× and 0.96× at the median, against 1.4×–1.7× for the Redis lock). Holds keep being won
-  at the same rate, and the cap stays enforced rather than best-effort.
-- **Under 200 contending VUs it also cut lost races**, from 4,200–5,500 a run to about 1,300.
-  The reason is the one that made the per-seat lock's removal raise them (004): a round trip
-  spreads writers out.
-
-**Redis stays the default.** Sale-day throughput is what this system is for, and a Redis outage
-is the rare case already priced above. The advisory lock stays behind the switch for the day
-the cap has to hold through an outage. Switching costs one key and a second pool of 100
+**Redis stays the default.** Sale-day throughput is what this system is for, and a Redis
+outage is the rare case, already priced. Switching costs one key and a second pool of 100
 connections per host.
 
 ---
 
 ## 006 — Expiry is lazy, and the sweep is cleanup
 
-A seat reading `Held` whose `HoldExpiresAt` has passed is `Available` on every read and write
-path, whatever the column says. A timer that is load-bearing for an invariant is an invariant
-that fails whenever the timer is late, so the background sweep exists only to tidy the table,
-and the test of the design is concrete: **if a test cannot pass with the sweep disabled, the
-sweep has become load-bearing and the design is broken.**
+A `Held` seat whose `HoldExpiresAt` has passed is `Available` on every read and write path,
+whatever the column says. A timer that an invariant depends on is an invariant that fails
+whenever the timer runs late, so the background sweep only tidies the table. The test of the
+design: **if a test can't pass with the sweep disabled, the sweep has become load-bearing and
+the design is broken.**
 
-`ExpiryWithoutTheSweepTests` is that test: no sweeper registered and no Redis, so whatever
-passes rests on the aggregate and `xmin`. A lapsed hold is reclaimed by the next client; the
-lapsed holder cannot sell; a passer-by cannot sell it either; thirty clients reclaiming one
-lapsed seat produce one winner; and the per-client cap reopens as holds lapse. The last is the
-subtle one, because the cap is a Postgres count, which carries a second copy of the expiry
-rule. Had it said only `Status = Held`, a client would stay capped until a job ran.
-`SWEEP_ENABLED=false` in compose asks the same question under load.
+`ExpiryWithoutTheSweepTests` is that test, run with no sweeper and no Redis. The next client
+reclaims a lapsed hold, nobody can sell one, thirty clients reclaiming one lapsed seat produce
+one winner, and the per-client cap reopens as holds lapse. That last one is subtle: the cap's
+count carries a second copy of the expiry rule, and had it counted only `Status = Held`, a
+client would stay capped until a job ran. `SWEEP_ENABLED=false` asks the same question under
+load.
 
-**The sweep goes through the aggregate, not a bulk `UPDATE`.** One statement would be cheaper
-and would publish nothing — so hold history would be reconstructable only for seats that were
-contended, and the unpopular seats and abandoned baskets would vanish from it. `Seat` got
-`ExpireHold(utcNow)`: the lapsed-hold ending `Hold` already performed inline, given a name so
-something other than a new holder can trigger it. `Hold` delegates to it, so exactly one place
-knows what a lapsed hold's ending looks like. It returns `bool` instead of throwing, alone
-among the transitions, because "nothing to tidy" is an ordinary answer.
-
-**The sweep decides nothing.** Its candidate query is SQL, a second expression of the expiry
-rule, and it is defused by having no authority: it returns ids, and the aggregate re-decides
-each one. A seat re-held since the query ran is refused, and nothing is written.
-
-**No lease.** Two sweeps picking the same seat both load it and both save, and `xmin` lets one
-through; the loser's outbox row was in the transaction that rolled back. A scope per seat, so
-one lost race does not roll back its neighbours. It loops on a full batch, because every
-visit settles its row, and otherwise runs once a minute: an unswept row is not news to anyone.
-
-**Its index is partial.** `ix_seats_expiring_holds` covers held rows only, so it stays a few
-thousand rows whatever the table's size. The filter names the stored enum value as a literal,
-and `MigrationConventionTests` reads `SeatStatus.Held` from source and checks the migration
-agrees — a renumbered enum would otherwise leave a sweep that quietly scans. It was briefly
-suspected of a baseline regression and cleared by three runs with it and three without (019).
+**The sweep goes through the aggregate**, not a bulk `UPDATE`, which would be cheaper but
+publish nothing and leave hold history only for contended seats. `Seat.ExpireHold` names the
+ending `Hold` already performed inline for a lapsed hold, and `Hold` delegates to it. **The
+sweep decides nothing:** its SQL query only nominates ids, and the aggregate re-decides each
+one, so a seat re-held since the query ran is refused. Two sweeps on one seat need no lease,
+since `xmin` lets one through. Its partial index covers held rows only, and a test checks the
+filter's enum literal against `SeatStatus.Held`.
 
 ---
 
 ## 007 — Exceptions inside the aggregate, closed outcomes above it
 
-`Seat` throws to refuse. The handlers above it catch, translate and return a result carrying
-a closed outcome enum. The two layers disagree about what is exceptional: inside the
-aggregate an illegal transition means a rule was about to break, but at the use-case boundary
-during a flash sale **losing a seat to somebody else is the most common outcome there is.**
-Exceptions on the common path cost throughput when it is scarcest and push callers into
-control flow made of `catch` blocks. An enum lets an endpoint switch over every case with the
-compiler checking none was forgotten.
+`Seat` throws to refuse; the handlers above it catch, translate and return a closed outcome
+enum. The layers disagree about what's exceptional. Inside the aggregate an illegal transition
+means a rule was about to break, but during a flash sale **losing a seat to somebody else is
+the most common outcome there is**, and exceptions on the common path cost throughput when
+it's scarcest. Each handler catches exactly the reasons its transition can produce and lets
+anything else propagate, because an unknown reason means the aggregate's contract moved.
 
-**Unhandled reasons propagate.** Each handler catches exactly the reasons its transition can
-produce. A reason it does not know means the aggregate's contract moved without the handler
-being told, and a catch-all response would hide that until it mattered.
-
-**Buying a seat you already bought returns `Sold`, not a refusal.** A lost response or a
-double-submitted form is asking for a state that already holds, and telling a customer their
-own completed purchase failed would be untrue and alarming. No second `SeatSold` is raised.
-
-**Every seat command carries its event id, checked and never trusted.** Once the routes are
-`/events/{eventId}/seats/{seatId}/…`, a command without it would leave the URL decorative —
-any event's URL would buy any seat. A mismatch answers `SeatNotFound`, deliberately
-indistinguishable from "no such seat", so nobody can enumerate seat ids through an event they
-cannot see.
-
-**A repeated seat id is refused, not de-duplicated.** `[A, A, B]` is `400 duplicate_seat`.
-De-duplicating would make the cap check judge a different number than the client sent, and
-return an order with fewer lines than the request had ids, with nothing saying why. It is
-judged before the cap so the response names the real mistake. It is 400 rather than 409
-because it is knowable from the request alone — the same line that separates `too_many_seats`
-from `hold_cap_reached`.
+- **Buying a seat you already bought returns `Sold`**, since a lost response or a
+  double-submitted form is asking for a state that already holds.
+- **Every seat command carries its event id, checked and never trusted**, or any event's URL
+  would buy any seat. A mismatch answers `SeatNotFound`, so nobody can enumerate seats through
+  an event they can't see.
+- **A repeated seat id is refused, not de-duplicated.** `[A, A, B]` is `400 duplicate_seat`:
+  de-duplicating would make the cap judge a different number than the client sent, and return
+  fewer lines than were requested.
 
 ---
 
 ## 008 — The HTTP surface: actions, one status rule, and a hand-written contract
 
 **Actions, not resources.** `POST …/hold`, `…/release`, `…/purchase`, and
-`/orders/{id}/confirm` and `/cancel`. A hold is not an entity (003), and minting a `/holds`
-collection would contradict that at the front door. Confirm and cancel are actions rather
-than a writable status, because the rules for reaching each ending are not the client's to
-apply. All of these are idempotent, which is what makes retrying a POST safe.
+`/orders/{id}/confirm` and `/cancel`. A hold isn't an entity (003), and the rules for ending an
+order aren't the client's to apply by writing a status. Every action is idempotent, which is
+what makes retrying a POST safe.
 
-**One status rule: the code carries the class of failure, and a `reason` says which one.**
-Every refusal about the state of the world is `409`; `404` is only for the resource the URL
-addressed. So a body naming a venue that does not exist is `409 venue_not_found`, and
-`hold_cap_reached` is 409 rather than 403 (nothing is being authorised) or 429 (it is not
-about rate). A `retriable` flag rides alongside, so a client does not keep its own list of
-which refusals are worth another attempt. The mappings live in `SeatResults`, `OrderResults`
-and friends, every switch exhaustive with no default arm, so adding an outcome breaks the
-build.
-
-**An instant with no timezone is refused, not guessed**: `400 ambiguous_timestamp`. Assuming
-UTC would put a show on sale at the wrong instant, silently, until the day.
+**One status rule.** Every refusal about the state of the world is a `409` with a `reason`,
+`404` is only for the resource the URL names, and a mistake knowable from the request alone,
+like a repeated seat id (007), is a `400`. So `hold_cap_reached` is 409, not 403 (nothing is
+being authorised) or 429 (it isn't about rate). A `retriable` flag rides alongside. The
+mappings are exhaustive switches with no default arm, so a new outcome breaks the build. A
+timestamp without a timezone is refused rather than assumed to be UTC, which would open a sale
+at the wrong instant.
 
 **`X-Client-Id` is a claimed identity, not authentication.** It stands in for an Identity
-module that does not exist, which is why no route answers 401 or 403. It arrives through a
-route-group filter rather than a bound parameter, because a failed bind yields an empty 400
-nobody can diagnose, and a group filter cannot be forgotten by the next endpoint. Payments'
-routes are read-only for customers — **a client that can charge itself has walked around the
-order flow entirely** — and someone else's payment is `404`, not `403`. Catalog lives under
-`/catalog` rather than sharing `/events` with Inventory, so the module seam is visible in the
-URL and neither module has to redesign routes to leave.
+module that doesn't exist, so no route answers 401 or 403, and it arrives through a
+route-group filter the next endpoint can't forget. Payments' routes are read-only for
+customers, because **a client that can charge itself has walked around the order flow**.
 
-**Framework responses get the same shape.** `AddProblemDetails` alone changes nothing: a 404
-for an unmatched route, a 405, a 415 or a 400 for an unbindable body all came back as empty
-bodies, measured on the running host. `UseStatusCodePages` is the line that asks for a body.
-Those responses carry no `reason`, because there is no closed vocabulary for "malformed" and
-inventing one would be a promise no handler makes.
+**Framework responses get the same shape.** `AddProblemDetails` alone still left an unmatched
+route's 404, a 405, a 415 and an unbindable body's 400 empty; `UseStatusCodePages` is what
+asks for a body.
 
-**The OpenAPI document is written by hand**, served with Swagger UI at `/docs/` from the
-monolith. Swashbuckle and `Microsoft.AspNetCore.OpenApi` are packages, and the host holds none
-of its own (002). The price is that nothing generates the document, so `OpenApiDocumentTests`
-checks it: every mapped route must be documented and every documented path mapped, in both
-directions, and a fourth test counts `Map*` calls against the ones it could read, so a
-registration in an unreadable shape is a red test rather than a hole. One document covers two
-hosts (018), so **a path carries a `servers` entry exactly when the monolith does not map
-it**, and the test walks the call graph from each host's `Program.cs` to check that too.
-Response shapes remain unchecked, except each status enum, which a test pins to the C# enum it
-is rendered from: the one place a shape had already drifted.
+**The OpenAPI document is written by hand** and served with Swagger UI at `/docs/` (029 gives
+the current reason). `OpenApiDocumentTests` checks it both ways: every mapped route is
+documented, and every documented path is mapped. One document covers two hosts (018), so a
+path carries a `servers` entry exactly when the monolith doesn't map it. Response shapes
+aren't checked, apart from each status enum, which is pinned to the C# enum it's rendered
+from: the one place a shape had already drifted.
 
 ---
 
 ## 009 — Orders records the expiry; Inventory decides it
 
-An order is `Pending`, then `Confirmed`, `Cancelled`, `Expired` or `Failed`, plus the
-non-terminal `AwaitingCapture` that 010 added. `Expired` stays apart from `Cancelled` for the
-reason `SeatReleased` carries a reason: "your hold ran out" and "you changed your mind" are
-different things to tell a customer, and history cannot be backfilled.
+An order is `Pending`, then `Confirmed`, `Cancelled`, `Expired` or `Failed`, plus
+`AwaitingCapture` (010) and `PaymentDue` (034). `Expired` stays apart from `Cancelled` because
+"your hold ran out" and "you changed your mind" are different things to tell a customer.
 
-**`Order.HoldsExpireAt` is copied from Inventory, never computed** — the earliest expiry across
-the order's holds, because the first to lapse is when the order stops being completable.
-Orders does not know the number five. Three prohibitions follow, and they are the rules most
-likely to be "fixed" later:
-
-- Orders never refuses a confirm because `HoldsExpireAt` has passed. It asks Inventory, and
-  `HoldExpired` is what moves the order to `Expired`. Two copies of the expiry rule on two
-  clocks can tell a customer their seat has gone while it is still theirs.
+**`Order.HoldsExpireAt` is copied from Inventory, never computed**, and Orders doesn't know
+the number five. Three prohibitions follow, the rules most likely to be "fixed" later:
+- Orders never refuses a confirm because `HoldsExpireAt` has passed. It asks Inventory, and a
+  `HoldExpired` answer moves the order to `Expired`. Two copies of the expiry rule on two
+  clocks can tell a customer their seat has gone while it's still theirs.
 - `GET /orders/{id}` returns the stored status and never derives expiry on read.
-- Orders never releases seats because a hold lapsed. Inventory reclaims lapsed holds itself.
+- Orders never releases seats because a hold lapsed. *031 amends this: an expiry sweep now
+  asks Inventory to release them.*
 
-`Confirm_WhenHoldsLapsed_ShouldAskInventoryRatherThanItsOwnClock` pins it: a clock far past
-`HoldsExpireAt`, an Inventory that says `Sold`, and an order that confirms.
+**The on-sale gate is the opposite shape, which is why Orders may judge it.** Catalog states
+`OnSaleAt` without enforcing it, and a checkout before it is refused `409 not_on_sale` against
+Orders' own clock. Skew opens a sale a few seconds early or late, nothing is lost, and no
+second authority disagrees. It's a lower bound only, since walk-up sales are real.
 
-**The on-sale gate is the opposite shape, and that is why Orders may judge it.** A checkout
-before `OnSaleAt` is refused `409 not_on_sale`, against Orders' clock. Skew there opens a sale
-a few seconds early or late, nothing is lost, and no second authority disagrees — Catalog
-states the instant and does not enforce it. It is a lower bound only: walk-up sales are real.
-It binds `/orders` only. Inventory's own hold route does not know the on-sale time, and a hold
-taken early carries into a later checkout, since re-holding your own live hold is a no-op.
-
-**Orders sends the holds, and the checks are ordered by cost.** A checkout validates the
-request, asks Catalog, checks for an open checkout, and takes holds last — holds are writes
-against the hottest rows in the system, and taking four before discovering a typo would pay
-the highest price for it. One `Pending` order per client per event is a partial unique index.
-`orders.orders` carries `xmin`, because a confirm and a cancel of one order really do race.
+**Checks run cheapest first**, and holds, which are writes against the hottest rows in the
+system, come last. One `Pending` order per client per event is a partial unique index, and
+`orders.orders` carries `xmin` because a confirm and a cancel of one order really do race.
 
 **A partial checkout writes nothing, releases nothing, and names every seat that failed.** The
-seats that were held stay held, and the customer can buy those or add a replacement with
-another `POST /orders`; re-holding is free and does not move the expiry. The alternative — a
-partial order that can be amended — needs a mutating route, makes the order's snapshotted
-total false, and gives confirm and cancel a third operation to race. Releasing the good seats
-would cost the customer two seats they got during a flash sale because a third was taken.
-Abandoned holds lapse on their own. The cost is that the client remembers its basket, which
-is what clients do.
+held seats stay held, and the customer can add a replacement with another checkout, since
+re-holding is free. An amendable order would need a mutating route and give confirm and
+cancel a third operation to race. Releasing the good seats would cost the customer seats they
+won in a flash sale because another was taken.
 
 ---
 
 ## 010 — Authorise, sell, capture
 
-A confirm secures the money, sells the seats, then takes the money, and any path that does not
-end in every seat sold voids the authorisation. **The argument is about which resource cannot
-be recovered.** A sold seat is terminal; money can be given back. So the unrecoverable step
-goes in the middle, between two that can be undone.
+A confirm authorises the payment, sells the seats, then captures, and any path that doesn't
+end with every seat sold voids the authorisation. **The argument is about which resource
+can't be recovered.** A sold seat is terminal; money can be given back. So the unrecoverable
+step goes in the middle, between two that can be undone.
 
-**What was rejected.** *Sell, then charge*: seats sold to someone who then fails to pay are
-gone for good. *One charge before selling, refunded on failure*: simpler, and common in real
-ticketing — it loses because **a lost authorisation heals itself and a lost charge does not**.
-When the gateway times out, an uncaptured authorisation expires on its own, while a stray
-charge sits there until someone reconciles it. *Payment as a step after confirm*: sold seats
-held by a customer who has paid nothing.
+**Rejected:**
+- *Sell, then charge.* Seats sold to someone who then fails to pay are gone for good.
+- *Charge once, refund on failure.* Simpler, and common in real ticketing. It loses because
+  **a lost authorisation heals itself and a lost charge doesn't**: an uncaptured
+  authorisation expires on its own, while a stray charge sits there until someone reconciles
+  it.
+- *Payment after confirm.* Sold seats held by a customer who has paid nothing.
 
-**The cost.** Two gateway round trips on the hot path instead of one, a void path and a
-capture-retry path. **What would change my mind:** a real gateway whose captures never fail
-would make the second phase dead weight, and if confirm latency became the bottleneck, the
-authorisation would move to checkout. This is a judgement about what the project is for — the
-seat is the scarce thing — not a fact about payments.
+**Cost:** two gateway round trips on the hot path instead of one, plus void and capture-retry
+paths. **What would change my mind:** a gateway whose captures never fail would make the
+second phase dead weight, and if confirm latency became the bottleneck, authorisation would
+move to checkout. This is a judgement about what the project is for, where the seat is the
+scarce thing, not a fact about payments.
 
-**A decline does not end the order**, and neither does a gateway timeout. The order stays
-`Pending` with its holds live, because losing four seats over a mistyped expiry date is not
-reasonable. Both come back `409` with `retriable: true`, which here means "try again with
-something different".
+**A decline or a timeout doesn't end the order.** It stays `Pending` with its holds live,
+because losing four seats over a mistyped expiry date isn't reasonable, and both answers are
+`409` and retriable.
 
-**`AwaitingCapture`: seats sold, funds held, capture not through.** Not `Failed`, because an
-operator looking at it should retry a capture, not apologise. It is resolved by the next
-confirm, which retries only the capture, rather than by a background job — a capture-retry
-sweep would be load-bearing in the way 006 forbids. The cost is that an untouched order can sit
-there, holding money we are owed and have not taken. `Pending` is pinned to zero because the
-one-open-checkout index filters on the literal `"Status" = 0`; `AwaitingCapture` was appended
-as 5.
-
-Since 011 no confirm ends with *some* seats sold, and since 012 no cancel can void the money
-behind a sale that happened.
+**`AwaitingCapture` means seats sold, funds held, capture not through.** It isn't `Failed`,
+because an operator should retry the capture, not apologise. *The next confirm was meant to
+finish it; 025 added a sweep.*
 
 ---
 
 ## 011 — An order's seats sell together or not at all
 
-The first confirm sold an order's seats one at a time, so it could sell some and not the rest:
-those seats were terminal, the order `Failed`, the authorisation voided, and nobody could buy
-seats nobody had paid for. That is not hypothetical — a client that comes back after a partial
-checkout (009) holds seats whose expiries are minutes apart, and a confirm between the first
-lapse and the last sold the late ones.
+The first confirm sold an order's seats one at a time, so it could sell some and not the
+rest, leaving seats sold and unpaid under a `Failed` order. That wasn't hypothetical: a client
+returning after a partial checkout (009) holds seats whose expiries are minutes apart.
 
-**An order's seats are sold in one transaction, all or none.** The sell handler loads every
-seat in one query, asks each `Seat` to sell, and writes only if none refused — one
-`SaveChanges`, so every conditional `UPDATE` and every outbox row land together or not at all.
-A refusal names each seat and why. The order ends `Expired` if every refusal was an expiry and
-`Failed` otherwise, and `Failed` no longer means "partly sold".
+**An order's seats sell in one transaction, all or none.** The handler loads every seat in
+one query, asks each `Seat` to sell, and writes only if none refused, in one `SaveChanges`, so
+every conditional `UPDATE` and outbox row lands together. The order ends `Expired` if every
+refusal was an expiry and `Failed` otherwise. Holds and releases are batched the same way but
+keep per-seat answers: a refused seat doesn't cost the client the others (009), and a seat
+that can't be released doesn't keep the rest held (012).
 
-**Holds and releases are batched too, and keep their per-seat answers.** A refused seat still
-does not cost the client the seats that could be held (009), and a seat that cannot be released
-does not keep the others held (012). Only the write is shared. `ISeatReservations` takes an
-order's seats in one call for all three, and the single-seat HTTP routes are a batch of one.
+**"One aggregate per transaction" was considered and not followed.** The rule exists because
+aggregates may live in different stores, and because a long transaction over many of them
+holds many locks. Neither applies to at most four rows of one table in one round trip, and
+each `Seat` still decides its own transition and carries its own `xmin`.
 
-**"One aggregate per transaction" was considered and deliberately not followed.** The rule
-exists because aggregates may live in different stores, and because a transaction over many
-of them holds many locks for long. Neither applies: at most four rows of one table, written in
-one round trip. And the transaction enforces nothing — each `Seat` still decides its own
-transition and carries its own `xmin`. It adds atomicity, not an invariant. Creating a seat
-map draws the same line: the aggregate is per seat, the use case is bulk, and half a seat map
-is a broken venue rather than a smaller one.
-
-**A refused sale reloads its seats before returning.** By the time the lapsed seat refuses,
-the others already read `Sold` in memory, and any later `SaveChanges` on the same unit of work
-would sell them. `SeatBatchTests` pins it by saving after a refusal and checking nothing sold.
-
-The holds a refused sale leaves behind stay the client's, for 009's reason. Under load, 1,943
-orders — 1,298 of them multi-seat — ended with none partly sold (019).
-
-A sale that loses its race twice reloads too: the retry's load discards the first loss, and
-nothing discarded the second, so a later save on the same unit of work tried to write stale
-`Sold` seats. `xmin` refused that write, but the refusal landed on an unrelated caller.
+**After a refusal or a double lost race, the seats are reloaded**, because the others already
+read `Sold` in memory and a later `SaveChanges` on the same unit of work would write them. The
+holds a refused sale leaves behind stay the client's (009). Under load, 1,943 orders, 1,298 of
+them multi-seat, ended with none partly sold (019), and a composition test asserts it on every
+run (026).
 
 ---
 
 ## 012 — A cancel gives the seats back before the money
 
-Cancelling releases the order's seats with `SeatReleaseReason.Cancelled`, a member that had
-existed since the first domain events and had no producer. Leaving up to four seats to lapse on
-their own after every cancellation strands the scarcest resource for five minutes at a time.
-This does not contradict 009: that forbids releasing because *a hold lapsed*, which would be a
-second clock judging expiry. A customer cancelling is not a clock judgement.
+A cancel releases the order's seats with `SeatReleaseReason.Cancelled` rather than leave up
+to four seats stranded for five minutes. That doesn't contradict 009, which forbids releasing
+because *a hold lapsed*: a customer cancelling isn't a clock.
 
-**The first version voided the money first, and that left seats sold with nobody paying.**
-Confirm authorises and sells; cancel voids (nothing captured yet, so the guard passes); cancel
-releases, every seat answers "sold", and it writes `Cancelled`; confirm's capture finds no
-authorisation. End state: seats sold, money released, and the sale announced. A crashed
-confirm reached the same state with no race at all.
+**The first version voided the money first, and that could leave seats sold with nobody
+paying.** Confirm authorises and sells; cancel voids, releases, finds every seat sold, and
+writes `Cancelled`; confirm's capture finds no authorisation. A crashed confirm could reach
+the same state with no race at all.
 
-**Now a cancel releases the seats first and touches the money only once they are back.** If any
-seat answers `SoldToYou`, a confirm of this order has already sold it; money is the only step
-left, so the cancel answers `LostRace` and voids nothing. If none does, the holds a sale needs
-are gone, no sale can follow, and the void is safe. This is 010's argument run backwards: the
-sale is the step that cannot be undone, so each flow keeps its reversible step on the far side
-of it. `SoldToYou` is a new answer rather than a new rule — `Release` still refuses every sold
-seat, and the reason is simply more specific, read from the `HeldByClientId` that `Sold` keeps.
+**Now a cancel gives the seats back first, and touches the money only once they're back.** If
+any seat answers `SoldToYou`, a confirm of this order already sold it and only the money is
+left, so the cancel answers `LostRace` and voids nothing. Otherwise no sale can follow, and
+the void is safe. It's 010's argument run backwards: each flow keeps its reversible step on
+the far side of the sale. `SoldToYou` reads the `HeldByClientId` that `Sold` keeps (003), and
+`AlreadyCaptured` on the void is kept as a defensive answer no interleaving reaches.
 
-**The other interleavings.** A cancel between the authorisation and the sale gives the seats
-back, the sale refuses, and both flows void — though whichever saves the order first writes
-the label, so a cancelled order can read `Failed`. A cancel after the sale loses, and the
-confirm captures. A crashed confirm cannot be cancelled while its seats are sold, and a retried
-confirm completes it: the customer has the seats, so the customer pays. `AlreadyCaptured` on
-the void is kept as a defensive answer no interleaving of this module reaches.
-
-**The cost.** A client that bought the seats through Inventory's own purchase route, around
-the order, cannot cancel a `Pending` order for them — and a confirm then charges for seats they
-do own, which is what 008's read-only Payments would say anyway.
+A cancel between the authorisation and the sale makes the sale refuse, and both flows void;
+whichever saves first writes the label, so a cancelled order can read `Failed`. A crashed
+confirm can't be cancelled while its seats are sold, and a retried confirm completes it: the
+customer has the seats, so the customer pays. *Since 025 the sale is recorded on the order,
+and a cancel after it answers `order_not_pending`.*
 
 Under load (019), 92 cancels landed after their confirm's sale and stepped back, and none left
-seats sold without money. A cancel fired at the same instant as the confirm never reaches that
-window, because it finishes before the sale; the rig delays it on purpose.
+seats sold without money. The rig fires each racing cancel at a random point inside its
+confirm, since one sent at the same instant finishes before the sale.
 
 ---
 
 ## 013 — `Payment` has a state machine, and one live attempt per order
 
-`Payment` is built by `Payment.Create` and moves only through methods that check its state —
-`Seat`'s shape — while staying in the flat module with no ports, no adapters and no domain
-assembly. **Factory construction and the hexagon are separate arguments, and only the second
-is Inventory-specific.** Taking the first without the second is the consistent reading of both.
-
-`Event`, `Venue` and `Order` have public setters because they have no rule decidable from their
-own row. A payment does: only an authorised payment may be captured, captured is terminal, and
-the amount never moves after the gateway was asked. The transitions refuse non-UTC instants
-and `Create` refuses empty ids, with the guard ahead of every idempotent early return, so a bad
-clock is reported every time rather than depending on state the caller cannot see.
-
-**What it costs.** No compiler enforcement: `Payment` shares an assembly with its `DbContext`.
-Acceptable, because the real guards are in the database — the index below, and `xmin`, which
-stops a confirm and a cancel writing different answers to the same row.
+`Payment` is built by `Payment.Create` and moves only through methods that check its state,
+like `Seat`, but it stays in the flat module with no ports and no domain assembly. **Factory
+construction and the hexagon are separate arguments, and only the second is
+Inventory-specific.** `Event`, `Venue` and `Order` have public setters because no rule can be
+decided from their own row. A payment's rules can: only an authorised payment may be
+captured, captured is terminal, and the amount never moves once the gateway has been asked.
+`Payment` shares an assembly with its `DbContext`, so the compiler can't enforce any of this,
+and the real guards are in the database.
 
 **One live attempt per order.** `ux_payments_order_live` is a partial unique index on
-`order_id` over `Pending`, `Authorized`, `Captured` and `TimedOut`, and it — not the read that
-precedes it — is the real guard against a double charge. `Declined`, `Voided` and `Abandoned`
-moved no money, so they do not stop a new attempt. **`TimedOut` counts as live on purpose**:
-"the gateway never answered" honestly reads as "possibly holding funds". `Payment.LiveStatuses`
-is the one definition, and the filter is built from it, so changing the list changes the model
-and `MigrateAsync` refuses to run until a migration moves the index too.
-`TheLiveAttemptIndex_ShouldFilterOnExactlyTheLiveStatuses` reads the filter back from the model.
+`order_id` over `Pending`, `Authorized`, `Captured` and `TimedOut`, and it, not the read
+before it, is the real guard against a double charge. **`TimedOut` counts as live**, because
+"the gateway never answered" really means "possibly holding funds". The filter is built from
+`Payment.LiveStatuses`, so changing the list changes the model and needs a migration.
 
-**The row is written before every gateway call.** A crash between them leaves a `Pending` row
-holding the slot, and the next attempt asks again under the same key. Writing afterwards would
-leave nothing, the retry would mint a new key, and a new key at a gateway that received the
-first call is a second authorisation.
+**The row is written before every gateway call.** A crash in between leaves a `Pending` row
+holding the slot, and the retry asks again under the same key. Writing afterwards would leave
+nothing, and a new key at a gateway that got the first call is a second authorisation (022
+fences that row).
 
-**No domain events, and none are built until something needs one.** Nothing announces a
-reconciled outcome (014) to the order, and the order does not need it. After an authorisation
-times out, the order stays `Pending`. The next confirm asks under the same key and reads
-whatever the reconciler settled (010, 014), so no order is ever wrong for want of the event.
-The only consumer would be a notification. In the strangled arrangement that means delivery from
-`payments-api` into another process, which is a message bus's job, and the bus is deferred.
-Building an outbox with nobody to read it would be machinery proving nothing, the reason
-Notifications exists (016). The trigger for building it is a consumer that needs the fact:
-a customer message, or an order that must close itself.
+**No domain events until something needs one.** The order's next confirm reads whatever the
+reconciler settled (014), and a notification would need a message bus between processes,
+which is deferred.
 
 ---
 
 ## 014 — A timed-out authorisation is reconciled by asking the gateway
 
-When the gateway does not answer an authorisation, the attempt becomes `TimedOut`, keeps its
-idempotency key and keeps the order's live slot. A retry calls `Payment.Retry`, which moves the
-same row back to `Pending` — same key, same amount — so the gateway is asked the same question
-rather than a second one. A new row per attempt was the original plan and was worse: a second
-row needs a second key, and the index would have to stop counting `TimedOut` to allow it. A
-*capture* that times out leaves the payment `Authorized`, because that is still what is true.
+When the gateway doesn't answer an authorisation, the attempt becomes `TimedOut`, keeping its
+idempotency key and the order's live slot. A retry moves the same row back to `Pending`, so
+the gateway is asked the same question, not a second one. A *capture* that times out leaves
+the payment `Authorized`, because that's still what's true.
 
-**`PaymentReconciler` asks the gateway what it did.** Attempts `TimedOut` for longer than five
-minutes are looked up under their key, and settled on the answer:
+**`PaymentReconciler` asks the gateway what it did**, for attempts `TimedOut` for more than
+five minutes:
 
 | Gateway record | Meaning | Attempt becomes |
 |---|---|---|
@@ -634,239 +467,177 @@ minutes are looked up under their key, and settled on the answer:
 | `NotFound` | the gateway looked and has nothing | `Abandoned` |
 | `Unknown` | the lookup got no answer | unchanged |
 
-**`NotFound` and `Unknown` are not interchangeable, and everything rests on that.** Reading a
-failed lookup as "nothing happened" would release the order's slot while the customer's funds
-were still held, and the next confirm would authorise twice. A hold it finds is *released*,
-not recorded — writing `Authorized` would leave the funds held for days — and nothing is
-written when the void gets no answer. `Abandoned` is new because the existing members would
-each have lied: nothing was declined, and nothing existed to void.
+**Everything rests on `NotFound` and `Unknown` being different.** Reading a failed lookup as
+"nothing happened" would free the order's slot while funds were still held, and the next
+confirm would authorise twice. Found funds are voided, not recorded as `Authorized`, and
+nothing is written when the void goes unanswered.
 
-It lives in Payments, not behind the outbox: the outbox carries decided facts, and a timeout's
-whole content is that nobody knows. It polls once a minute, always sleeps even after a full
-batch — an unresolved row is still first in line next time, and asking a gateway faster does
-not make it answer — and takes a transaction-scoped advisory lock per sweep, so two
-reconcilers do not duplicate work. The first version of that lock compiled, passed every
-test, and threw on every sweep under a real two-process run (`SqlQuery<bool>` wants a column
-named `Value`); the outer loop logged it as an ordinary failure, so neither process ever
-settled anything. The test that now holds the lock from a second connection is the one that
-would have caught it.
+It lives in Payments rather than behind the outbox, because the outbox carries decided facts
+and a timeout's whole content is that nobody knows. It's on by default, polls once a minute,
+and sleeps even after a full batch, since asking a gateway faster doesn't make it answer.
+`payments-api` owns it, and a per-sweep advisory lock is the guard if a second one runs, not
+the plan. The first version of that lock passed every test and threw on every sweep in a real
+two-process run (`SqlQuery<bool>` wants a column named `Value`), so neither process settled
+anything. A test now holds the lock from a second connection.
 
-**The simulated gateway had to become honest for this to be testable.** A timeout is two
-events under one name: `TimeoutRate` decides whether the caller hears anything, and
-`LostRequestRate` decides, for those that do not, whether the request arrived at all. Never
-recording a timed-out call — the first design — made the "funds are held" branch unreachable
-while its tests passed. Its answered keys were first a dictionary on a singleton, which made
-"every reconciler sees the same gateway" a precondition nothing stated: a restart of the
-Payments service emptied it, and the next sweep settled **120 of 121** timed-out attempts as
-`Abandoned`. They now live in `payments.gateway_ledger`, keyed on the idempotency key. Its
-tests moved to the integration suite as a result, deliberately — the alternative was an
-`IGatewayLedger` interface, which is the repository 001 forbids in a flat module.
-
-Known gap: the simulator never declines a void. A real gateway can, and modelling that honestly
-needs a real gateway's error vocabulary. A refused capture is modelled since 034.
+**The simulated gateway had to become honest first.** A timeout is two events under one name:
+`TimeoutRate` decides whether the caller hears back, and `LostRequestRate` whether an
+unanswered authorisation arrived at all. The first design never recorded a timed-out call, so
+the "funds are held" branch was unreachable while its tests passed. Then its memory was a
+dictionary on a singleton, and after a restart of the Payments service the next sweep
+settled **120 of 121** timed-out attempts as `Abandoned`. Answers now live in
+`payments.gateway_ledger`, keyed on the idempotency key. The simulator still never declines a
+void; modelling that honestly needs a real gateway's error vocabulary.
 
 ---
 
 ## 015 — The outbox is drained by the unit of work, in the seat's transaction
 
 Domain events are written to `inventory.outbox_messages` in the same transaction as the seat
-change that raised them, so the sale and the announcement of the sale cannot disagree.
+change that raised them, so a sale and its announcement can't disagree.
 
-**The drain is `InventoryDbContext.SaveChanges`, not the repository.** The repository is handed
-one aggregate; the context commits everything it tracks, and a four-seat checkout drives four
-holds through one scoped context. A drain in the repository would be complete only as long as
-every mutation was followed by its own save — a property of a call pattern, not of the design.
+**The drain is `InventoryDbContext.SaveChanges`, not the repository.** The context commits
+everything it tracks, and a four-seat checkout drives four holds through one context; a drain
+in the repository would only be complete if every mutation had its own save. Events are
+cleared after a successful save, or a four-seat checkout writes ten rows for four holds, and a
+rejected save keeps its events for the retry.
 
-**It clears the events after a successful save.** This was first called optional, and it is
-not: without it, each save re-drains every aggregate still tracked, so a four-seat checkout
-publishes ten rows for four holds.
-`Hold_WhenSeveralSeatsAreHeldOnOneContext_ShouldWriteEachEventExactlyOnce` is the test. The
-clear comes after the base call, never before, so a rejected save leaves the events for the
-retry — and stale `Added` outbox rows from a rejected save are detached so the retry does not
-write them twice. Both are "state from one save leaking into another".
+**Rows are claimed by `ProcessedAt IS NULL`, never a high-water mark.** Ids are assigned at
+insert and transactions commit in any order, so a consumer tracking "the last id I saw" skips
+rows silently, the classic outbox bug. A GUID `MessageId` identifies the event. *This entry
+also promised in-order delivery within one save; 024 withdrew it.*
 
-**Two identities.** `Id` is a sequence and orders rows; `MessageId` is a GUID and identifies
-the event. Ids are assigned at insert and transactions commit in any order, so a consumer
-tracking "the last id I saw" skips rows silently — the classic outbox bug. The guarantee is
-therefore per transaction only: one save's events arrive in order, which is what a reclaim's
-`SeatReleased(Expired)` then `SeatHeld` needs. Across transactions there is no promise, and the
-dispatcher claims on `ProcessedAt IS NULL`, never on a high-water mark.
+**All three events are published, not only the one with a consumer.** In an append-only log,
+YAGNI cuts the other way: a consumer can be added later, but history can't (024 narrows this).
+The measured cost was near zero (019), since a refused hold never reaches the save.
 
-**All three events are published, not only the one with a consumer.** That costs an insert on
-the hottest path, and it loses to a simpler argument: **an append-only log is the one place
-YAGNI has an asymmetric cost.** A consumer can be added later; history cannot. The measured
-cost was near zero anyway (019), because a refused hold never reaches the save.
-
-**What crosses the wire is a contract, not a domain record.** `SeatHeldV1` and its siblings
-live in `Inventory.Contracts`, mapped from the domain events in one place, so renaming a field
-inside `Seat` is not a breaking change to consumers or to rows already written. Names are
-chosen — `inventory.seat.sold.v1` — not CLR type names. The reason enum crosses as a string,
-because an integer would silently re-label every row the day a member is inserted. A domain
-event with no mapping throws at the first save that raises it.
-
-The payload is `jsonb`, so a stuck message can be diagnosed by querying into it. There is no
-`xmin` on the table, because `SKIP LOCKED` already hands each row to one reader.
-`ix_outbox_messages_unprocessed` is partial, so it indexes only the backlog.
-
-**Retention deletes delivered rows only**, older than 30 days, hourly, by `ProcessedAt`. An
-undelivered message is work however old it is, and a dead letter is the evidence that
-something never arrived. Keeping everything forever was also a policy, and nobody had chosen it.
+**What crosses the wire is a versioned contract**, such as `SeatHeldV1` in
+`Inventory.Contracts`, so renaming a field inside `Seat` breaks no consumer and no stored row.
+The reason enum crosses as a string, so inserting a member can't re-label old rows.
+**Retention deletes delivered rows only**, after 30 days: an undelivered message is work
+however old it is, and a dead letter is evidence.
 
 ---
 
 ## 016 — The dispatcher delivers late, never wrong
 
-`OutboxDispatcher` is a `BackgroundService` that claims a batch with `FOR UPDATE SKIP LOCKED`,
-delivers it, and marks what happened. `SKIP LOCKED` means a second instance drains the same
-table in parallel without delivering the other's messages, which is the cheap half of running
-more than one host. Raw SQL, because EF Core cannot express a locking clause.
+`OutboxDispatcher` claims a batch with `FOR UPDATE SKIP LOCKED`, delivers it, and records the
+outcome. `SKIP LOCKED` lets a second instance drain the same table without taking the other's
+rows.
 
-**A failing message backs off and lets the queue move past it**: exponential from two seconds,
-capped at five minutes, and after five attempts it drops out of the claim as a dead letter —
-kept, readable, and no longer retried. So a failing message is overtaken. Blocking the queue
-behind it would protect a global ordering this design never promised (015) at the price of one
-bad row stopping every good one. The loop catches everything, because an exception escaping
-`ExecuteAsync` stops a `BackgroundService` silently for the life of the process.
+**A failing message backs off and lets the queue move past it**, exponentially from two
+seconds to five minutes, and after five attempts it drops out as a dead letter, kept and
+readable. Blocking the queue behind it would protect an ordering nobody was promised, at the
+price of one bad row stopping every good one. The loop catches everything, because an
+exception escaping `ExecuteAsync` silently stops a `BackgroundService` for good.
 
-**No seat invariant depends on it**, and that is checked, not claimed: the concurrency suites
-never register a dispatcher. Under load, with the dispatcher off, 21,948 events piled up
-undelivered and the sale still sold exactly 500 of 500 (019).
+**Late is never wrong.** No seat invariant depends on delivery, and the concurrency suites
+never register a dispatcher. Under load with it off, 21,948 events piled up and the sale still
+sold exactly 500 of 500 (019).
 
-**Delivery is bounded, because the claim transaction used to stay open as long as the slowest
-consumer.** Holding the consumer's table locked for twenty seconds held one Inventory
-transaction open for twenty seconds, with fifty rows locked. Now each handler gets
-`DeliveryTimeout` (2 s) and the whole tick `MaxBatchDuration` (5 s); an overrun fails that
-message like any other failure, and unattempted messages are left for the next tick. Both run
-on the wall clock rather than `TimeProvider`, alone in this codebase, because they bound real
-locks rather than domain time. Delivering outside the claim transaction with a lease is the
-textbook shape, and it would add lease state that `SKIP LOCKED` was chosen to avoid.
+**Delivery is bounded by the wall clock**, because the claim transaction used to stay open as
+long as the slowest consumer, holding fifty rows locked for twenty seconds in one chaos run.
+Each handler gets `DeliveryTimeout` (2 s) and each tick `MaxBatchDuration` (5 s), and an
+overrun fails that message like any other failure. It's the one place that uses the wall
+clock rather than `TimeProvider`, because these deadlines bound real locks, not domain time.
+The textbook alternative, delivering outside the claim under a lease, adds the lease state
+`SKIP LOCKED` was chosen to avoid.
 
-No MediatR and no reflection: `OutboxEventCatalog.Register<T>` closes over the generic when it
-is registered, so the compiler checks that payload and handler agree. An unregistered name
-throws, becoming a dead letter someone can see.
+No MediatR: handlers are registered through `OutboxEventCatalog.Register<T>`, so the compiler
+checks that payload and handler agree, and an unregistered name becomes a visible dead letter.
+**Notifications exists so there's somewhere to deliver**: one handler, one table. Delivery is
+at least once, so idempotency is a unique index on `MessageId`, and the gap between the
+event's `OccurredAt` and the row's `CreatedAt` is the system's one measure of delivery
+latency.
 
-**Notifications exists so the dispatcher has somewhere to dispatch.** A dispatcher delivering
-to nobody would be machinery proving nothing. It is flat — one handler, one table — and has no
-`Map` half and no web framework reference, because its whole inbound surface is a handler
-another module's dispatcher resolves. Delivery is at least once, so idempotency is a unique
-index on `MessageId`; a read-then-write check is one that two concurrent deliveries both pass.
-The violation is caught by constraint name, narrowly, so a dropped connection is not filed as
-"already handled". It keeps the event's `OccurredAt` and its own `CreatedAt`, and the gap is
-the one measurement of delivery latency the system has.
-
-**Readiness is reported by modules, not asked by the host.** `/health/ready` asks every
-registered `IReadinessCheck` and answers 503 if any cannot work. The host may not know that a
-module has a database (017), so it counts votes. Inventory reports the outbox backlog and dead
-letters; Payments reports attempts the reconciler is still carrying. Neither number fails the
-check — taking the host out of rotation over one undelivered message would turn a late email
-into an outage.
+**Readiness is voted by modules**, and the host counts the votes without knowing which
+modules have a database (017). A backlog is reported but never fails the check: taking a host
+out of rotation over one undelivered message would turn a late email into an outage. *029
+moved this onto the framework's health checks.*
 
 ---
 
 ## 017 — Modules meet through contracts, and the one shared project may not name a module
 
-Each module is reached through one seam, an `Add{Module}Module()` / `Map{Module}Module()`
-pair called from the host, which knows nothing else about any module. A module that serves no
-routes, like Notifications, has only the `Add` half.
+Each module is reached through one seam, an `Add{Module}Module()` / `Map{Module}Module()` pair
+the host calls, and the host knows nothing else about any module.
 
-**Modules call each other only through `.Contracts` assemblies.** Orders needs an event's
-price; referencing Catalog would put its `DbContext` on Orders' compile surface, and the first
-person who needed one more field would write a cross-schema join. So Catalog publishes
-`IEventPricing` — an interface, a request, a response, a closed status enum, zero packages —
-and an in-process adapter. That looks like the ceremony 001 argues against, and it fails all
-three of 001's clauses: the substitution really happens (a fake in Orders' tests, a remote call
-at extraction), it protects the module boundary itself, and it is four files. The interface is
-named for the need rather than the owner, so it can only grow one way.
+**Modules call each other only through `.Contracts` assemblies**, which depend on nothing.
+Orders needs an event's price, but referencing Catalog would put its `DbContext` on Orders'
+compile surface, and the first person who needed one more field would write a cross-schema
+join. So Catalog publishes `IEventPricing` and an in-process adapter. That isn't the ceremony
+001 argues against: the substitution really happens (a fake in tests, a remote call on
+extraction), it protects the boundary itself, and it's four files. The interface is named for
+the caller's need, so it can't grow into a general one.
 
-**Migrations are explicit by default and automatic only when asked.** `dotnet ef database
-update` is the real path. Each module also runs a migrator at startup behind its own
-`{Module}:MigrateOnStartup` flag, set only by the run profiles. It is an
-`IHostedLifecycleService` migrating in `StartingAsync`, which the host calls before any
-`StartAsync` — so before Kestrel accepts a connection. Each module keeps its migration history
-in its own schema, so extracting one never means unpicking rows from a shared table.
+**Migrations are explicit by default.** `dotnet ef database update` is the real path, and
+`{Module}:MigrateOnStartup`, set only by the run profiles, migrates before Kestrel accepts a
+connection. Each module keeps its migration history in its own schema, so extracting one never
+means unpicking a shared table.
 
-**Five copies of that migrator became one `ModuleMigrator<TContext>`**, in
-`Encore.Modules.Shared.Persistence`. Sharing a *step* in the host was refused: it would name
-every module's context, put EF Core into the host, and teach it that modules have databases.
-Sharing an *implementation* is different, provided three rules hold, and each is a test: the
-project names no module and no `.Contracts` assembly; it declares no `ProjectReference`, and
-nothing zero-dependency may reference it, so EF Core cannot reach the Domain through it; and
-the host never names it. A module still registers its own migrator and keeps its own
-vocabulary — Catalog still declares the string `"catalog"`.
-
-**The test for sharing anything: the code is inert, and sharing it does not teach the shared
-project a module's name.** `ClientIdEndpointFilter` fails both halves and stays copied into
-three modules. `Encore.Shared` is referenced by the Domain and holds zero packages, so an
-endpoint filter there would drag ASP.NET Core into the domain's reach; and a new web-only
-project to hold one class is the ceremony 001 refuses. The copies store their client id under
-different keys on purpose — a shared key would work until one route carried two filters, and
-then work by accident. `Encore.Shared` holds contracts every module agrees on and nothing
-else: `IDomainEvent`, `IIntegrationEventHandler`, `IReadinessCheck`.
+**Shared code must be inert and name no module.** Five copies of the migrator became one
+`ModuleMigrator<TContext>` in `Encore.Modules.Shared.Persistence`, under rules the tests
+enforce: it names no module or contracts assembly, nothing zero-dependency may reference it,
+and no host names it. Each module still registers its own migrator. Sharing a migration *step*
+in the host was refused, since it would teach the host every module's context. *029 superseded
+two details here: `IReadinessCheck` gave way to the framework's health checks, and
+`ClientIdEndpointFilter`, first kept as three copies, is now shared.*
 
 ---
 
 ## 018 — Payments becomes a service, and a seam is not proven by testing each side of it
 
-`Encore.Payments.Api` composes the Payments module on its own, through the same
-`AddPaymentsModule`, and Orders reaches it over HTTP through the same `IOrderPayments` it
-already called in process. The interface did not change and nothing inside Payments changed,
-which is the claim the modular monolith had been making from the start. It was cheap because
-the seam was keyed by order, idempotency came from the database rather than from anything the
-caller remembers, and `TimedOut` was already in the contract.
+`Encore.Payments.Api` hosts the Payments module on its own, and Orders reaches it over HTTP
+through the same `IOrderPayments` it already called in process. Neither the interface nor
+anything inside Payments changed, which is what the modular monolith had claimed from the
+start. It was cheap because the seam was keyed by order, idempotency came from the database,
+and `TimedOut` was already in the contract. The database didn't move (same Postgres, same
+schema), so the risk was a wire format rather than a migration.
 
-**A service surface is not a customer surface.** 008 refused customers a write route, and that
-stands. The three `/internal/payments/*` routes are kept apart by four things rather than by
-intent: a separate seam (`MapPaymentsServiceApi`, which `MapPaymentsModule` does not call), a
-separate path prefix, a different credential (`X-Service-Token`, compared in fixed time — a
-caller with only a client id gets 401), and no default (the host refuses to start without a
-token, because a fallback token is one everybody has). A shared secret is the floor until
-Identity or mTLS exists.
+**A service surface isn't a customer surface.** The three `/internal/payments/*` routes are
+kept apart by four things, not by intent: their own seam (`MapPaymentsServiceApi`), their own
+path prefix, their own credential (`X-Service-Token`, compared in fixed time), and no default.
+The host refuses to start without a token, because a fallback token is one everybody has. A
+shared secret is the floor until Identity or mTLS exists.
 
-**The caller branches on `reason`, never on the status code, and an unreadable answer is a
-timeout.** A 502, a truncated body, an unknown outcome, a refused connection — all become
-`TimedOut`, the one status already handled correctly for "the money may or may not be held".
-A rejected token throws instead: it is configuration and will not fix itself. **No Polly**: a
-transparent retry would turn one ambiguous answer into several without telling anyone. The
-database did not move — same schema, same Postgres — so this change's interesting failure is a
-wire format, and a later split's would be a migration.
+**An unreadable answer is a timeout.** A 502, a truncated body, an unknown outcome or a
+refused connection all become `TimedOut`, the one status already handled correctly for "the
+money may or may not be held". A rejected token throws instead, since configuration won't fix
+itself. **No Polly**: a transparent retry turns one ambiguous answer into several without
+telling anyone.
 
 **For four days the extraction was inert.** Orders registered `HttpOrderPayments` with
-`services.Replace(...)`, whose comment said it made the outcome independent of registration
-order. `Replace` removes the first *existing* registration — and Orders was registered before
-Payments, so there was nothing to remove. Payments then appended the in-process adapter after
-it, and last-wins gave it every payment. The strangled configuration was a monolith wearing two
-containers. Both halves' tests were green and would have stayed green forever: the adapter was
-tested against a stub, the service's routes on their own, and no test project referenced both
-modules. The fix is `TryAddScoped` in Payments, and `StranglerSwitchTests` resolves
+`services.Replace(...)`, under a comment claiming that made registration order irrelevant.
+`Replace` removes the first *existing* registration, and Orders was registered before
+Payments, so there was nothing to remove. Payments then appended its in-process adapter, and
+last-wins gave it every payment: the "extracted" configuration was a monolith in two
+containers. Both halves' tests were green and would have stayed green forever. The adapter
+was tested against a stub, the service's routes on their own, and no test project referenced
+both. The fix is `TryAddScoped` in Payments, and `StranglerSwitchTests` resolves
 `IOrderPayments` from a composed container in all four registration orders.
 
-**It was found by the chaos rig, before it had measured anything**: stopping `payments-api`
-and watching confirms keep succeeding. **A seam is not proven by testing each side of it.**
-Every future extraction gets a composition test as part of the extraction.
-
-Both arrangements still run — `docker compose --profile load up` is the monolith, `--profile
-strangled up` the pair — and hosts may not reference each other, which a test enforces.
+**The chaos rig caught it** before it had measured anything, by stopping `payments-api` and
+watching confirms keep succeeding. **A seam isn't proven by testing each side of it**, so
+every extraction now ships with a composition test.
 
 ---
 
 ## 019 — Measure first, then break it on purpose
 
-**The load harness was built before the outbox, out of phase order.** The outbox writes into
-every seat transaction, so a baseline taken afterwards could never say what it cost. **k6 over
-NBomber**, and the reason is the build rules rather than taste: NBomber would be a new project
-and a package every purity rule would need a carve-out for, while a k6 script is outside the
-solution entirely and can only reach the system over HTTP — which is the only surface a real
-flash sale touches.
+**The load harness came before the outbox**, out of order, because the outbox writes into
+every seat transaction and a baseline taken afterwards could never say what it cost. **k6 over
+NBomber**, for a build reason rather than taste: NBomber would be a new project and a package
+every purity rule would need a carve-out for, while a k6 script sits outside the solution, runs
+in its own container, and can only reach the system over HTTP, the one surface a real flash
+sale touches.
 
-**Two thresholds are assertions.** `seats_sold <= SALE_SEATS` is the oversell invariant under
-sustained load against a real Kestrel, Postgres and Redis, and it only counts distinct seats
-because every iteration uses a fresh client id and never retries. `unexpected_responses == 0`
-says a 500 is a fault while a 409 is the system working. **There is deliberately no latency
-threshold:** an SLO set before choosing which of the system's three configurations runs would
-measure a system nobody has decided to run. Summaries stay out of git — one laptop is not a
-claim about performance.
+**The thresholds are invariants, not latencies.** `seats_sold <= SALE_SEATS` checks for
+oversell under sustained load, counting distinct seats, since every iteration uses a fresh
+client id and never retries. `unexpected_responses == 0` treats a 500 as a fault and a 409 as
+the system working. There's no latency threshold: an SLO set before choosing which of the
+system's three configurations runs would measure a system nobody had chosen.
 
-**What the outbox cost**, in p99 ms (three runs before it, one run each after):
+**What the outbox cost**, p99 in ms (three runs before it, one each after):
 
 | | hold, contention | purchase | iterations |
 |---|---|---|---|
@@ -874,552 +645,422 @@ claim about performance.
 | Drain only | 48.4 | 57.4 | 398,048 |
 | Drain and dispatcher | 78.2 | 141.4 | 304,071 |
 
-The drain sits inside the baseline's spread: only ~15,000 of 304,000 iterations write at all,
-because a refused hold throws before the save. **The dispatcher is the whole cost**, as a
-second workload competing for the same database. Do not "optimise" the outbox by weakening the
-drain's atomicity, which is the entire product.
+The drain stays inside the baseline's spread, because only ~15,000 of 304,000 iterations write
+at all. **The dispatcher is the whole cost**, as a second workload on the same database, so
+don't "optimise" the outbox by weakening the drain's atomicity. Most of that cost later proved
+fixable: the claim read the whole due backlog every tick, and EF Core logged every statement.
+With both fixed, three runs on 2026-09-24 came in inside the pre-outbox spread or below it.
 
-**The chaos rig** (`load/chaos.sh`): k6 measures and asserts, the script injects faults and
-reads the aftermath from Postgres. A marker row pins the two clocks together. A fault measured
-as a number lands between scenarios, as a paired control window and broken window. The stall
-lands inside a paced window, since a backlog needs a sustained rate, and the reconciler faults
-are startup settings. Each fault gets its own run so one aftermath does not feed the next.
+**The chaos rig** (`load/chaos.sh`) injects one fault per run; k6 asserts, and the script
+reads the aftermath from Postgres. A fault measured as a number runs beside a control window
+of the same shape, which separates the outage from plain overload.
 
 | Fault | Invariants | What it exposed |
 |---|---|---|
-| Payments stopped | held; 0 seats sold without an owner | a stopped container swallows connections, so every confirm waited the full 10 s client timeout — and first, that the extraction was inert (018) |
+| Payments stopped | held; 0 seats sold without an owner | first, that the extraction was inert (018); then, that a stopped container swallows connections, so every confirm waited out the 10 s client timeout |
 | Two reconcilers | held; no attempt settled twice | the gateway's memory was per process; a restart settled 120 of 121 attempts `Abandoned` (014) |
 | Redis stopped | held; no oversell | a hold cost 85× without Redis, and the healthy control window was full of `too many clients` |
-| Dispatcher stalled 20 s | held; request path p99 ~20 ms | delivery max 20.6 s: late is not wrong — and the claim transaction was open the whole time (016) |
-| Orders (6th run) | 1,943 orders; zero partly sold, sold-unpaid or paid-unsold | 92 cancels landed after their confirm's sale and stepped back (012) |
+| Dispatcher stalled 20 s | held; request path p99 ~20 ms | delivery max 20.6 s, late but not wrong, and the claim transaction was open the whole time (016) |
+| Orders | 1,943 orders; none partly sold, sold unpaid or paid unsold | 92 cancels landed after their confirm's sale and stepped back (012) |
 
-**The Redis cost took four sessions to remove, and the order is the lesson.** Npgsql pools per
-connection string, so each host had one pool of 100 against a Postgres allowing 97 in total;
-the budget is now written down (`max_connections=300`, pools of 100 and 50). Redis timeouts
-were cut from 5 s to 250 ms and a hold went from 85× to 22× — not the promised half-second,
-because each attempt still cost ~1,000 ms. Tripling `ConnectTimeout` moved nothing, which ruled
-it out. `BacklogPolicy.FailFast` removed it: a hold's median cost of losing Redis fell to 6%,
-and every refusal was "no connection is active". Logging each refused attempt — ~3,000 a second
-— was then the suspect for what purchases still paid; logging an outage's edges instead
-(`LockOutageLog`) took the hold's median cost to zero, but purchases only from 2.0× to 1.78×.
-**A change is never measured by the session that motivated it.**
+**The Redis cost took four sessions to remove, and the order is the lesson.** Each host had a
+connection pool of 100 against a Postgres allowing 97 in total, so the budget is now written
+down (`max_connections=300`, pools of 100 and 50). Cutting Redis timeouts from 5 s to 250 ms
+took a hold from 85× to 22×, because each attempt still cost about a second. Tripling
+`ConnectTimeout` moved nothing, which ruled it out. `BacklogPolicy.FailFast` removed it, and a
+hold's median cost of losing Redis fell to 6%. Logging an outage's edges instead of every
+refusal took that to zero, but a purchase's only from 2.0× to 1.78×. **A change is never
+measured by the session that motivated it.**
 
-The next step was a cooldown. After a refusal, `CooldownDistributedLock` stops asking Redis for
-`Inventory:RedisLock:Cooldown` (1 s) and answers "unavailable" itself. It was measured against
-its own control, `REDIS_LOCK_COOLDOWN=00:00:00`, two runs each, alternated. A purchase's median
-cost of losing Redis fell from 1.53× and 1.73× to 1.47× and 1.42×. The effect is real, since the
-ranges do not overlap, but small. Holds won while Redis was gone stayed about 25% below the
-healthy window in every Redis-lock run, with or without the cooldown, and did not move at all
-with the Postgres lock (005). What remains belongs to losing Redis, not to asking it, and is
-unattributed.
+**Then a cooldown.** After Redis fails to answer, `CooldownDistributedLock` stops asking it
+for a second and answers "unavailable" itself. Against its own control
+(`REDIS_LOCK_COOLDOWN=00:00:00`), a purchase's median cost of losing Redis fell from
+1.53–1.73× to 1.42–1.47×: real, since the ranges don't overlap, but small. What remains
+belongs to losing Redis, not asking it, and is unattributed.
 
-The seat lock's removal was measured the same way: three runs against six, 18% more attempts,
-lost races 0.10% → 0.23% (004). And the partial index suspected of a 62% p99 regression was
-cleared by three runs with it and three without — one noisy window was the likelier answer.
-
-**The dispatcher's cost was mostly two fixable things.** After the audit, the outbox claim was
-ordered the way its index is (it had read the whole due backlog every tick), and EF Core's
-per-statement logging went to `Warning`. A fresh baseline, three runs on 2026-09-24 with the
-dispatcher on, put the p99 of a contended hold at 34–44 ms and a purchase at 27–30 ms, with one
-86 ms outlier whose median matched the others. That is inside the pre-outbox spread or below
-it, against 78.2 and 141.4 before. Every run held all three invariants.
-
-**What this is not.** One laptop, mostly one run per configuration. The counts and the
+**What this isn't:** one laptop, mostly one run per configuration. The counts and the
 mechanisms behind them are strong; latency comparisons across sessions are not.
 
 ---
 
-## 020 — A claim nothing checks reads like a claim that holds
-
-The rules that matter here are enforced by the build or by a test rather than by prose (002,
-008). This entry is about the checks around the checks.
+## 020 — How the suite runs, and how CI knows it ran
 
 **The tests run in a container.** On the development machine, Smart App Control blocks every
-freshly built unsigned assembly: in enforcement mode, a file with no reputation verdict is
-refused, a rebuild produces a new hash and a new unanswered question, and there is no
-exclusion mechanism. Signing, or permanently disabling a security feature, were the other
-options. The container is reversible, free, and makes the suite run identically on any machine
-with Docker. Testcontainers run as siblings on the host's daemon rather than
-Docker-in-Docker. Source is copied into the image rather than bind-mounted, because Windows
-`bin`/`obj` in front of a Linux build fail in ways that look like code problems — which also
-means **the command needs `--build`**, or it tests the last image and reports green.
+freshly built unsigned assembly, and the alternatives were signing everything or permanently
+disabling a security feature. The container is reversible, free, and identical anywhere with
+Docker; Testcontainers run as siblings on the host's daemon. Source is copied into the image,
+not bind-mounted, because Windows `bin`/`obj` folders in front of a Linux build fail in ways
+that look like code problems. That's also why **the command needs `--build`**: without it, it
+tests the last image and reports green.
 
-**CI runs exactly that command** on every push to `main` and every pull request, and **reads
-the verdict from the summary lines, not the exit code**: `docker compose run` exits 0 when it
-cannot reach the daemon at all. The workflow counts `Passed!` lines against the test projects
-under `tests/`, which fails when an assembly fails, when nothing ran, and when a test project
-exists but never reached the runner. Each of those was checked by fabricating the log that
-produces it. CI does not run the load harness — a latency number from a shared runner would be
-a measurement wearing a threshold's clothing — and it does not re-check the purity rules the
-build already enforces.
+**CI reads the verdict from summary lines, not the exit code**, because `docker compose run`
+exits 0 even when it can't reach the daemon. It counts `Passed!` lines against the test
+projects under `tests/`, so it fails when an assembly fails, when nothing ran, and when a
+project never reached the runner. Each case was checked by fabricating the log that produces
+it.
 
-**The documents drifted; the code did not.** Two audits found the suite green and the prose
-stale: the project guide and the README described one host four days after there were two,
-and cited decisions for things other decisions had done. Where a document is machine-readable,
-it now has a test — the OpenAPI document (008), and this log's index, which must list every
-entry in order with a working anchor and numbering without gaps. **No test reads English**, so
-the rest is checked by deriving each claim from the code and comparing.
+**Documents drift; the code didn't.** Two audits found the suite green and the prose stale.
+Where a document is machine-readable, it now has a test: the OpenAPI document (008) and this
+log's index. No test reads English, so the rest is checked by deriving each claim from the
+code.
 
-**One environment call, recorded because the failure looked like a code bug.** Postgres is
-published on host port `55432`, not `5432`, because a native PostgreSQL 18 service on the
-development machine owns `5432` — and `docker ps` still prints the mapping as if Docker had
-won it. Every containerised path stayed green, since container traffic never touches a
-published port; only `dotnet run` and `dotnet ef` failed, with a password error against a
-correct connection string. Moving the host side is reversible and leaves the developer's
-machine alone.
+**Postgres is published on host port `55432`**, because a native Postgres on the development
+machine owned `5432` while `docker ps` still showed the mapping as Docker's. Container traffic
+never touches a published port, so only `dotnet run` and `dotnet ef` failed, with a password
+error against a correct connection string.
 
 ---
 
 ## 021 — Telemetry follows the asymmetry
 
-OpenTelemetry was brought forward from On Tour by the owner. Its packages live in
-**`Encore.Telemetry`**, a host-side project that both hosts reference and nothing else may.
-The alternative was to drop `EncoreNoDirectPackages` from the hosts. That would reopen the rule
-behind 008's hand-written contract for the sake of four packages. 017's "one shared project"
-still holds for modules. This second one is shared by hosts. The architecture tests forbid it
-to name a module, a contracts assembly or `Encore.Shared`, forbid anything but a host to
-reference it, and forbid any module to emit a reference to OpenTelemetry.
+OpenTelemetry's packages live in **`Encore.Telemetry`**, a host-side project that both hosts
+reference and nothing else may. The alternative was lifting the hosts' no-packages rule for
+four packages. The architecture tests forbid it to name a module or a contracts assembly, and
+forbid any module to reference OpenTelemetry.
 
 **Modules emit through the BCL.** Inventory's `ActivitySource` and `Meter` are
-`System.Diagnostics` types, recorded at the adapters' edges: the lock cooldown, the outbox
-dispatcher, and the two driving adapters. The Domain and the use cases are unchanged. The host
-subscribes to `Encore.*` by wildcard, so it never names a module. **Only Inventory has
-instruments of its own.** The flat modules get the framework's spans for HTTP, Npgsql and
-HttpClient and nothing more, for 001's reason.
+`System.Diagnostics` types, recorded at the adapters' edges, so the Domain and the use cases
+never learn they exist. The host subscribes to `Encore.*` by wildcard and never names a
+module. **Only Inventory has instruments of its own**; the flat modules get the framework's
+spans, for 001's reason.
 
-**An outbox delivery links to the trace that raised it; it does not join it.** The drain
-stores `Activity.Current`'s `traceparent` in a nullable column, and the dispatcher starts a
-consumer span with a link to it. A parent would have been wrong on both counts: the request
-ended long before, and a redelivery would give it a second child. The drain's atomicity is
-untouched. It writes one more string per row.
+**An outbox delivery links to the trace that raised it instead of joining it.** That request
+ended long before, and a redelivery would give it a second child. A confirm's trace crosses
+both processes with no code at all, since HttpClient propagates W3C context. The first live
+run buried the requests under one-span traces from every background poll, so the root sampler
+now drops client spans that nothing started.
 
-**Two things the first live run showed.** Every background poll (the outbox claim, the sweep,
-the reconciler) arrived as its own trace of one Npgsql span, about one a second per job,
-burying the requests. The root sampler now drops a client span that nothing started, and
-Npgsql's metrics still price those queries. The confirm's trace crosses both processes, with
-authorise and capture as server spans in `encore-payments`, without any code for it:
-HttpClient propagates W3C context natively.
+**Off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set**, so load runs measure the system without
+it. Locally, `grafana/otel-lgtm` runs under `--profile telemetry` with a provisioned
+dashboard.
 
-**Off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set**, so a load run measures the system without
-it, and tests and `dotnet run` are unchanged. Locally, `grafana/otel-lgtm` runs under
-`--profile telemetry`, with an "Encore — flash sale" dashboard provisioned from `ops/grafana/`.
+**What exporting costs:** with the collector warm and every export checked for arrival, over
+two runs each, throughput fell about 25%. On one laptop the SDK and the collector share a CPU,
+so this prices the whole arrangement. An earlier, unverified pair disagreed with itself, which
+is why arrival is now checked.
 
-**What exporting costs, measured.** The collector ran warm through both arms, and each "on" run
-was checked for arrival afterwards. The comparison was two runs each, alternated.
-
-- Throughput fell about 25%: 310k and 311k iterations, against 439k and 394k.
-- A contended hold's median rose from 18 ms to 22 ms, and a sale hold's p95 roughly doubled,
-  from 31–38 ms to 70–72 ms.
-
-On one laptop, the SDK's cost and the collector's CPU cannot be told apart, so this prices the
-whole arrangement. An earlier, unverified pair disagreed with itself (231k and 418k iterations),
-which is why arrival is now checked. Every trace is sampled. A ratio sampler is the obvious
-lever, and it is not measured.
-
-**The dashboard found two things the tests did not.**
-
-- The SDK pushes metrics every 60 s, which gives a one-minute sale one point, so exports now go
-  every 5 s unless `OTEL_METRIC_EXPORT_INTERVAL` says otherwise.
-- The delivery-lag histogram used the SDK's default boundaries, which are sized for
-  milliseconds. Every delivery landed in the 0–5 bucket, and the dashboard read p99 = 5 s. With
-  boundaries in seconds, deliveries take 0.1–2.5 s, which is the dispatcher's 1 s poll showing.
+**The dashboard caught two things the tests didn't.** Metrics exported every 60 s gave a
+one-minute sale a single point, so they now go every 5 s. And the delivery-lag histogram's
+default buckets were sized for milliseconds, so every delivery landed in the first and p99
+read 5 s. In seconds, deliveries take 0.1–2.5 s: the dispatcher's one-second poll.
 
 ---
 
 ## 022 — Once money has moved, nothing stops the step halfway
 
 An audit found three ways a payment step could be abandoned between the gateway and the row
-that records it. Each ends with funds held that nothing releases, which 010 and 014 exist to
-prevent. This amends 013 and 014.
+that records it, each leaving funds held with nothing to release them. This amends 013 and
+014.
 
-**A confirm or cancel honours the request's token only while it loads the order.** Every
-later step is irreversible or undoes one, so it runs to the end. Before, a client that hung up
-after the authorisation threw out of the sale, and left the order `Pending` and the
-authorisation live with no void coming. Inside Payments, once the attempt's row is committed,
-the gateway call and the save of its answer ignore the caller's token for the same reason. This
-is the rule 004 already applies to releasing a lock. The cost is that a confirm keeps working
-for a client that has gone, for as long as the gateway's own timeouts allow.
+**Once money has moved, the request's cancellation is ignored.** A confirm or cancel honours
+it only while loading the order. Every later step is irreversible or undoes one, so it runs
+to the end. Before, a client that hung up after the authorisation left it live, with no void
+coming. It's the rule 004 applies to releasing a lock. **Cost:** a confirm keeps working for a
+client who has gone, for as long as the gateway's timeouts allow.
 
-**The reconciler holds a row lock from the lookup to the save.** Before, it voided the funds at
-the gateway and only then tried its `xmin`-checked save. A confirm that retried the row in
-between won the save and asked again under the same key, and the gateway answered with the
-authorisation just released. The seats sold, and the capture went against a void. The
-alternative was a `Reconciling` status, which would add a state to every switch and to the
-live index. The lock costs a confirm on that one row a wait of one gateway round trip, after
-which it answers `lost_race` and the next confirm pays under a fresh key.
+**The reconciler holds a row lock from the lookup to the save.** It used to void the funds
+first and then try its `xmin`-checked save, so a confirm retrying the row in between could
+win, ask again under the same key, and capture against a void. A `Reconciling` status was the
+alternative, adding a state to every switch and to the live index. The lock costs a confirm on
+that one row a gateway round trip, then a `lost_race` answer.
 
-**A `Pending` attempt is fenced, and it is found.** A confirm that finds one resumes it with
-a write, so `xmin` orders two confirms instead of letting both save over each other. A save
-that loses answers from the winner's row, not with a 500. 013 relied on "the next attempt
-asks again", but nothing guarantees a next attempt: a cancel voids nothing on a `Pending` row.
-So a `Pending` attempt older than the reconciler's minimum age is taken to be one a crash left
-behind. It is claimed as `TimedOut` under the row lock and settled like any other, and the
-readiness check counts it.
-
-The simulator still never refuses a capture, so it could not have shown the capture against a
-void. That gap is 014's, and it is unchanged.
+**A `Pending` attempt is fenced, and found.** A confirm that finds one resumes it with a
+write, so `xmin` orders two confirms and the loser answers from the winner's row, not with a
+500. And since nothing guarantees a next attempt, a `Pending` attempt older than the
+reconciler's minimum age is treated as a crash's leftovers: claimed as `TimedOut` under the
+row lock, settled like any other, and counted by the readiness check.
 
 ---
 
 ## 023 — A swept seat keeps the record of its lapsed hold
 
-`ExpireHold` used to clear `HeldByClientId` and `HoldExpiresAt`, and `Sell` picked its
-refusal from the status. So the sweep changed the answer. Before it reached a seat, the lapsed
-holder heard `HoldExpired` and anyone else heard `NotTheHolder`. After it, both heard
-`NoActiveHold`. Orders records an order `Expired` only when every refusal is `HoldExpired`, so
-the same lapsed order ended `Expired` or `Failed` depending on the sweep's timing. That breaks
-006: the sweep is cleanup, and turning it off must change nothing.
+`ExpireHold` used to clear `HeldByClientId` and `HoldExpiresAt`, while `Sell` chose its
+refusal from the status, so the sweep changed the answer: before it, the lapsed holder heard
+`HoldExpired`; after it, `NoActiveHold`. Orders records `Expired` only when every refusal is
+`HoldExpired`, so the same lapsed order ended `Expired` or `Failed` depending on the sweep's
+timing. That breaks 006.
 
-Now `ExpireHold` sets only the status, and the lapsed pair stays on the row as a record. `Sell`
-reads the pair rather than the status, so a swept seat answers exactly as an unswept one does.
-Only a release, a sale or a new hold changes the pair. Nothing that counts holds reads it
-without the status: the cap, the sweep and the partial index all filter on `Held`.
+Now `ExpireHold` sets only the status, and the lapsed pair stays on the row as a record.
+`Sell` reads the pair, so a swept seat answers exactly as an unswept one does. Only a release,
+a sale or a new hold changes the pair, and everything that counts holds filters on `Held`.
 
-The alternative was to make the lazy path forget as well, answering `NoActiveHold` to
-everyone. That is simpler, but it throws away the one distinction Orders uses to tell a customer
-their time ran out. The cost is an `Available` row that still names a client, which the field's
-documentation now says.
+**Rejected:** making the lazy path forget too, which throws away the one distinction Orders
+uses to tell a customer their time ran out. **Cost:** an `Available` row can still name a
+client.
 
 ---
 
 ## 024 — The outbox promises delivery, not order
 
-015 said one save's events arrive in order, and gave a reclaim's `SeatReleased(Expired)` then
-`SeatHeld` as the reason. The dispatcher never did that. When a handler fails, its message is
-backed off and the next row claimed in the same tick overtakes it, and that row can be its
-sibling from the same save. `SKIP LOCKED` can also hand two rows of one save to two
-dispatchers. Keeping the promise would need a per-save id and a claim that stops behind a
-failed sibling. That is head-of-line blocking, which 016 rejected so that one bad row does not
-stop the good ones. So the promise is withdrawn. **Delivery is at least once, in no order a
-consumer may rely on.** A consumer deduplicates by `MessageId` and reads each event on its own.
-Nothing depended on the ordering: the only consumer handles `SeatSold`, and a sale raises one
-event.
+015 said one save's events arrive in order, and the dispatcher never did that. A failing
+message backs off and the next row overtakes it, even a sibling from the same save, and
+`SKIP LOCKED` can hand one save's rows to two dispatchers. Keeping the promise would take the
+head-of-line blocking 016 rejected, so it's withdrawn: **delivery is at least once, in no
+order a consumer may rely on.** Nothing depended on it, since the only consumer handles
+`SeatSold` and a sale raises one event.
 
-**A payload is read strictly.** Deserialising was lenient, so a row missing a member reached
-its handler with `Guid.Empty` and was marked delivered. Now it fails, is retried, and ends as
-a dead letter someone can see, which is 016's rule. The cost is that any member added to a V1
-contract must have a default. The wire names now ship on the contracts as attributes, so a
-consumer holding only `Inventory.Contracts` reads what Inventory writes. Before, the names
-lived only in Inventory's internal serializer options. A test pins each contract's payload.
+**Payloads are read strictly.** Lenient deserialising let a row missing a member reach its
+handler with `Guid.Empty` and be marked delivered; now it becomes a visible dead letter.
+**Cost:** any member added to a V1 contract needs a default. The wire names ship on the
+contracts, so a consumer holding only `Inventory.Contracts` reads what Inventory writes.
 
-**"A consumer can be added later; history cannot" is narrower than it read.** An event type
-registered with no handler is marked delivered as soon as it is claimed. A consumer added
-later is handed only new rows. The retained ones are still in the table for the retention
-window, so it can replay them, but nothing delivers them to it.
+**"A consumer can be added later" is narrower than 015 made it sound.** An event type with no
+handler is marked delivered when it's claimed, so a later consumer only sees new rows. The old
+ones sit in the table for the retention window, undelivered.
 
 ---
 
 ## 025 — An order owed its capture is finished by a sweep
 
-This supersedes 010's "`AwaitingCapture` is resolved by the next confirm, not a job". 010
-rejected a job as load-bearing in the way 006 forbids. But 006's test is that everything stays
-correct with the timer off, and a capture sweep passes it exactly as the payment reconciler
-does (014). With the sweep off, the next confirm still finishes the order. The reasoning did
-not separate the two. The cost of relying on the next confirm was real. The confirm that left
-an order awaiting capture had answered 200, "you have every seat", so nobody asked again. One
-chaos run ended with 80 orders awaiting capture and 80 authorisations untouched. When those
-lapse at the gateway, the seats have been given away.
+This supersedes 010's "the next confirm resolves `AwaitingCapture`, not a job". 006's test is
+that everything stays correct with the timer off, and a capture sweep passes it just as the
+reconciler does: with the sweep off, the next confirm still finishes the order. But relying on
+that confirm had a real cost. It had already answered 200, "you have every seat", so nobody
+asked again. One chaos run ended with 80 orders awaiting capture and 80 authorisations
+untouched, and when those lapse at the gateway, the seats have been given away.
 
-**`CaptureSweeper` confirms them again, as a customer would.** It adds no rule of its own:
-it calls the same `ConfirmAsync`, once a minute, for orders owed their capture for more than a
-minute. It is behind `Orders:CaptureSweep:Enabled` and takes an advisory-lock lease per sweep,
-like the reconciler.
+**`CaptureSweeper` confirms them again, as a customer would.** Once a minute it calls the same
+`ConfirmAsync` for orders owed their capture for over a minute, under an advisory-lock lease
+like the reconciler's. It adds no rule of its own.
 
-**The sale is recorded before the capture is asked for.** A confirm now writes
-`AwaitingCapture` and `SoldAt` as soon as every seat sells. Before, the order row was first
-written after the capture round trip, so a confirm that died there left seats sold and money
-held under an order that still read `Pending`, and nothing could find it. `SoldAt` is also how
-the sweep leaves a confirm still waiting on its own capture alone. The cost is one more write
-to the order row per confirm. It also changes what 012's cancel sees: once the sale is recorded,
-a cancel finds `order_not_pending` rather than `lost_race`. `lost_race` remains only for the
-moment between the sale and its record. Orders already awaiting capture when this shipped were
-given their placement time, so the sweep picks them up.
+**The sale is recorded before the capture is requested.** A confirm now writes
+`AwaitingCapture` and `SoldAt` as soon as every seat sells. Before, a confirm that died before
+capturing left seats sold and money held under an order still reading `Pending`, where nothing
+could find it. **Cost:** one more write per confirm, and once the sale is recorded, 012's
+cancel gets `order_not_pending`, leaving `lost_race` for the moment in between.
 
 ---
 
-## 026 — What remains of the roadmap, restated
+## 026 — Why there is no deployment
 
-**On Tour's "cloud deploy" becomes a measurement run on more than one machine.** Every claim
-here is a load or chaos result, and each carries the same caveat: one laptop, with k6, the
-system and the telemetry collector sharing a CPU (019, 021). A standing cloud deployment would
-not remove that caveat, and it would add cost without evidence. The chaos rig stops containers
-with `docker compose`, so it could reproduce none of its faults against managed services. A
-public deployment would also expose `/purchase` and seat-map creation to anyone, with a
-development service token, which is Identity and secrets work the roadmap does not include.
-So the remaining item is a throwaway run: the unchanged stack on one host, k6 and the
-collector on another, the baseline and the chaos runs repeated, and everything torn down
-afterwards. It needs `load/chaos.sh` pointed at a remote Docker context, with k6's
-`ENCORE_BASE_URL` pointed at that host. A standing deployment stays on the deferred list, and
-now the list and the roadmap say the same thing.
+Every claim here is a load or chaos result with the same caveat: one laptop, with k6, the
+system and the telemetry collector sharing a CPU (019, 021). A standing cloud deployment
+wouldn't remove that caveat, and it would add cost without adding evidence. The chaos rig
+stops containers with `docker compose`, so it couldn't reproduce its faults against managed
+services, and a public deployment needs Identity and secrets work that's out of scope. The
+plan became a throwaway run instead, with k6 and the collector on a second machine. *035
+dropped that too.*
 
-**Soundcheck reads pairwise: Payments via the strangler, Notifications via the outbox.** That
-is what was built. Moving Notifications into its own process would need a transport, and
-013 already made cross-process delivery a message bus's job, with the bus deferred. So it is
-deferred until a bus exists, and the roadmap row no longer suggests it was forgotten.
+**Notifications stays in process.** Moving it into its own process would need a transport,
+and 013 already made cross-process delivery a message bus's job, so it waits for a bus.
 
-**The strongest cross-module claim is now a check.** "No order partly sold, sold without
-money, or paid without its seats" rested on chaos.sh rows that were printed and never
-compared. `CheckoutCompositionTests` composes the real Inventory and Payments modules behind
-checkout, races every confirm against its cancel, and asserts the same three invariants on
-every test run. chaos.sh now exits non-zero when any row it reports as "must be 0" is not.
-This does not reopen 020: the check is about rows, not latency.
+**The strongest cross-module claim became a check instead.** "No order partly sold, sold
+without money, or paid without its seats" rested on chaos.sh rows that were printed and never
+compared. `CheckoutCompositionTests` now composes the real Inventory and Payments modules,
+races every confirm against its cancel, and asserts those invariants on every test run, and
+chaos.sh exits non-zero when any "must be 0" row isn't.
 
 ---
 
-## 027 — A comment carries a reason, never the name
+## 027 — Comments only where they prevent a mistake
 
-An audit counted 1,286 `///` blocks outside `Migrations/`. Most said only what the member's
-name says, 94 were `<inheritdoc />` tags that no documentation file read, and 44 had gone
-stale. The comments that carry a rule were hard to find among them. Fewer than 300 remain.
+An audit counted 1,286 `///` blocks outside `Migrations/`. Most repeated the member's name, 94
+were `<inheritdoc />` tags no documentation file read, and 44 had gone stale, so the comments
+that carry a rule were hard to find. Fewer than 300 remain.
 
-**A comment exists only where a maintainer would otherwise get something wrong**: a deliberate
-conflation, an idempotency promise across a boundary, a pinned value, what null means, a trap,
-an invariant with its decision number, or why the obvious thing is not done. **A fact is
-written once**, where it acts or on the contract that promises it, and a repo-wide rule is not
-restated per member. **`///` only where visible outside its file**, and **`<inheritdoc />` only
-on this repo's own contracts and ports**. **Endpoint summaries live only in `openapi.json`
-(008)**, not in `.WithSummary`, which nothing served and which had drifted.
+**A comment exists only where a maintainer would otherwise get something wrong**: a
+deliberate conflation, an idempotency promise across a boundary, a pinned value, what null
+means, a trap, an invariant with its decision number, or why the obvious thing isn't done. A
+fact is written once, where it acts or on the contract that promises it. Endpoint summaries
+live only in `openapi.json` (008).
 
-The alternative was to document every member. It reads as thorough, and it hides the rules
-among restatements, where a stale claim goes unnoticed. The cost is fewer IDE tooltips, and a
-reviewer holds each new comment to this rule.
+**Rejected:** documenting every member. It looks thorough, and it hides the rules among
+restatements, where a stale claim goes unnoticed. **Cost:** fewer IDE tooltips, and every new
+comment has to meet this bar in review.
 
 ---
 
 ## 028 — An event is never free
 
-Catalog accepted a price of zero, and Payments refuses to authorise one: `Payment.Create`
-guards the amount, as a charge of nothing is not a charge (013). An order for a free event
-therefore failed at confirm, a 500 in the monolith, and in the strangled pair the 500 read as
-`TimedOut` (018), so the order could never confirm. No test priced an event at zero.
+Catalog accepted a price of zero, and Payments refuses to authorise one, since a charge of
+nothing isn't a charge (013). So an order for a free event failed at confirm, and in the
+two-process setup the failure read as `TimedOut` (018), so the order could never confirm. No
+test had priced an event at zero.
 
-**Catalog refuses a price that is not above zero** (`invalid_price`, 400), and the
-hand-written document says so. The alternative was a confirm that skips Payments when the
-total is zero and sells the seats directly. It would support free events, but it adds a second
-path through authorise, sell, capture (010, 022, 025), the one sequence the repo treats as
-load-bearing, for a case nothing asks for. The cost is that a free event has to be modelled
-another way if one is ever wanted, and that decision starts from here.
+**Catalog now refuses a price that isn't above zero** (`invalid_price`, 400). **Rejected:** a
+confirm that skips Payments when the total is zero. It would support free events, but it adds
+a second path through authorise, sell, capture (010, 022, 025), the one sequence this repo
+treats as load-bearing, for a case nothing asks for. **Cost:** a free event would have to be
+modelled some other way, starting from here.
 
 ---
 
 ## 029 — Where the framework already does the job, it does it
 
-A review put the repository's own argument back to it: architecture is paid for only where the
-optionality is spent (001), yet the hosts hand-rolled a readiness endpoint that ASP.NET Core
-ships, and three modules carried copies of one filter. Where the framework already does the job,
-it now does it.
+A review turned the repository's own argument on it: architecture is paid for only where the
+optionality is spent (001), yet the hosts hand-rolled a readiness endpoint ASP.NET Core
+already ships, and three modules carried copies of one filter.
 
-**Readiness is the framework's health checks.** A module registers an `IHealthCheck` with
-`AddHealthChecks().AddCheck<T>(name)`, and both hosts map the routes through one extension,
-`MapEncoreHealthChecks`, in `Encore.Telemetry`, the one project hosts already share. This
-supersedes 017's `IReadinessCheck` in `Encore.Shared`: the interface was a copy of one the shared
-framework already provides to every module with a database, and `Encore.Shared` goes back to
-holding only what the Domain needs. What 016 promised stays true. The host still counts votes
-without knowing which modules have a database, every registered check votes on `/health/ready`,
-a backlog goes in the description and never fails a check, and the JSON body and the 503 are
-unchanged. The framework runs each check in its own scope, so two checks never share a
-`DbContext`, which is why the old endpoint had to run them one at a time. `/health` runs no check
-at all, so a dependency's outage never gets a working process restarted. `MapHealthChecks`
-answers every method, so both routes are restricted to GET and HEAD, and `OpenApiDocumentTests`
-reads `MapHealthChecks` as a GET.
+**Readiness uses the framework's health checks.** Modules register an `IHealthCheck`, and both
+hosts map them through one `MapEncoreHealthChecks` in `Encore.Telemetry`, restricted to GET
+and HEAD because `MapHealthChecks` answers every method. This supersedes 017's
+`IReadinessCheck` but keeps 016's promise: the host counts votes without knowing which modules
+have a database, and a backlog never fails a check. `/health` runs no check at all, so a
+dependency's outage never gets a working process restarted.
 
-**`ClientIdEndpointFilter` is shared, in `Encore.Modules.Shared.Http`.** This supersedes 017's
-"stays copied into three modules". 017's test for sharing was that the code is inert and sharing
-it teaches the shared project no module's name. The filter passes both halves. It was refused
-anyway, as a web-only project for one class. The project now holds two filters. The second is
-`SharedSecretEndpointFilter`, the Payments service token generalised, which hashes both sides
-before `FixedTimeEquals` so a wrong guess no longer learns the secret's length. The project takes
-Shared.Persistence's rules, and the same tests now check both: no `ProjectReference`, no module or
-contracts assembly named, no zero-dependency project referencing it, and no host naming it. The
-three copies stored the client id under three keys, so that two of them on one route could not
-collide. One filter writes one value from one header, so there is nothing left to collide.
+**`ClientIdEndpointFilter` is shared, in `Encore.Modules.Shared.Http`**, superseding 017's
+three copies. It passed 017's own test for sharing, and had been refused only as a web-only
+project for one class. The three copies had used three keys so that two on one route couldn't
+collide; one filter writes one value from one header, so nothing is left to collide. The
+project also holds `SharedSecretEndpointFilter`, which hashes both sides before
+`FixedTimeEquals` so a wrong guess can't learn the secret's length, and it follows
+Shared.Persistence's rules.
 
-**The OpenAPI document stays hand-written, for a different reason than 008 gave.** 008 said the
-hosts hold no packages. That is true, but it borrows a rule written to keep infrastructure out of
-the Domain (002), and it is not what the document is for. The document promises two things endpoint
-metadata does not carry:
-- the closed vocabulary of `reason` values each route can answer, with its `retriable` flag;
-- which host serves which path, after the Payments extraction (018).
-
-A generated document would need a transformer per route for the first and a hand-kept `servers`
-map for the second. It would still need a test that it agrees with the C# enums. That is the
-hand-written document again, one step removed. The cost is unchanged: about 575 lines of JSON,
-kept honest by `OpenApiDocumentTests` in both directions.
+**The OpenAPI document stays hand-written, for a better reason than 008 gave.** 008 borrowed
+the Domain's no-packages rule (002). The real reason is that the document promises two things
+endpoint metadata doesn't carry: the closed vocabulary of `reason` values each route can
+answer, with its `retriable` flag, and which host serves which path (018). Generating it would
+take a transformer per route, a hand-kept `servers` map, and still a test against the C#
+enums: the hand-written document again, one step removed. **Cost:** about 575 lines of JSON,
+kept honest by `OpenApiDocumentTests`.
 
 ---
 
 ## 030 — What checkout does not guard is closed, keyed or rate-limited
 
-008 and 012 left every route open until an Identity module could restrict it. 026 noticed what
-that meant for a deployment: anyone could create seats and buy them with no order and no money.
-This entry supersedes "open until Identity" for the three routes where the answer cannot wait.
+008 and 012 left every route open until an Identity module could restrict it. 026 noticed
+what that meant for a deployment: anyone could create seats and buy them with no order and no
+money. This supersedes "open until Identity" in three places.
 
 **The seat actions are off by default.** `/hold`, `/release` and `/purchase` sell without a
-price, a payment or an on-sale check. They exist because the load harness measures contention on
-the hot path directly, and checkout is the customer's way in. `MapSeatEndpoints` maps them only
-when `Inventory:ExposeSeatRoutes` is true. The compose services the harness drives set it, and
-so does the development launch profile, so Swagger can still try them.
+price, a payment or an on-sale check. They exist so the load harness can measure the hot path
+directly, and they're mapped only when `Inventory:ExposeSeatRoutes` is set.
 
-**Operator writes need a key.** Creating a venue, an event or a seat map requires `X-Operator-Key`
-to match `Operator:ApiKey`. It is checked by the same `SharedSecretEndpointFilter` as the Payments
-service token (029), with its own `reason`, `operator_key_invalid`. The same precedent applies as
-for that token (018): a host that maps these routes without a key refuses to start, rather than
-serving them open. Reads of the catalogue stay public.
+**Operator writes need a key.** Creating a venue, an event or a seat map requires
+`X-Operator-Key`, checked by the same `SharedSecretEndpointFilter` as the service token (029),
+and a host that maps these routes without a key refuses to start. Catalogue reads stay public.
 
-**Checkout and the hold route are rate-limited per IP address.** `X-Client-Id` is claimed, so the
-per-client hold cap (005) stops only a client who keeps its id. Rotating it held a whole venue for
-five minutes at a time. A token bucket per address, 10 a second with a burst of 20, stops one
-machine doing that. Each module registers its own named policy through `AddPerIpRateLimitPolicy`,
-and a refusal is `429` with `reason` `rate_limited`, `retriable` true and `Retry-After`. The host
-must call `UseRateLimiter`, since without the middleware every policy is skipped silently. A
-host-seam test fails any host that maps a rate-limited module without it. Confirm and cancel are
-not limited: they act on an order that checkout already admitted.
+**Checkout and the hold route are rate-limited per IP.** `X-Client-Id` is claimed, so the
+per-client cap (005) only stops a client that keeps its id; by rotating ids, one client could
+hold a whole venue for five minutes at a time. A token bucket per address (10 a second, burst
+20) stops one machine doing that, answering `429 rate_limited` with `Retry-After`. Without
+`UseRateLimiter` every policy is silently skipped, so a test fails any host that maps a
+limited module without it. Confirm and cancel aren't limited, since checkout already admitted
+the order.
 
-**It is a floor, and the costs are named.**
-- A botnet has many addresses.
-- Behind a proxy every client shares one address, because `ForwardedHeaders` is not configured
-  and no proxy is deployed to configure it for.
-- The load harness turns limiting off, since every k6 request comes from one address.
-
-The answer to bots is identity with verified accounts and a waiting room in front of the sale.
-Neither exists, and this entry does not pretend to replace them. One more secret must be
-configured wherever the monolith runs, and compose and k6 carry a development default for it, as
-they do for the service token.
+**It's a floor, and the gaps are named.** A botnet has many addresses, every client behind a
+proxy shares one (`ForwardedHeaders` isn't configured, and there's no proxy to configure it
+for), and the load harness turns limiting off. The answer to bots is verified identity and a
+waiting room; neither exists, and this doesn't pretend otherwise.
 
 ---
 
 ## 031 — An abandoned order is expired by a sweep that asks Inventory first
 
-Until now an order left `Pending` only when its customer confirmed or cancelled it. A customer
-who walked away left an order that read `Pending` forever. It blocked their next checkout for
-the event through the one-open-checkout index. If a confirm had authorised before dying, it also
-left their money held until the gateway gave up on it. Nothing in the system ended it.
+An order used to leave `Pending` only when its customer confirmed or cancelled. A customer who
+walked away left it `Pending` forever, blocking their next checkout for that event, and if a
+confirm had authorised before dying, their money stayed held until the gateway gave up.
 
-**An expiry sweep ends it, the way a cancel would.** `OrderExpirySweeper` looks for `Pending`
-orders whose `HoldsExpireAt` passed more than `Orders:OrderExpirySweep:Grace` ago (one minute).
-It uses the same advisory-lock lease as the capture sweep (025), and it calls
-`CheckoutService.ExpireAsync` for each order. `ExpireAsync` takes 012's order, seats before money:
-it releases the seats, voids the authorisation, and writes `Expired`, with `xmin` guarding the
-row. The order matters more here than for a customer's cancel. A confirm's sale commits in
-Inventory before the order row records it, so the order's own row version cannot fence it. Only
-asking Inventory first can. Two of Inventory's answers stop the sweep:
-- `SoldToYou`: a confirm sold the seats and died before recording it. The sale stands, so the
-  sweep finishes that confirm as the customer's next one would (025). Abandoning a sold seat
-  would be the worse harm.
-- `LostRace`: unlike a customer's cancel, the sweep backs off and leaves the order to its next
-  pass, since nobody is waiting on the answer.
+**An expiry sweep ends it the way a cancel would.** `OrderExpirySweeper` finds `Pending`
+orders whose `HoldsExpireAt` passed more than a minute ago and calls `ExpireAsync`, which
+follows 012: release the seats, void the authorisation, write `Expired`. Asking Inventory
+first matters even more here, because a confirm's sale commits in Inventory before the order
+row records it, so only Inventory can fence it. Two answers stop the sweep:
+- `SoldToYou`: a confirm sold the seats and died before recording it. The sale stands, and
+  the sweep finishes that confirm as the customer's next one would (025).
+- `LostRace`: the sweep backs off until its next pass, since nobody is waiting.
 
-A confirm of an order the sweep expired answers `holds_expired`, exactly as one that found the
-holds lapsed itself.
+A confirm of an order the sweep expired answers `holds_expired`, exactly as if it had found
+the holds lapsed itself.
 
-**This supersedes two clauses of 009.** "Orders never releases seats because a hold lapsed"
-becomes "Orders asks Inventory to release them and takes its answer". "Only `HoldExpired` moves
-an order to `Expired`" gains a second path. 009's reason still holds, which is that two clocks
-must not tell a customer different things. `HoldsExpireAt` only picks the candidates, the grace
-keeps the sweep behind any confirm that started in time, and each seat's answer comes from
-Inventory. `GET` still returns the stored status and derives nothing. A new partial index,
-`ix_orders_pending_holds_expire`, serves the candidate query.
+**This supersedes two clauses of 009**: Orders now asks Inventory to release lapsed seats, and
+`Expired` gains a second path. 009's reason still holds, because two clocks still can't tell a
+customer different things. `HoldsExpireAt` only picks candidates, through a partial index; the
+grace keeps the sweep behind any confirm that started in time; and every seat's answer comes
+from Inventory.
 
-**What it costs, and what it leaves.**
-- A client can re-hold a lapsed seat through the direct hold route, and Orders never sees that
-  expiry. The sweep would release that live hold. The route is off unless a deployment maps it
-  (030), and the load harness never places orders on the seats it holds.
-- A void that times out still leaves `Authorized` behind an ended order. That is true for a
-  cancel, a failed confirm and this sweep alike, and it waits for the gateway's own expiry. The
-  composition test asserts no ended order is still authorised when the gateway answers. chaos.sh
-  reports the count as a statistic rather than an invariant, since its payments-stopped fault
-  produces exactly that case.
+**Cost:**
+- A seat re-held through the direct hold route, unseen by Orders, would be released by the
+  sweep. That route is off unless a deployment maps it (030).
+- A void that times out still leaves `Authorized` behind an ended order until the gateway's
+  own expiry. chaos.sh reports that as a statistic, not an invariant, since its
+  payments-stopped fault produces exactly that case.
 
 ---
 
 ## 032 — A hold's one read counts its rows instead of compiling a predicate
 
-019's rig was run again after 029–031. Every invariant held, and it found a regression that
-none of those three entries made. With Redis stopped, a purchase cost 2.6–4.3× its median in the
-healthy window. The code from before the audit cost 1.75× and 1.87× in the same session. A
-contended hold's median had risen from 46 ms to 62–88 ms with Redis healthy. Measuring commit by
-commit put the cause in the audit's "one read per hold". `GetForHoldAsync` loads the requested
-seats and the client's live holds in one `UNION ALL`, then compiled the live-hold predicate into
-a delegate on every request to sort the rows in memory. The audit's fresh baseline ran 50 VUs,
-where that cost hid. The Redis fault runs 250.
+019's rig was run again after 029–031. Every invariant held, and it found a regression none of
+those entries caused. With Redis stopped, a purchase cost 2.6–4.3× its healthy median, against
+1.75× and 1.87× for older code in the same session, and a contended hold's median had risen
+from 46 ms to 62–88 ms even with Redis up. Measuring commit by commit pinned it on an earlier
+audit's "one read per hold". `GetForHoldAsync` loads the requested seats and the client's live
+holds in one `UNION ALL`, and it was compiling the live-hold predicate into a delegate on every
+request to sort the rows in memory. The audit's baseline ran 50 VUs, where that cost hid; the
+Redis fault runs 250.
 
-**The read counts rows instead.** `UNION ALL` keeps duplicates. A requested seat the client
-already holds comes back from both halves, and an unrequested row comes back only from the
-second, so the count answers which rows are live holds. The predicate is one expression, used
-only by the query. Two runs each in the same session:
-- a purchase's cost of losing Redis was 1.82× and 1.91×;
-- holds won while Redis was gone returned to ~72% of the healthy window, as before the audit;
+**The read counts rows instead.** `UNION ALL` keeps duplicates, so a requested seat the client
+already holds comes back from both halves and an unrequested live hold only from the second;
+the count says which rows are live holds. Two runs each, in the same session:
+- a purchase's cost of losing Redis fell to 1.82× and 1.91×, and holds won while Redis was
+  gone returned to ~72% of the healthy window, as before the audit;
 - a contended hold's median fell to 33–34 ms, below the pre-audit 46 ms, so the single read
   now pays for itself;
 - the monolith baseline made 730,000–770,000 hold attempts a run, against 329,000–366,000 for
-  the unfixed code earlier that day, and a contended hold's p99 fell to 29–30 ms. The compile
-  had cost the whole hot path, not only the fault.
+  the unfixed code earlier that day. The compile had slowed the whole hot path, not just the
+  fault.
 
-The alternative was the pre-audit pair of queries, which costs a round trip per hold that the
-audit was right to remove. The cost here is that the answer rests on `UNION ALL`'s duplicates.
-A `Union` or a `Distinct` added to the query would break it silently, and
-`Hold_WhenAskedForSeatsItAlreadyHolds_ShouldCountOnlyTheLiveOnesOnce` fails if one is.
+**Rejected:** the pre-audit pair of queries, which costs a round trip per hold. **Cost:** the
+answer relies on `UNION ALL`'s duplicates, so a `Union` or `Distinct` added later would break
+it silently; `Hold_WhenAskedForSeatsItAlreadyHolds_ShouldCountOnlyTheLiveOnesOnce` fails if
+one is.
 
-The same session also showed how far a number moves between sessions on the machine alone. The
-monolith baseline ran about 17% below 2026-09-24's, both for this code and for the code before
-029–031. That is 019's caveat, and the reason the README quotes ranges rather than one number.
+The same session showed how far numbers drift on one machine: the baseline ran about 17% below
+2026-09-24's, for this code and the older code alike. That's 019's caveat, and why the README
+quotes ranges.
 
 ---
 
 ## 033 — The session the README quotes is committed with it
 
 `load/results/` stays ignored. One machine's numbers on one day are worth keeping locally to
-compare with the next run, and a reader cannot tell them from a claim. But the README quotes
-numbers, and a number with no run behind it in the repository asks the reader to take it on
-trust, which is what 020 refuses to do.
+compare with the next run, but a reader can't tell them from a claim. The README quotes
+numbers, though, and a number with no run behind it asks to be taken on trust.
 
 **The session the README quotes is copied to `load/evidence/<date>/`**: the chaos report and
 the three baseline digests, nothing more. When the README's numbers change, the folder is
-replaced in the same change, never kept beside the new one, so the repository holds exactly the
-run the README describes. The alternative was committing `load/results/` whole: 139 files, most
-of them runs that nothing cites. The cost is one more thing to keep in step with the README,
-which a reviewer has to check whenever a number moves.
+replaced in the same change. **Rejected:** committing `load/results/` whole, 139 files, most
+of them runs nothing cites. **Cost:** one more thing to keep in step with the README.
 
 ---
 
 ## 034 — A refused capture leaves the order `payment_due`, never `failed`
 
-014 left a gap: the simulator never refused a capture, and a capture that found nothing held
-mapped the order to `Failed`. That would have labelled an order whose seats were sold as one that
-"could not be completed", with nothing to find it and nothing to collect the money. 010 puts the
-unrecoverable step in the middle on the promise that money can be settled afterwards, and a
-refused capture is where that promise is tested.
+014 left a gap. The simulator never refused a capture, and a capture that found nothing held
+marked the order `Failed`: an order with sold seats, labelled as one that "could not be
+completed", with nothing to collect the money. 010 puts the sale in the middle on the promise
+that money can be settled afterwards, and a refused capture is where that promise gets
+tested.
 
-**The order becomes `PaymentDue`: every seat sold, nothing held.** `Payment.DeclineCapture` spends
-the authorisation (`Authorized` to `Declined`), which frees the order's live slot. The customer's
-next confirm authorises again under a fresh attempt and captures it, without selling anything
-twice. A confirm that leaves the order owed answers `payment_due`, `409` and retriable, rather
-than `payment_declined`, which promises the seats are still only held. The simulator refuses a
-share of captures (`CaptureDeclineRate`), the composition test runs the whole path through the
-real modules, and chaos.sh's orders run refuses one capture in twenty.
+**The order becomes `PaymentDue`: every seat sold, nothing held.** `Payment.DeclineCapture`
+spends the authorisation, which frees the order's live slot, so the customer's next confirm
+authorises again under a fresh attempt and captures without selling anything twice. That
+confirm answers `payment_due` (409, retriable), not `payment_declined`, which would suggest
+the seats are still only held. The simulator refuses a share of captures
+(`CaptureDeclineRate`), and chaos.sh's orders run refuses one in twenty.
 
-**What was rejected.**
-- Unselling the seats. `Sold` is terminal (003), and 010's whole argument is that a sale is the
-  step that cannot be undone.
-- A sweep that authorises again. It would charge a customer who did not ask, which is a
-  merchant's decision and not this system's.
-- A new `Payment` status. `Declined` already says what happened to the money, and a
+**Rejected:**
+- Unselling the seats. `Sold` is terminal (003), and the sale is the step 010 says can't be
+  undone.
+- A sweep that authorises again, charging a customer who didn't ask. That's a merchant's
+  decision, not this system's.
+- A new `Payment` status. `Declined` already says what happened to the money, and
   `GatewayReference` tells a refused capture from a refused authorisation.
 
-**The cost.** Seats can now be sold with no money behind them, the state 011 and 012 exist to
-prevent, and the invariant is restated to allow it only when the order says so. chaos.sh's "sold,
-no money" row excludes `payment_due`, and a new row counts those orders. A customer who never
-confirms again keeps seats nobody paid for, and collecting is an operator's job outside this
-system. A confirm that dies between the new authorisation and its capture leaves money held under
-a `payment_due` order until the customer's next confirm, because no sweep pays on anyone's behalf.
+**Cost:** seats can now be sold with no money behind them, the state 011 and 012 exist to
+prevent, so the invariant allows it only when the order says so. chaos.sh's "sold, no money"
+row excludes `payment_due`, and another row counts those orders. A customer who never
+confirms again keeps seats nobody paid for, and collecting is an operator's job. A confirm
+that dies between the new authorisation and its capture leaves money held until the
+customer's next confirm, because no sweep pays on anyone's behalf.
 
 ---
 
 ## 035 — The multi-host run is dropped
 
-026 kept one item on the roadmap: a throwaway run with k6 and the collector on a second machine.
-The owner ruled it out on 2026-09-26, so it is dropped rather than deferred. Every number stays a
-one-laptop number, as 019 and the README already say. The run would have removed a caveat, not
-changed a claim: the invariants hold wherever k6 runs, and only the latencies depend on it. The
-alternative was a cloud machine for an afternoon, which is the deployment 026 kept off the list.
-Nothing is left on On Tour's roadmap. Closing the phase is the owner's call.
+026 left one item: a throwaway run with k6 and the collector on a second machine. I ruled it
+out on 2026-09-26, so it's dropped rather than deferred, and every number stays a one-laptop
+number, as 019 and the README say. The run would have removed a caveat, not changed a claim:
+the invariants hold wherever k6 runs, and only the latencies depend on it. The alternative was
+a cloud machine for an afternoon, which is the deployment 026 kept off the list. Nothing is
+left on the roadmap.
