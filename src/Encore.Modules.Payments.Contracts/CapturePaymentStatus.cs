@@ -1,9 +1,5 @@
 namespace Encore.Modules.Payments.Contracts;
 
-/// <summary>
-/// No <c>Declined</c>: the simulated gateway honours every authorisation it granted, a known
-/// simplification (014).
-/// </summary>
 public enum CapturePaymentStatus
 {
     /// <summary>Also the answer to a repeated capture.</summary>
@@ -13,5 +9,11 @@ public enum CapturePaymentStatus
     NoAuthorization = 1,
 
     /// <summary>The funds stay held, so a retry is safe.</summary>
-    TimedOut = 2
+    TimedOut = 2,
+
+    /// <summary>
+    /// The gateway refused the money it had authorised, and nothing is held any more. Retrying
+    /// this capture cannot help; a fresh authorisation can (034).
+    /// </summary>
+    Declined = 3
 }

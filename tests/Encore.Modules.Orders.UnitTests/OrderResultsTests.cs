@@ -235,6 +235,18 @@ public sealed class OrderResultsTests
         Assert.True(RetriableOf(result));
     }
 
+    /// <summary>Not payment_declined, which promises the seats are still only held.</summary>
+    [Fact]
+    public void ForConfirm_WhenPaymentIsDue_ShouldBe409AndRetriableUnderItsOwnReason()
+    {
+        var result = OrderResults.ForConfirm(
+            new OrderActionResult(OrderActionOutcome.PaymentDue, AnOrder(OrderStatus.PaymentDue)), Path);
+
+        Assert.Equal(StatusCodes.Status409Conflict, StatusOf(result));
+        Assert.Equal("payment_due", ReasonOf(result));
+        Assert.True(RetriableOf(result));
+    }
+
     [Fact]
     public void ForConfirm_WhenLostRace_ShouldBe409AndRetriable()
     {
