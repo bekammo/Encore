@@ -213,6 +213,44 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
         Assert.Equal(CapturePaymentStatus.Captured, retried.Status);
     }
 
+    [Fact]
+    public async Task Capture_WhenTheGatewayRefuses_ShouldSpendTheAuthorisationAndFreeTheSlot()
+    {
+        var (orderId, clientId) = NewOrder();
+        var authorized = await Payments().AuthorizeAsync(Authorize(orderId, clientId));
+
+        var response = await Payments(captureDeclineRate: 1)
+            .CaptureAsync(new CapturePaymentRequest(orderId, clientId));
+
+        Assert.Equal(CapturePaymentStatus.Declined, response.Status);
+        Assert.Equal(authorized.PaymentId, response.PaymentId);
+
+        var payment = await ReadAsync(orderId);
+        Assert.Equal(PaymentStatus.Declined, payment.Status);
+        Assert.NotNull(payment.GatewayReference);
+
+        // Nothing is held, so a second capture has nothing to take.
+        var again = await Payments().CaptureAsync(new CapturePaymentRequest(orderId, clientId));
+        Assert.Equal(CapturePaymentStatus.NoAuthorization, again.Status);
+    }
+
+    [Fact]
+    public async Task Authorize_AfterARefusedCapture_ShouldStartAFreshAttempt()
+    {
+        var (orderId, clientId) = NewOrder();
+        var first = await Payments().AuthorizeAsync(Authorize(orderId, clientId));
+        await Payments(captureDeclineRate: 1).CaptureAsync(new CapturePaymentRequest(orderId, clientId));
+
+        var second = await Payments().AuthorizeAsync(Authorize(orderId, clientId));
+
+        Assert.Equal(AuthorizePaymentStatus.Authorized, second.Status);
+        Assert.NotEqual(first.PaymentId, second.PaymentId);
+
+        var captured = await Payments().CaptureAsync(new CapturePaymentRequest(orderId, clientId));
+        Assert.Equal(CapturePaymentStatus.Captured, captured.Status);
+        Assert.Equal(second.PaymentId, captured.PaymentId);
+    }
+
     // -- Void -------------------------------------------------------------
 
     [Fact]
@@ -286,7 +324,11 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
         new(orderId, clientId, Amount, Currency);
 
     // A fresh adapter over a fresh context: each call stands for a separate request.
-    private IOrderPayments Payments(double declineRate = 0, double timeoutRate = 0, TimeSpan? latency = null) =>
+    private IOrderPayments Payments(
+        double declineRate = 0,
+        double timeoutRate = 0,
+        TimeSpan? latency = null,
+        double captureDeclineRate = 0) =>
         new InProcessOrderPayments(
             new PaymentsDbContext(_options),
             new SimulatedPaymentGateway(
@@ -295,6 +337,7 @@ public sealed class InProcessOrderPaymentsTests(PaymentsDatabase database) : ICl
                 {
                     DeclineRate = declineRate,
                     TimeoutRate = timeoutRate,
+                    CaptureDeclineRate = captureDeclineRate,
                     MinLatency = latency ?? TimeSpan.Zero,
                     MaxLatency = latency ?? TimeSpan.Zero
                 }),

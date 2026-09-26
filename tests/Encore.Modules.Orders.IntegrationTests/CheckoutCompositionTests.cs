@@ -1,3 +1,4 @@
+using System.Globalization;
 using Encore.Modules.Catalog.Contracts;
 using Encore.Modules.Inventory;
 using Encore.Modules.Inventory.Application;
@@ -38,7 +39,7 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
 
     public async Task DisposeAsync() => await _provider.DisposeAsync();
 
-    private ServiceProvider Compose(TimeProvider? clock)
+    private ServiceProvider Compose(TimeProvider? clock, double captureDeclineRate = 0)
     {
         var connectionString = _database.ConnectionString;
 
@@ -56,6 +57,7 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
                 // A gateway that answers, promptly and yes, so every ending is decided by the race.
                 ["Payments:Simulation:TimeoutRate"] = "0",
                 ["Payments:Simulation:DeclineRate"] = "0",
+                ["Payments:Simulation:CaptureDeclineRate"] = captureDeclineRate.ToString(CultureInfo.InvariantCulture),
                 ["Payments:Simulation:MinLatency"] = "00:00:00",
 
                 // The gateway waits on the injected clock, which a fake clock never advances.
@@ -110,7 +112,7 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
 
         Assert.Equal(OrderCount, evidence["orders"]);
         Assert.All(
-            new[] { "partly_sold", "sold_not_confirmed", "sold_no_money", "paid_not_sold", "confirmed_not_captured", "ended_still_authorized" },
+            new[] { "partly_sold", "sold_not_confirmed", "sold_no_money", "paid_not_sold", "confirmed_not_captured", "ended_still_authorized", "payment_due_not_sold" },
             invariant => Assert.True(evidence[invariant] == 0, $"{invariant}: {evidence[invariant]}"));
     }
 
@@ -208,6 +210,45 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
         }
     }
 
+    /// <summary>
+    /// The one way seats end sold with no money behind them, and it has to say so: never Failed,
+    /// and paid by the customer's next confirm without the seats being sold twice (034).
+    /// </summary>
+    [Fact]
+    public async Task Confirm_WhenTheGatewayRefusesTheCapture_ShouldOweThePaymentUntilTheNextConfirmPays()
+    {
+        await _provider.DisposeAsync();
+        _provider = Compose(clock: null, captureDeclineRate: 1);
+
+        var eventId = Guid.NewGuid();
+        var seatIds = await SeatMapAsync(eventId, 2);
+        var clientId = Guid.NewGuid();
+
+        var placed = await WithCheckoutAsync(checkout => checkout.CheckoutAsync(clientId, eventId, seatIds));
+        var order = placed.Order!;
+
+        var refused = await WithCheckoutAsync(checkout => checkout.ConfirmAsync(clientId, order.Id));
+        Assert.Equal(OrderActionOutcome.PaymentDue, refused.Outcome);
+
+        var owed = await OrderEvidenceAsync();
+        Assert.Equal(1, owed["payment_due"]);
+        Assert.Equal(0, owed["payment_due_not_sold"]);
+        Assert.Equal(0, owed["sold_not_confirmed"]);
+        Assert.Equal(0, owed["sold_no_money"]);
+
+        await _provider.DisposeAsync();
+        _provider = Compose(clock: null);
+
+        var paid = await WithCheckoutAsync(checkout => checkout.ConfirmAsync(clientId, order.Id));
+        Assert.Equal(OrderActionOutcome.Completed, paid.Outcome);
+        Assert.Equal(OrderStatus.Confirmed, paid.Order!.Status);
+
+        var evidence = await OrderEvidenceAsync();
+        Assert.Equal(0, evidence["payment_due"]);
+        Assert.Equal(0, evidence["confirmed_not_captured"]);
+        Assert.Equal(0, evidence["paid_not_sold"]);
+    }
+
     // -- Helpers ----------------------------------------------------------
 
     private async Task<T> WithCheckoutAsync<T>(Func<CheckoutService, Task<T>> action)
@@ -258,11 +299,13 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
             SELECT
               count(*) AS orders,
               count(*) FILTER (WHERE sold > 0 AND sold < seats) AS partly_sold,
-              count(*) FILTER (WHERE sold > 0 AND status NOT IN (1, 5)) AS sold_not_confirmed,
-              count(*) FILTER (WHERE sold > 0 AND NOT captured AND NOT authorized) AS sold_no_money,
+              count(*) FILTER (WHERE sold > 0 AND status NOT IN (1, 5, 6)) AS sold_not_confirmed,
+              count(*) FILTER (WHERE sold > 0 AND NOT captured AND NOT authorized AND status <> 6) AS sold_no_money,
               count(*) FILTER (WHERE captured AND sold < seats) AS paid_not_sold,
               count(*) FILTER (WHERE status = 1 AND NOT captured) AS confirmed_not_captured,
-              count(*) FILTER (WHERE status IN (2, 3, 4) AND authorized) AS ended_still_authorized
+              count(*) FILTER (WHERE status IN (2, 3, 4) AND authorized) AS ended_still_authorized,
+              count(*) FILTER (WHERE status = 6) AS payment_due,
+              count(*) FILTER (WHERE status = 6 AND sold < seats) AS payment_due_not_sold
             FROM checked;
             """;
 
