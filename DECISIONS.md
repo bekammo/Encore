@@ -8,9 +8,12 @@ for the thesis, [005](#005--the-hold-cap-is-a-policy-not-an-invariant) for a rul
 allowed to fail open, [010](#010--authorise-sell-capture) for why the sale sits between
 authorise and capture,
 [018](#018--payments-becomes-a-service-and-a-seam-is-not-proven-by-testing-each-side-of-it)
-for an extraction that did nothing for four days, and
+for an extraction that did nothing until a chaos run caught it, and
 [032](#032--a-holds-one-read-counts-its-rows-instead-of-compiling-a-predicate) for a
 regression found by measuring again.
+
+An entry's figures come from the session that measured it; only the README's are committed
+(033).
 
 A decision that changes gets a new entry, and the entry it supersedes says so. The log was
 consolidated from an 80-entry working log on 2026-09-23 (`git show 2e5ad70:DECISIONS.md`) and
@@ -535,10 +538,11 @@ outcome. `SKIP LOCKED` lets a second instance drain the same table without takin
 rows.
 
 **A failing message backs off and lets the queue move past it**, exponentially from two
-seconds to five minutes, and after five attempts it drops out as a dead letter, kept and
-readable. Blocking the queue behind it would protect an ordering nobody was promised, at the
-price of one bad row stopping every good one. The loop catches everything, because an
-exception escaping `ExecuteAsync` silently stops a `BackgroundService` for good.
+seconds (2, 4, 8, 16 s), and the fifth failure, about 30 s in, drops it out as a dead letter,
+kept and readable. The five-minute `MaxBackoff` only binds if `MaxAttempts` is raised.
+Blocking the queue behind it would protect an ordering nobody was promised, at the price of
+one bad row stopping every good one. The loop catches everything, because an exception
+escaping `ExecuteAsync` silently stops a `BackgroundService` for good.
 
 **Late is never wrong.** No seat invariant depends on delivery, and the concurrency suites
 never register a dispatcher. Under load with it off, 21,948 events piled up and the sale still
@@ -615,7 +619,7 @@ money may or may not be held". A rejected token throws instead, since configurat
 itself. **No Polly**: a transparent retry turns one ambiguous answer into several without
 telling anyone.
 
-**For four days the extraction was inert.** Orders registered `HttpOrderPayments` with
+**At first the extraction was inert.** Orders registered `HttpOrderPayments` with
 `services.Replace(...)`, under a comment claiming that made registration order irrelevant.
 `Replace` removes the first *existing* registration, and Orders was registered before
 Payments, so there was nothing to remove. Payments then appended its in-process adapter, and
@@ -625,9 +629,9 @@ was tested against a stub, the service's routes on their own, and no test projec
 both. The fix is `TryAddScoped` in Payments, and `StranglerSwitchTests` resolves
 `IOrderPayments` from a composed container in all four registration orders.
 
-**The chaos rig caught it** before it had measured anything, by stopping `payments-api` and
-watching confirms keep succeeding. **A seam isn't proven by testing each side of it**, so
-every extraction now ships with a composition test.
+**The first chaos run caught it** the same day, before it had measured anything, by stopping
+`payments-api` and watching confirms keep succeeding. **A seam isn't proven by testing each
+side of it**, so every extraction now ships with a composition test.
 
 ---
 
