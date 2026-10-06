@@ -26,8 +26,8 @@ tries to answer with measurements.
 - [DECISIONS.md](DECISIONS.md) holds 35 decisions, each with the alternative it beat and what
   it costs. If you only read five: [001][d001] (the thesis), [005][d005] (a rule allowed to
   fail open), [010][d010] (why the sale sits between authorise and capture), [018][d018] (an
-  extraction that did nothing for four days) and [032][d032] (a regression found by
-  measuring again).
+  extraction that did nothing until a chaos run caught it) and [032][d032] (a regression
+  found by measuring again).
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) lists every setting, its default and where
   it's set.
 
@@ -110,8 +110,8 @@ rows, so layering them would buy nothing.
 **Payments runs in process or as its own service.** `Encore.Payments.Api` hosts the same
 module behind three internal routes. One configuration key switches Orders between the
 in-process adapter and the HTTP one, and a composition test runs Orders' HTTP client against
-the real routes. It's a Strangler Fig extraction, and for four days it quietly did nothing
-until a chaos run caught it ([018][d018]).
+the real routes. It's a Strangler Fig extraction, and it quietly did nothing until the first
+chaos run caught it ([018][d018]).
 
 <details>
 <summary>Solution layout</summary>
@@ -240,9 +240,10 @@ client branches on `reason`, not on the status code:
 
 ## Testing
 
-Over 700 tests: unit tests for the domain and handlers, integration tests against real
-Postgres and Redis through Testcontainers, and architecture tests. The suite runs in a
-container, identically on a laptop and in CI.
+About 750 test cases from 572 test methods: unit tests for the domain and handlers,
+integration tests against real Postgres through Testcontainers (and real Redis for
+Inventory's lock), and architecture tests. The suite runs in a container, identically on a
+laptop and in CI.
 
 CI doesn't trust the exit code of `docker compose run`, which is 0 even when nothing ran. It
 counts one summary line per test project instead, so a project that never executed fails the
@@ -321,7 +322,9 @@ The problem and the architecture were mine:
 - the thesis that only Inventory earns ports and adapters.
 
 I reviewed the assistant's changes as they came, accepting, rejecting and redirecting them.
-Each change landed as a pull request that ran the full suite in CI before it merged.
+The first three days' work went straight to main, before CI existed. From 23 September, when
+CI arrived, nearly every change landed as a pull request that ran the full suite before it
+merged.
 [DECISIONS.md](DECISIONS.md) records the reasoning behind those calls, wrong turns included.
 
 [d001]: DECISIONS.md#001--inventory-is-hexagonal-and-everything-else-is-flat

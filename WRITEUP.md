@@ -105,12 +105,14 @@ decides its own transition.
 
 A cancel runs the same argument backwards: **it gives the seats back before touching the
 money.** The first version voided first, and a cancel racing a confirm could end with seats
-sold and nobody paying. Under load, across 1,943 orders (1,298 of them multi-seat, with
-cancels fired at random points inside each confirm), no order was partly sold, none had seats
-without money, and none had money without seats. In 92 of them the cancel arrived after the
-sale and correctly stepped back. Those three invariants are now a test that composes the real
-modules and races every confirm against its cancel, so they're checked on every run, not
-only in that session.
+sold and nobody paying. Under load in an earlier session, across 1,943 orders (1,298 of them
+multi-seat, with cancels fired at random points inside each confirm), no order was partly
+sold, none had seats without money, and none had money without seats. In 92 of them the
+cancel arrived after the sale and correctly stepped back. The session the README quotes
+repeated it with one capture in twenty refused: 965 orders, the same invariants, with
+`payment_due` the one allowed exception. Those three invariants are now a test that composes
+the real modules and races every confirm against its cancel, so they're checked on every
+run, not only in a session.
 
 The ordering has one failure it can't prevent: a gateway that authorised the money and then
 refuses to hand it over. For most of the project the simulator never did that, and the code
@@ -137,22 +139,22 @@ claim read the entire due backlog every tick, and EF Core logged every statement
 fixed, three runs with the dispatcher on came in inside the pre-outbox spread or below it,
 apart from one outlier purchase p99 ([019][d019]).
 
-## Strangling Payments, and the four days it did nothing
+## Strangling Payments, and the switch that did nothing
 
 I extracted Payments into its own service using the Strangler Fig pattern. Orders reaches it
 through the same interface it called in process, and one configuration key picks the HTTP
 adapter or the in-process one. Nothing inside Payments had to change, which is what a
 modular monolith promises from the start.
 
-For four days the extraction did nothing. Orders registered its HTTP adapter with
+At first the extraction did nothing. Orders registered its HTTP adapter with
 `services.Replace`, which removes the first *existing* registration. But Orders was
 registered before Payments, so there was nothing to remove. Payments then appended its
 in-process adapter, and because the last registration wins, it got every payment. Both
 sides' tests were green and would have stayed green forever, since each side was tested
-against a stub of the other. **A seam isn't proven by testing each side of it.** The chaos
-rig found the bug by stopping the Payments service and watching confirms keep succeeding.
-Every extraction now gets a composition test that resolves the seam from a real container, in
-every registration order.
+against a stub of the other. **A seam isn't proven by testing each side of it.** The first
+chaos run found the bug the same day, by stopping the Payments service and watching confirms
+keep succeeding. Every extraction now gets a composition test that resolves the seam from a
+real container, in every registration order.
 
 ## Measure first, then break it on purpose
 
@@ -163,11 +165,13 @@ There's no latency threshold, and that's intentional. An SLO invented before the
 measurement is a guess dressed up as a test.
 
 The chaos rig injects one fault per run and reads the aftermath out of Postgres. When a fault
-asks a question about a number, it runs next to a control window of the same shape.
+asks a question about a number, it runs next to a control window of the same shape. The table
+and the story after it record what each run found when it ran; the session the README
+quotes is committed in [`load/evidence/2026-09-25/`](load/evidence/2026-09-25/).
 
 | Fault | Invariants | What it exposed |
 |---|---|---|
-| Payments stopped | held | first, that the extraction was inert; then, that a stopped container swallows connections, so every confirm waited out a 10 s timeout (a one-second connect timeout now bounds it) |
+| Payments stopped | held | first, that the extraction was inert; then, that a stopped container swallows connections, so every confirm waited out a 10 s timeout (a one-second connect timeout has since cut that to under 5 s) |
 | Two reconcilers | held | the simulated gateway's memory was per process: a restart settled 120 of 121 timed-out payments as abandoned |
 | Redis stopped | held; no oversell | a hold cost 85× without Redis |
 | Dispatcher stalled 20 s | held | the claim transaction stayed open the whole time |
