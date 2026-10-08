@@ -40,7 +40,7 @@ public sealed class ReleaseSeatCommandHandler(
 
         if (retry.LostRace)
         {
-            // Reloads only to discard the releases in memory, so no later save writes them (011).
+            // Reloads only to discard the releases in memory, so no later save writes them (010).
             await _seats.GetByIdsAsync(command.SeatIds, cancellationToken).ConfigureAwait(false);
         }
 

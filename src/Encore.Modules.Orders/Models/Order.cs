@@ -18,8 +18,8 @@ public sealed class Order
 
     /// <summary>
     /// The earliest hold expiry Inventory reported, copied and never computed; null once the seats
-    /// sold or the order ended. Orders never refuses a confirm or derives a status from it (009);
-    /// the expiry sweep uses it only to pick candidates, and Inventory answers for each seat (031).
+    /// sold or the order ended. Orders never refuses a confirm or derives a status from it (008);
+    /// the expiry sweep uses it only to pick candidates, and Inventory answers for each seat (008).
     /// </summary>
     public DateTime? HoldsExpireAt { get; set; }
 
@@ -31,7 +31,7 @@ public sealed class Order
 
     public string Currency { get; set; } = string.Empty;
 
-    /// <summary><c>xmin</c>: a confirm and a cancel of one order really can race (009).</summary>
+    /// <summary><c>xmin</c>: a confirm and a cancel of one order really can race (008).</summary>
     public uint RowVersion { get; set; }
 
     public List<OrderLine> Lines { get; set; } = [];

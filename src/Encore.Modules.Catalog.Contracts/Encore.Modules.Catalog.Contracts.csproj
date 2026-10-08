@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The only project another module may reference (017), so it depends on nothing. -->
+  <!-- The only project another module may reference (013), so it depends on nothing. -->
   <PropertyGroup>
     <EncoreZeroDependency>true</EncoreZeroDependency>
   </PropertyGroup>

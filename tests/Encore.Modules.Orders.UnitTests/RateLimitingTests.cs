@@ -16,7 +16,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Encore.Modules.Orders.UnitTests;
 
-/// <summary>The per-IP floor under checkout (030): the policy's behaviour, and that checkout carries it.</summary>
+/// <summary>The per-IP floor under checkout (007): the policy's behaviour, and that checkout carries it.</summary>
 public sealed class RateLimitingTests
 {
     private const string Probe = "probe";

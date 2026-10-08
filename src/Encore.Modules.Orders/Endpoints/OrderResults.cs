@@ -21,7 +21,7 @@ internal static class OrderResults
                 "duplicate_seat",
                 "The same seat was asked for more than once. A seat can be bought exactly once."),
 
-            // 400, not 409 like hold_cap_reached: no state of the world makes this succeed (008).
+            // 400, not 409 like hold_cap_reached: no state of the world makes this succeed (007).
             CheckoutOutcome.TooManySeats => Invalid(
                 path,
                 "too_many_seats",
@@ -29,7 +29,7 @@ internal static class OrderResults
                 + "at this event at once.",
                 limit: SeatReservationLimits.MaxHoldsPerClientPerEvent),
 
-            // 409, not 404: the route exists; the event named in the body does not (008).
+            // 409, not 404: the route exists; the event named in the body does not (007).
             CheckoutOutcome.EventNotFound => Conflict(
                 path, "event_not_found", "No event with that id.", retriable: false),
 

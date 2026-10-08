@@ -9,7 +9,7 @@ namespace Encore.Modules.Orders.UnitTests;
 
 /// <summary>
 /// Testing each side of the seam alone missed a switch that silently did nothing; only
-/// composing both modules shows it (018).
+/// composing both modules shows it (014).
 /// </summary>
 public sealed class StranglerSwitchTests
 {

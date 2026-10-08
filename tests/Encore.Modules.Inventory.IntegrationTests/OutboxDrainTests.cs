@@ -9,7 +9,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
-/// Every event a seat raises becomes exactly one outbox row, in the seat's transaction (015).
+/// Every event a seat raises becomes exactly one outbox row, in the seat's transaction (012).
 /// One test reads the whole outbox, so the database is emptied before each test.
 /// </summary>
 public sealed class OutboxDrainTests(InventoryDatabase database)
@@ -120,7 +120,7 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
         Assert.Equal(InventoryEventTypes.SeatReleased, messages[1].EventType);
         Assert.Equal(InventoryEventTypes.SeatHeld, messages[2].EventType);
 
-        // One save's events in raised order: table order, not a delivery promise (024).
+        // One save's events in raised order: table order, not a delivery promise (012).
         Assert.True(messages[1].Id < messages[2].Id);
 
         var released = JsonSerializer.Deserialize<SeatReleasedV1>(
@@ -134,7 +134,7 @@ public sealed class OutboxDrainTests(InventoryDatabase database)
 
     /// <summary>
     /// Later saves on one context still track the earlier seats: four rows, not ten, because the
-    /// drain clears each seat's events after its save (015).
+    /// drain clears each seat's events after its save (012).
     /// </summary>
     [Fact]
     public async Task Hold_WhenSeveralSeatsAreHeldOnOneContext_ShouldWriteEachEventExactlyOnce()

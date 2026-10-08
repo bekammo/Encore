@@ -9,7 +9,7 @@ namespace Encore.Modules.Payments.Endpoints;
 
 /// <summary>
 /// Not customer-facing: a service token instead of <c>X-Client-Id</c>, and an <c>/internal</c>
-/// prefix an ingress can refuse. RPC-shaped because the seam is keyed by order (018).
+/// prefix an ingress can refuse. RPC-shaped because the seam is keyed by order (014).
 /// </summary>
 public static class PaymentServiceEndpoints
 {

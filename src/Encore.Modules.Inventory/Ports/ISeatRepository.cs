@@ -16,7 +16,7 @@ public interface ISeatRepository
     /// <exception cref="ConcurrentSeatModificationException">The seat changed since it was loaded.</exception>
     Task SaveAsync(Seat seat, CancellationToken cancellationToken = default);
 
-    /// <summary>One transaction: all of them, or none (011).</summary>
+    /// <summary>One transaction: all of them, or none (010).</summary>
     /// <remarks>
     /// Commits the whole unit of work: any other seat changed through the same scope is written
     /// too, and <paramref name="seats"/> only names one to blame on a conflict. After a lost race,

@@ -5,7 +5,7 @@ namespace Encore.Modules.Inventory.Adapters.Persistence;
 
 /// <summary>
 /// Every save writes each tracked seat's domain events as outbox rows in the same
-/// transaction, so a change and its announcement commit together or not at all (015).
+/// transaction, so a change and its announcement commit together or not at all (012).
 /// </summary>
 public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> options)
     : DbContext(options)
@@ -63,7 +63,7 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
 
         foreach (var seat in raising)
         {
-            // Added in raised order. Delivery does not keep it (024).
+            // Added in raised order. Delivery does not keep it (012).
             foreach (var domainEvent in seat.DomainEvents)
             {
                 var message = SeatEventPublication.ToOutboxMessage(domainEvent);
@@ -99,7 +99,7 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
     }
 
     // Only after the base save, so a rejected save keeps its events for the retry; without it,
-    // later saves on this context would write them again (015).
+    // later saves on this context would write them again (012).
     private static void MarkPublished(List<Seat> drained)
     {
         foreach (var seat in drained)

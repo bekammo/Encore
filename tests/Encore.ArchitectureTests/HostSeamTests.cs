@@ -10,7 +10,7 @@ namespace Encore.ArchitectureTests;
 /// </summary>
 public sealed partial class HostSeamTests
 {
-    // Opt-ins beyond Add/Map: the service API Encore.Payments.Api mounts for Orders (008, 018).
+    // Opt-ins beyond Add/Map: the service API Encore.Payments.Api mounts for Orders (007, 014).
     private static readonly string[] ExtraSeams = ["MapPaymentsServiceApi"];
 
     /// <summary>Outside a root-namespace <c>using</c>, any <c>Encore.Modules</c> fails, in code or in a string.</summary>
@@ -176,7 +176,7 @@ public sealed partial class HostSeamTests
 
     /// <summary>
     /// A module attaches rate-limit policies to its routes; a host without the middleware skips
-    /// every one of them silently (030).
+    /// every one of them silently (007).
     /// </summary>
     [Theory]
     [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]

@@ -10,7 +10,7 @@ namespace Encore.Telemetry;
 
 /// <summary>
 /// Off unless <c>OTEL_EXPORTER_OTLP_ENDPOINT</c> is set, so a run that did not ask for
-/// telemetry measures a system without it (021).
+/// telemetry measures a system without it (001).
 /// </summary>
 public static class EncoreTelemetry
 {
@@ -18,7 +18,7 @@ public static class EncoreTelemetry
 
     private const string MetricExportIntervalKey = "OTEL_METRIC_EXPORT_INTERVAL";
 
-    // A wildcard, so this project never names a module (021).
+    // A wildcard, so this project never names a module (001).
     private const string EncoreInstruments = "Encore.*";
 
     // Npgsql and the runtime emit their own telemetry; no instrumentation package needed.

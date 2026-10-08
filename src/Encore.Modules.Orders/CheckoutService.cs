@@ -23,7 +23,7 @@ public sealed class CheckoutService(
 
     /// <summary>
     /// Cheap checks run before the holds, which are writes against the hottest rows. If any seat
-    /// is refused, nothing is written and the seats that were held stay held (009).
+    /// is refused, nothing is written and the seats that were held stay held (008).
     /// </summary>
     public async Task<CheckoutResult> CheckoutAsync(
         Guid clientId,
@@ -136,9 +136,9 @@ public sealed class CheckoutService(
             .SingleOrDefaultAsync(cancellationToken);
 
     /// <summary>
-    /// Authorises, sells, then captures: a sold seat cannot be taken back and money can (010).
+    /// Authorises, sells, then captures: a sold seat cannot be taken back and money can (009).
     /// Only the load honours <paramref name="cancellationToken"/>: a client hanging up between an
-    /// authorisation and its void would leave funds held that nothing releases (022).
+    /// authorisation and its void would leave funds held that nothing releases (009).
     /// </summary>
     public async Task<OrderActionResult> ConfirmAsync(
         Guid clientId,
@@ -153,7 +153,7 @@ public sealed class CheckoutService(
         }
 
         // Expired too, so a confirm after the expiry sweep answers exactly as one that found the
-        // holds lapsed itself (031).
+        // holds lapsed itself (008).
         if (order.Status is OrderStatus.Confirmed or OrderStatus.Expired)
         {
             return new OrderActionResult(OrderActionOutcome.Completed, order);
@@ -188,7 +188,7 @@ public sealed class CheckoutService(
             AuthorizePaymentStatus.AlreadyCaptured => null,
 
             // A decline or timeout does not end the order: it and its holds stay, so the customer
-            // can try again (010).
+            // can try again (009).
             AuthorizePaymentStatus.Declined => OrderActionOutcome.PaymentDeclined,
             AuthorizePaymentStatus.TimedOut => OrderActionOutcome.PaymentTimedOut,
             AuthorizePaymentStatus.ConcurrentAttemptInFlight => OrderActionOutcome.LostRace
@@ -208,7 +208,7 @@ public sealed class CheckoutService(
         if (sale.AllSold)
         {
             // Recorded before the capture is asked for: a confirm that dies now leaves an order
-            // anyone can see is owed its money, and the capture sweep finishes it (025).
+            // anyone can see is owed its money, and the capture sweep finishes it (009).
             order.Status = OrderStatus.AwaitingCapture;
             order.HoldsExpireAt = null;
             order.SoldAt = _timeProvider.GetUtcNow().UtcDateTime;
@@ -222,7 +222,7 @@ public sealed class CheckoutService(
             return await CaptureAsync(order, clientId).ConfigureAwait(false);
         }
 
-        // Nothing sold: a sale is all or none (011). Holds still live stay the client's and lapse
+        // Nothing sold: a sale is all or none (010). Holds still live stay the client's and lapse
         // on their own.
         order.Status = sale.Refusals.All(seat => seat.Status is SellSeatStatus.HoldExpired)
             ? OrderStatus.Expired
@@ -247,7 +247,7 @@ public sealed class CheckoutService(
             CapturePaymentStatus.Captured => OrderStatus.Confirmed,
             CapturePaymentStatus.TimedOut => OrderStatus.AwaitingCapture,
 
-            // Every seat is sold, so the order is owed its money, never Failed (034).
+            // Every seat is sold, so the order is owed its money, never Failed (009).
             CapturePaymentStatus.Declined or CapturePaymentStatus.NoAuthorization => OrderStatus.PaymentDue
         };
 
@@ -259,7 +259,7 @@ public sealed class CheckoutService(
     }
 
     // The seats are sold and stay sold (003), so only the money is asked for again. Nothing but
-    // the customer's own confirm comes here: a sweep would be charging them unasked (034).
+    // the customer's own confirm comes here: a sweep would be charging them unasked (009).
     private async Task<OrderActionResult> PayAgainAsync(Order order, Guid clientId)
     {
         var authorized = await _payments
@@ -282,9 +282,9 @@ public sealed class CheckoutService(
     }
 
     /// <summary>
-    /// Releases the seats before the money, so no sale can follow the void (012). Only the load
+    /// Releases the seats before the money, so no sale can follow the void (009). Only the load
     /// honours <paramref name="cancellationToken"/>: released seats with the money still held is
-    /// the state a cancel exists to prevent (022).
+    /// the state a cancel exists to prevent (009).
     /// </summary>
     public async Task<OrderActionResult> CancelAsync(
         Guid clientId,
@@ -321,7 +321,7 @@ public sealed class CheckoutService(
     }
 
     /// <summary>
-    /// The expiry sweep's ending for a <c>Pending</c> order whose holds lapsed (031). Cancel's
+    /// The expiry sweep's ending for a <c>Pending</c> order whose holds lapsed (008). Cancel's
     /// order, seats before money, because only Inventory can fence a confirm whose sale is in
     /// flight: that sale commits in Inventory before the order row records it.
     /// </summary>
@@ -344,7 +344,7 @@ public sealed class CheckoutService(
         if (release.Seats.Any(seat => seat.Status is ReleaseSeatStatus.SoldToYou))
         {
             // A confirm sold the seats and died before recording it. The sale stands, so finish
-            // it as the customer's next confirm would (025).
+            // it as the customer's next confirm would (009).
             return await ConfirmAsync(clientId, orderId).ConfigureAwait(false);
         }
 
@@ -370,7 +370,7 @@ public sealed class CheckoutService(
 
         if (released.Status is VoidPaymentStatus.AlreadyCaptured)
         {
-            // Defensive, unreachable by this module's interleavings (012): never write an ending
+            // Defensive, unreachable by this module's interleavings (009): never write an ending
             // over money that has been taken.
             return new OrderActionResult(OrderActionOutcome.LostRace, order);
         }

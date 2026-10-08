@@ -137,7 +137,7 @@ the save: only about 15,000 of 304,000 iterations wrote anything. **The dispatch
 whole cost**, as a second workload on the same database, and most of it was fixable. Its
 claim read the entire due backlog every tick, and EF Core logged every statement. With both
 fixed, three runs with the dispatcher on came in inside the pre-outbox spread or below it,
-apart from one outlier purchase p99 ([019][d019]).
+apart from one outlier purchase p99 ([015][d015]).
 
 ## Strangling Payments, and the switch that did nothing
 
@@ -232,7 +232,6 @@ moved, the data boundary didn't.
 Everything above was measured on one laptop, mostly one run per configuration. The counts,
 and the mechanisms behind them, are solid. Latency comparisons across sessions aren't. I
 planned a repeat with the load generator on a machine of its own and then dropped it
-([035][d035]), so that caveat stays.
+([015][d015]), so that caveat stays.
 
-[d019]: DECISIONS.md#019--measure-first-then-break-it-on-purpose
-[d035]: DECISIONS.md#035--the-multi-host-run-is-dropped
+[d015]: DECISIONS.md#015--measure-first-then-break-it-on-purpose

@@ -68,7 +68,7 @@ public static class InventoryModule
         services.AddPerIpRateLimitPolicy(configuration, SeatEndpoints.HoldRateLimitPolicy);
 
         // Every registered check votes on /health/ready; the host never learns which modules
-        // have a database (016, 029).
+        // have a database (013).
         services.AddHealthChecks().AddCheck<InventoryReadinessCheck>(InventoryReadinessCheck.Name);
 
         if (configuration.GetValue<bool>("Inventory:MigrateOnStartup"))
@@ -129,7 +129,7 @@ public static class InventoryModule
         }
     }
 
-    // The drain lives in InventoryDbContext.SaveChanges, so it cannot be switched off (015).
+    // The drain lives in InventoryDbContext.SaveChanges, so it cannot be switched off (012).
     private static void AddOutbox(IServiceCollection services, IConfiguration configuration)
     {
         var section = configuration.GetSection(OutboxOptions.SectionName);

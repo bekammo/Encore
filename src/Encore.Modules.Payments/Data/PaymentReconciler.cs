@@ -50,7 +50,7 @@ internal sealed class PaymentReconciler(
             }
 
             // Sleep even after a full batch: unresolved rows stay first in line, and asking again
-            // at once would only hammer the gateway (014).
+            // at once would only hammer the gateway (011).
             try
             {
                 await Task.Delay(_options.PollInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
@@ -132,7 +132,7 @@ internal sealed class PaymentReconciler(
             .BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        // Held across both gateway calls until the commit (022): a confirm retrying this row waits,
+        // Held across both gateway calls until the commit (011): a confirm retrying this row waits,
         // then loses on xmin, instead of re-authorising funds just released.
         await context.Database
             .ExecuteSqlAsync(
@@ -153,7 +153,7 @@ internal sealed class PaymentReconciler(
 
         DateTime Now() => _timeProvider.GetUtcNow().UtcDateTime;
 
-        // Pending this long means a crash lost the answer: claim it as timed out (022).
+        // Pending this long means a crash lost the answer: claim it as timed out (011).
         if (payment.Status is PaymentStatus.Pending)
         {
             payment.TimeOut(Now());
@@ -174,7 +174,7 @@ internal sealed class PaymentReconciler(
                 return false;
 
             case GatewayRecord.Authorized:
-                // Released, not recorded as Authorized: no order will capture it (014).
+                // Released, not recorded as Authorized: no order will capture it (011).
                 if (await _gateway.VoidAsync(reference!, cancellationToken).ConfigureAwait(false)
                     is GatewayOutcome.TimedOut)
                 {
@@ -214,7 +214,7 @@ internal sealed class PaymentReconciler(
         return true;
     }
 
-    // Not cancellable: by now the gateway may have acted on the row (022).
+    // Not cancellable: by now the gateway may have acted on the row (009).
     private static async Task CommitAsync(PaymentsDbContext context, IDbContextTransaction transaction)
     {
         await context.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);

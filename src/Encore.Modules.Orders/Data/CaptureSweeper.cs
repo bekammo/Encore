@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 namespace Encore.Modules.Orders.Data;
 
 /// <summary>
-/// Cleanup in 006's sense (025): it runs the confirm a customer would, so with it off the next
+/// Cleanup in 006's sense (009): it runs the confirm a customer would, so with it off the next
 /// confirm still finishes the order. The advisory lock only stops two instances duplicating
 /// work; <c>xmin</c> guards each order.
 /// </summary>
