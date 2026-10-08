@@ -13,7 +13,7 @@ public enum CapturePaymentStatus
 
     /// <summary>
     /// The gateway refused the money it had authorised, and nothing is held any more. Retrying
-    /// this capture cannot help; a fresh authorisation can (034).
+    /// this capture cannot help; a fresh authorisation can (009).
     /// </summary>
     Declined = 3
 }

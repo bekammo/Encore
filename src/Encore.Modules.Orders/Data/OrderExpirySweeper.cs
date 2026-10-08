@@ -9,7 +9,7 @@ namespace Encore.Modules.Orders.Data;
 
 /// <summary>
 /// Ends <c>Pending</c> orders whose holds lapsed: seats released, then the authorisation voided,
-/// then the order expired (031). The recorded expiry only picks candidates; each seat's answer
+/// then the order expired (008). The recorded expiry only picks candidates; each seat's answer
 /// comes from Inventory. The advisory lock only stops two instances duplicating work;
 /// <c>xmin</c> guards each order.
 /// </summary>

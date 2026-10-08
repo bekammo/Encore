@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Encore.Modules.Notifications.IntegrationTests;
 
-/// <summary>Real Postgres: the redelivery guard is a unique index, not handler code (016).</summary>
+/// <summary>Real Postgres: the redelivery guard is a unique index, not handler code (012).</summary>
 public sealed class SeatSoldNotifierTests(NotificationsDatabase database) : IClassFixture<NotificationsDatabase>
 {
     private readonly DbContextOptions<NotificationsDbContext> _options = database.Options;

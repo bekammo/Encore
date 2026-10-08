@@ -3,7 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Encore.Shared\Encore.Shared.csproj" />
 
-    <!-- Only Inventory's contracts, never the module itself (017). -->
+    <!-- Only Inventory's contracts, never the module itself (013). -->
     <ProjectReference Include="..\Encore.Modules.Inventory.Contracts\Encore.Modules.Inventory.Contracts.csproj" />
   </ItemGroup>
 

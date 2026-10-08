@@ -60,7 +60,7 @@ public sealed class CatalogEndpointsTests(CatalogDatabase database)
         await _host.DisposeAsync();
     }
 
-    // Payments refuses to authorise nothing, so a free event could be listed but never bought (028).
+    // Payments refuses to authorise nothing, so a free event could be listed but never bought (009).
     [Theory]
     [InlineData("0")]
     [InlineData("-1")]
@@ -82,7 +82,7 @@ public sealed class CatalogEndpointsTests(CatalogDatabase database)
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     }
 
-    // Operator writes are refused without the key; reads stay public (030).
+    // Operator writes are refused without the key; reads stay public (007).
     [Theory]
     [InlineData(null)]
     [InlineData("not-the-operator-key")]

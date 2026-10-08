@@ -17,8 +17,8 @@ using Npgsql;
 namespace Encore.Modules.Orders.IntegrationTests;
 
 /// <summary>
-/// The one place 011 and 012 are checked across Orders' seams, through the real Inventory and
-/// Payments modules composed as the host composes them (018). The invariants count every order,
+/// The one place 009 and 010 are checked across Orders' seams, through the real Inventory and
+/// Payments modules composed as the host composes them (014). The invariants count every order,
 /// so the shared database is emptied before each test.
 /// </summary>
 public sealed class CheckoutCompositionTests(OrdersDatabase database)
@@ -117,7 +117,7 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
     }
 
     /// <summary>
-    /// The real adapter must answer SoldToYou, so the cancel backs off (012); AlreadySold would
+    /// The real adapter must answer SoldToYou, so the cancel backs off (009); AlreadySold would
     /// void an authorisation with a sale behind it.
     /// </summary>
     [Fact]
@@ -154,7 +154,7 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
 
     /// <summary>
     /// An order authorised, then abandoned: once its holds lapse the sweep hands the seats back
-    /// and releases the money through the real modules (031).
+    /// and releases the money through the real modules (008).
     /// </summary>
     [Fact]
     public async Task ExpirySweep_WhenAnAuthorisedOrderIsAbandoned_ShouldFreeItsSeatsAndItsMoney()
@@ -212,7 +212,7 @@ public sealed class CheckoutCompositionTests(OrdersDatabase database)
 
     /// <summary>
     /// The one way seats end sold with no money behind them, and it has to say so: never Failed,
-    /// and paid by the customer's next confirm without the seats being sold twice (034).
+    /// and paid by the customer's next confirm without the seats being sold twice (009).
     /// </summary>
     [Fact]
     public async Task Confirm_WhenTheGatewayRefusesTheCapture_ShouldOweThePaymentUntilTheNextConfirmPays()

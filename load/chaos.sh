@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Encore's chaos harness (019). k6 drives the traffic and asserts the invariants; this
+# Encore's chaos harness (015). k6 drives the traffic and asserts the invariants; this
 # script owns the timeline, injects the faults and reads the evidence back out of
 # Postgres, writing one report per session to load/results/.
 #
@@ -152,7 +152,7 @@ money_evidence() {
 # ---------------------------------------------------------------------------
 
 # The only run with no fault: the baseline scenarios against the strangled pair, with the
-# same parameters as the monolith's baseline (019).
+# same parameters as the monolith's baseline (015).
 run_baseline() {
   say 'run 1/5 — baseline on the extracted configuration'
   reset_data
@@ -165,7 +165,7 @@ run_baseline() {
 
   report '## Baseline — the extracted configuration, no fault'
   report ''
-  report 'The third load configuration (019): the same 50 VUs on 5 seats then 100 VUs'
+  report 'The third load configuration (015): the same 50 VUs on 5 seats then 100 VUs'
   report 'on 500 seats, against `api-strangled` + `payments-api` rather than the monolith.'
   report 'Neither scenario touches Orders or Payments, so what this measures is the cost of'
   report 'the arrangement rather than of the extraction itself.'
@@ -186,7 +186,7 @@ run_baseline() {
 #
 # A purchase takes no lock and a hold takes the client lock (004, 005), so buy latencies
 # are the control and hold latencies are what losing Redis costs. About 1,000 ms per hold
-# would mean FailFast is not in effect (019).
+# would mean FailFast is not in effect (015).
 run_redis() {
   say 'run 2/5 — Redis stopped mid-run'
   reset_data
@@ -242,7 +242,7 @@ run_redis() {
 # Fault 1. Stop the Payments service between two windows of real checkouts.
 #
 # Reconciliation needs authorisations that reached the gateway and lost their answer,
-# which a stopped service cannot produce; PAYMENTS_TIMEOUT_RATE produces them (014).
+# which a stopped service cannot produce; PAYMENTS_TIMEOUT_RATE produces them (011).
 run_payments() {
   say 'run 3/5 — payments-api stopped mid-flash-sale'
   reset_data
@@ -284,7 +284,7 @@ run_payments() {
   report '## Fault 1 — payments-api stopped mid-flash-sale'
   report ''
   report 'Two windows of one-seat checkouts, with the Payments service stopped for the'
-  report 'second. 018 claims that an unreadable answer becomes `TimedOut`, that the order'
+  report 'second. 014 claims that an unreadable answer becomes `TimedOut`, that the order'
   report 'stays `Pending` and that no seat is sold against funds nobody holds. This asks'
   report 'that of a service that is genuinely not there, under load, rather than of a'
   report 'stubbed handler.'
@@ -338,7 +338,7 @@ run_payments() {
 # Fault 4. Block the outbox's consumer rather than the dispatcher, which has no switch and
 # should not get one for a chaos run. Locking notifications.notifications stalls SeatSold's
 # delivery (the only event with a handler) while the seat path, on another table, carries
-# on: delivery separated from the request path (016).
+# on: delivery separated from the request path (012).
 run_stall() {
   say 'run 4/5 — the outbox dispatcher stalled behind its consumer'
   reset_data
@@ -452,7 +452,7 @@ run_stall() {
 }
 
 # Fault 2. Two reconcilers over one table, the single-owner rule broken on purpose. Each
-# sweep takes an advisory lock (014), so the expectation is zero lost xmin races.
+# sweep takes an advisory lock (011), so the expectation is zero lost xmin races.
 run_reconcilers() {
   say 'run 5/5 — two reconcilers over one table'
   reset_data
@@ -485,7 +485,7 @@ run_reconcilers() {
   report ''
   report 'The reconciler is meant to run in exactly one process, and only a compose setting'
   report 'says so. This run turns the setting on in both processes on purpose. Each sweep'
-  report 'takes a Postgres advisory lock first (014), so the question'
+  report 'takes a Postgres advisory lock first (011), so the question'
   report 'is whether that lease holds: both processes settle work, none of it twice, and no'
   report 'sweep loses an xmin race.'
   report ''
@@ -531,9 +531,9 @@ run_reconcilers() {
 }
 
 # Multi-seat orders: confirmed, cancelled, and both at once. No fault is injected; the
-# customer is the fault. Puts the all-or-none sale (011) and the seats-before-money cancel
-# (012) under load. The gateway answers everything and refuses one capture in twenty, so
-# every order has a readable ending, payment_due included (034).
+# customer is the fault. Puts the all-or-none sale (010) and the seats-before-money cancel
+# (009) under load. The gateway answers everything and refuses one capture in twenty, so
+# every order has a readable ending, payment_due included (009).
 run_orders() {
   say 'orders — multi-seat checkouts, confirm racing cancel'
   reset_data
@@ -558,9 +558,9 @@ run_orders() {
   report ''
   report 'One to four seats per order, then a confirm, a cancel, or both sent at once.'
   report 'k6 can only see answers. What has to hold is about rows: no order partly sold'
-  report '(011), no order whose seats sold without the money being taken or held, and no'
-  report 'money taken for seats that did not sell (012). One capture in twenty is refused; that'
-  report 'order must read payment_due, and its customer confirms once more (034). Those are read below.'
+  report '(010), no order whose seats sold without the money being taken or held, and no'
+  report 'money taken for seats that did not sell (009). One capture in twenty is refused; that'
+  report 'order must read payment_due, and its customer confirms once more (009). Those are read below.'
   report ''
   report "k6 exit status: ${k6status} (0 means every invariant it asserts held)"
   report ''
@@ -626,8 +626,8 @@ CROSS JOIN LATERAL (VALUES
   (5, 'seats sold, no money taken or held, not payment_due (must be 0)', c.sold_no_money),
   (6, 'money taken, seats not all sold (must be 0)', c.paid_not_sold),
   (7, 'confirmed, money not taken (must be 0)', c.confirmed_not_captured),
-  (8, 'ended, authorisation still held (a void that timed out; 031)', c.ended_still_authorized),
-  (9, 'payment_due: sold, capture refused, still owed (034)', c.payment_due),
+  (8, 'ended, authorisation still held (a void that timed out; 008)', c.ended_still_authorized),
+  (9, 'payment_due: sold, capture refused, still owed (009)', c.payment_due),
   (10, 'payment_due, seats not all sold (must be 0)', c.payment_due_not_sold)
 ) AS v(n, label, value)
 ORDER BY v.n;
@@ -666,7 +666,7 @@ report "# Encore chaos session — ${STAMP}"
 report ''
 report 'Produced by `load/chaos.sh`. Every number below was read out of the running system:'
 report "the k6 digests are each run's own output, and everything in a \`psql\` block was"
-report 'queried from Postgres after the fault. DECISIONS 019 is the write-up.'
+report 'queried from Postgres after the fault. DECISIONS 015 is the write-up.'
 report ''
 report "Runs in this session: ${RUNS[*]}"
 
@@ -687,7 +687,7 @@ done
 say "report written to ${REPORT}"
 
 # The "(must be 0)" rows are invariants, not statistics, so a breach fails the session and
-# anything running this can tell (020). A row with no number is a failure too: the query
+# anything running this can tell (014). A row with no number is a failure too: the query
 # did not answer, and silence is not a pass.
 breaches=$(grep -F '(must be 0)' "$REPORT" | grep -Ev '\(must be 0\)[^0-9]*[^0-9]0[[:space:]]*$')
 

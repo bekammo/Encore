@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Host-only, and the one home of the OpenTelemetry packages (021). Modules emit through
+  <!-- Host-only, and the one home of the OpenTelemetry packages (001). Modules emit through
        the BCL's ActivitySource and Meter and never learn this exists. -->
 
   <ItemGroup>

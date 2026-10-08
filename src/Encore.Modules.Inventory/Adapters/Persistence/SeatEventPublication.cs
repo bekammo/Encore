@@ -11,7 +11,7 @@ internal static class SeatEventPublication
 {
     /// <summary>
     /// Strict on the way in: a row missing a member dead-letters instead of reaching a handler
-    /// as <c>Guid.Empty</c> (024).
+    /// as <c>Guid.Empty</c> (012).
     /// </summary>
     internal static readonly JsonSerializerOptions SerializerOptions =
         new(JsonSerializerDefaults.Web)

@@ -10,7 +10,7 @@ namespace Encore.Modules.Payments.Simulation;
 
 /// <summary>
 /// Remembers its decisions in <c>payments.gateway_ledger</c>, so every process asks the same
-/// gateway and a restart forgets nothing (014).
+/// gateway and a restart forgets nothing (011).
 /// </summary>
 internal sealed class SimulatedPaymentGateway(
     IServiceScopeFactory scopeFactory,

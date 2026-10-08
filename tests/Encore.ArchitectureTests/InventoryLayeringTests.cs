@@ -4,7 +4,7 @@ namespace Encore.ArchitectureTests;
 
 /// <summary>
 /// <c>Ports/</c>, <c>Adapters/</c> and <c>Application/</c> are folders of one project, so their
-/// rules are read from source (002, 021).
+/// rules are read from source (001, 002).
 /// </summary>
 public sealed partial class InventoryLayeringTests
 {
@@ -33,7 +33,7 @@ public sealed partial class InventoryLayeringTests
             $"A port may not name an adapter's type or namespace, including in XML docs. Found: {string.Join("; ", found)}");
     }
 
-    /// <summary>Code only, so a comment may explain the rule (021).</summary>
+    /// <summary>Code only, so a comment may explain the rule (001).</summary>
     [Theory]
     [InlineData("src/Encore.Modules.Inventory/Application")]
     [InlineData("src/Encore.Modules.Inventory.Domain")]
@@ -53,7 +53,7 @@ public sealed partial class InventoryLayeringTests
 
         Assert.True(
             found.Count == 0,
-            $"Modules emit telemetry at adapter edges only, never in the Domain or Application/ (021). Found: {string.Join("; ", found)}");
+            $"Modules emit telemetry at adapter edges only, never in the Domain or Application/ (001). Found: {string.Join("; ", found)}");
     }
 
     [Fact]

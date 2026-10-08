@@ -19,7 +19,7 @@ public enum OrderActionOutcome
     PaymentTimedOut = 5,
 
     /// <summary>
-    /// The seats are sold and the money is still owed; unlike a decline, nothing is held (034).
+    /// The seats are sold and the money is still owed; unlike a decline, nothing is held (009).
     /// </summary>
     PaymentDue = 6
 }

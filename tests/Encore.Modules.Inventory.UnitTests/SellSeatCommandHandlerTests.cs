@@ -271,7 +271,7 @@ public sealed class SellSeatCommandHandlerTests
         Assert.All(batch, seat => Assert.Equal(SeatStatus.Sold, seat.Status));
     }
 
-    /// <summary>The seats sold in memory are reloaded, so no later save can write them (011).</summary>
+    /// <summary>The seats sold in memory are reloaded, so no later save can write them (010).</summary>
     [Fact]
     public async Task HandleBatch_WhenOneHoldHasLapsed_ShouldSellNone()
     {

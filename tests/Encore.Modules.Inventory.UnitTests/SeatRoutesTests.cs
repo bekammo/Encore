@@ -9,7 +9,7 @@ namespace Encore.Modules.Inventory.UnitTests;
 
 /// <summary>
 /// The seat actions sell without an order or a payment, so they exist only when asked for, and
-/// seat maps need the operator key (030). Mapping only: no request reaches a database.
+/// seat maps need the operator key (007). Mapping only: no request reaches a database.
 /// </summary>
 public sealed class SeatRoutesTests
 {

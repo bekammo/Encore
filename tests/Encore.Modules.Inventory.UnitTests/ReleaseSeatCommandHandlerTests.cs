@@ -206,7 +206,7 @@ public sealed class ReleaseSeatCommandHandlerTests
         Assert.Equal(2, seats.SaveCalls);
     }
 
-    /// <summary>A release that exists only in memory must not reach a later save (011).</summary>
+    /// <summary>A release that exists only in memory must not reach a later save (010).</summary>
     [Fact]
     public async Task Handle_WhenBothAttemptsLoseTheRace_ShouldReloadWhatItChanged()
     {

@@ -70,7 +70,7 @@ public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
             .HasFilter($"\"Status\" = {(int)OrderStatus.AwaitingCapture}")
             .HasDatabaseName("ix_orders_awaiting_capture");
 
-        // The expiry sweep's candidates, oldest first (031).
+        // The expiry sweep's candidates, oldest first (008).
         builder
             .HasIndex(order => order.HoldsExpireAt)
             .HasFilter($"\"Status\" = {(int)OrderStatus.Pending}")
