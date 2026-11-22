@@ -5,7 +5,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Only other modules' .Contracts, never the modules themselves (017). -->
+    <!-- Only other modules' .Contracts, never the modules themselves (013). -->
     <ProjectReference Include="..\Encore.Modules.Inventory.Contracts\Encore.Modules.Inventory.Contracts.csproj" />
 
     <ProjectReference Include="..\Encore.Modules.Catalog.Contracts\Encore.Modules.Catalog.Contracts.csproj" />

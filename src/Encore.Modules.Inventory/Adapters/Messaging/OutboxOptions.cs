@@ -12,7 +12,7 @@ public sealed class OutboxOptions
 
     /// <summary>
     /// Delivery runs inside the claim transaction, so this and <see cref="MaxBatchDuration"/>
-    /// bound how long row locks are held (016).
+    /// bound how long row locks are held (012).
     /// </summary>
     public TimeSpan DeliveryTimeout { get; set; } = TimeSpan.FromSeconds(2);
 

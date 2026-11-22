@@ -9,7 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Encore.Modules.Shared.Http;
 
 /// <summary>
-/// A token bucket per client IP address, for the routes a bot would hammer (030). A floor, not a
+/// A token bucket per client IP address, for the routes a bot would hammer (007). A floor, not a
 /// defence: it stops one machine rotating client ids to hold a venue, not a botnet.
 /// </summary>
 public static class PerIpRateLimiting

@@ -911,7 +911,7 @@ public sealed class CheckoutServiceTests(OrdersDatabase database) : IClassFixtur
         Assert.Equal(OrderActionOutcome.Completed, confirm.Outcome);
     }
 
-    /// <summary>The seats go back first, so the sale finds nothing and both sides void (012).</summary>
+    /// <summary>The seats go back first, so the sale finds nothing and both sides void (009).</summary>
     [Fact]
     public async Task Cancel_BetweenAConfirmsAuthorisationAndItsSale_ShouldLeaveNothingSoldAndNothingTaken()
     {

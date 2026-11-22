@@ -69,7 +69,7 @@ public sealed class OutboxDispatcherTests(InventoryDatabase database)
         Assert.Single(handler.Delivered);
     }
 
-    /// <summary>A property of the claim, not a promise to consumers (024).</summary>
+    /// <summary>A property of the claim, not a promise to consumers (012).</summary>
     [Fact]
     public async Task Dispatch_ShouldClaimInDueOrder()
     {

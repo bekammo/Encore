@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Real Postgres, never the in-memory provider: the one-live-attempt index is the guard (013). -->
+  <!-- Real Postgres, never the in-memory provider: the one-live-attempt index is the guard (011). -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>

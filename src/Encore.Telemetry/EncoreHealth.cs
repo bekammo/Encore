@@ -9,7 +9,7 @@ namespace Encore.Telemetry;
 
 /// <summary>
 /// The framework's health checks behind the JSON the hand-written document promises. Modules
-/// register the checks; both hosts map them here, so the two routes are written once (029).
+/// register the checks; both hosts map them here, so the two routes are written once (013).
 /// </summary>
 public static class EncoreHealth
 {

@@ -31,7 +31,7 @@ internal static class PollingLoop
             }
             catch (Exception ex)
             {
-                // An exception escaping ExecuteAsync would stop the job for the life of the process.
+                // An exception escaping ExecuteAsync would stop the whole host (012).
                 logger.LogError(ex, "{Job} failed. Retrying after {PollInterval}.", job, pollInterval);
                 taken = 0;
             }

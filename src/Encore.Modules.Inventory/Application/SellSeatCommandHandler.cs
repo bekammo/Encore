@@ -40,7 +40,7 @@ public sealed class SellSeatCommandHandler(
 
         if (retry.LostRace)
         {
-            // Reloads only to discard the sales in memory, so no later save writes them (011).
+            // Reloads only to discard the sales in memory, so no later save writes them (010).
             await _seats.GetByIdsAsync(command.SeatIds, cancellationToken).ConfigureAwait(false);
         }
 
@@ -83,7 +83,7 @@ public sealed class SellSeatCommandHandler(
 
         if (refusals.Count > 0)
         {
-            // A refused sale reloads, so seats sold in memory cannot reach a later save (011).
+            // A refused sale reloads, so seats sold in memory cannot reach a later save (010).
             if (sold.Count > 0)
             {
                 await _seats.GetByIdsAsync(command.SeatIds, cancellationToken).ConfigureAwait(false);

@@ -2,7 +2,7 @@ namespace Encore.Modules.Payments.Models;
 
 /// <summary>
 /// Factory and guarded transitions because a payment has rules decidable from its own row, yet
-/// it stays in the flat module with no ports or domain assembly (013).
+/// it stays in the flat module with no ports or domain assembly (011).
 /// </summary>
 public sealed class Payment
 {
@@ -99,7 +99,7 @@ public sealed class Payment
 
     /// <summary>
     /// Statuses that might hold or have taken money, so <see cref="PaymentStatus.TimedOut"/> is in:
-    /// no answer may mean yes (013). The unique index's filter is built from this list, so a
+    /// no answer may mean yes (011). The unique index's filter is built from this list, so a
     /// change to it needs a migration.
     /// </summary>
     public static IReadOnlyList<PaymentStatus> LiveStatuses { get; } =
@@ -135,7 +135,7 @@ public sealed class Payment
     }
 
     /// <summary>
-    /// Authorisations only: a timed-out capture stays <see cref="PaymentStatus.Authorized"/> (014).
+    /// Authorisations only: a timed-out capture stays <see cref="PaymentStatus.Authorized"/> (011).
     /// </summary>
     /// <exception cref="PaymentTransitionException">The attempt is no longer pending.</exception>
     public void TimeOut(DateTime utcNow)
@@ -160,7 +160,7 @@ public sealed class Payment
 
     /// <summary>
     /// Restamps <see cref="AttemptedAt"/>, so the reconciler does not take a live attempt for one
-    /// a crash left behind (022).
+    /// a crash left behind (011).
     /// </summary>
     /// <exception cref="PaymentTransitionException">The attempt is no longer pending.</exception>
     public void Resume(DateTime utcNow)
@@ -188,7 +188,7 @@ public sealed class Payment
     }
 
     /// <summary>
-    /// The gateway refused to take the money it had authorised, so nothing is held any more (034).
+    /// The gateway refused to take the money it had authorised, so nothing is held any more (009).
     /// Not live, so the order's next confirm starts a fresh attempt.
     /// </summary>
     /// <exception cref="PaymentTransitionException">
@@ -232,7 +232,7 @@ public sealed class Payment
         ResolvedAt = utcNow;
     }
 
-    // Looked-up answers get their own transitions (014), so the ordinary path cannot write one
+    // Looked-up answers get their own transitions (011), so the ordinary path cannot write one
     // it never received.
 
     /// <summary>

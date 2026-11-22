@@ -4,7 +4,7 @@ public sealed class PaymentReconciliationOptions
 {
     public const string SectionName = "Payments:Reconciliation";
 
-    /// <summary>On by default: without the reconciler, funds would silently stay held (014).</summary>
+    /// <summary>On by default: without the reconciler, funds would silently stay held (011).</summary>
     public bool Enabled { get; set; } = true;
 
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromMinutes(1);

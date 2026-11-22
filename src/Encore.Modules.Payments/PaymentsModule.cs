@@ -28,12 +28,12 @@ public static class PaymentsModule
         // Singleton so a seeded Random is one sequence.
         services.AddSingleton<SimulatedPaymentGateway>();
 
-        // TryAdd, so Orders' HTTP client wins whichever module registers first (018);
+        // TryAdd, so Orders' HTTP client wins whichever module registers first (014);
         // StranglerSwitchTests pins all four orders.
         services.TryAddScoped<IOrderPayments, InProcessOrderPayments>();
 
         // Every registered check votes on /health/ready; the host never learns which modules
-        // have a database (016, 029).
+        // have a database (013).
         services.AddHealthChecks().AddCheck<PaymentsReadinessCheck>(PaymentsReadinessCheck.Name);
 
         services.TryAddSingleton(TimeProvider.System);
@@ -76,7 +76,7 @@ public static class PaymentsModule
     }
 
     /// <summary>
-    /// A second seam, which only a host serving Payments out of process opts into (018). A missing
+    /// A second seam, which only a host serving Payments out of process opts into (014). A missing
     /// service token fails startup rather than defaulting.
     /// </summary>
     public static IEndpointRouteBuilder MapPaymentsServiceApi(

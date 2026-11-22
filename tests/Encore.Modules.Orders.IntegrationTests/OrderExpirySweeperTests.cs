@@ -11,7 +11,7 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace Encore.Modules.Orders.IntegrationTests;
 
-/// <summary>The sweep visits every lapsed order, so the shared database is emptied before each test (031).</summary>
+/// <summary>The sweep visits every lapsed order, so the shared database is emptied before each test (008).</summary>
 public sealed class OrderExpirySweeperTests : IClassFixture<OrdersDatabase>, IAsyncLifetime
 {
     private static readonly DateTime Now = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
@@ -56,7 +56,7 @@ public sealed class OrderExpirySweeperTests : IClassFixture<OrdersDatabase>, IAs
         Assert.Equal(Now, stored.ClosedAt);
         Assert.Null(stored.HoldsExpireAt);
 
-        // Seats before money, so no sale can follow the void (012).
+        // Seats before money, so no sale can follow the void (009).
         Assert.Equal(new[] { "release", "void" }, _calls);
     }
 
@@ -85,7 +85,7 @@ public sealed class OrderExpirySweeperTests : IClassFixture<OrdersDatabase>, IAs
         Assert.Equal(new[] { "release" }, _calls);
     }
 
-    /// <summary>A confirm sold the seats and died before recording it: the sale stands (025).</summary>
+    /// <summary>A confirm sold the seats and died before recording it: the sale stands (009).</summary>
     [Fact]
     public async Task Sweep_WhenTheSeatsWereSoldButNotRecorded_ShouldFinishTheConfirmRatherThanVoid()
     {
@@ -233,7 +233,7 @@ public sealed class OrderExpirySweeperTests : IClassFixture<OrdersDatabase>, IAs
                 [.. request.SeatIds.Select(seatId => new ReleaseSeatResponse(seatId, ReleaseWith))]));
         }
 
-        // Only the heal path sells, and a seat already sold to this client sells again (011).
+        // Only the heal path sells, and a seat already sold to this client sells again (010).
         public Task<SellSeatsResponse> SellAsync(
             SellSeatsRequest request,
             CancellationToken cancellationToken = default)

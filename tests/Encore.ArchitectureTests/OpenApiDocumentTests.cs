@@ -98,7 +98,7 @@ public sealed partial class OpenApiDocumentTests
 
     /// <summary>
     /// A path carries its own <c>servers</c> entry exactly when the monolith, which serves the
-    /// page, does not map it (008).
+    /// page, does not map it (007).
     /// </summary>
     [Fact]
     public void EveryDocumentedPathShouldSayWhetherThisHostServesIt()
@@ -200,7 +200,7 @@ public sealed partial class OpenApiDocumentTests
     [GeneratedRegex(@"var\s+(?<name>\w+)\s*=\s*(?<parent>\w+)\s*\.\s*MapGroup\s*\(\s*""(?<pattern>[^""]*)""")]
     private static partial Regex GroupPattern();
 
-    // MapHealthChecks is read as a GET: EncoreHealth restricts it to GET and HEAD (029).
+    // MapHealthChecks is read as a GET: EncoreHealth restricts it to GET and HEAD (013).
     [GeneratedRegex(@"(?<receiver>\w+)\s*\.\s*Map(?<method>Get|Post|Put|Delete|Patch|HealthChecks)\s*\(\s*""(?<pattern>[^""]*)""")]
     private static partial Regex MapPattern();
 

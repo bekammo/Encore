@@ -142,7 +142,7 @@ public sealed class AssemblyReferenceTests
 
     /// <summary>
     /// Instruments are subscribed by wildcard, so the telemetry project needs no module, nor
-    /// <c>Encore.Shared</c> (021).
+    /// <c>Encore.Shared</c> (001).
     /// </summary>
     [Fact]
     public void Telemetry_ShouldNameNoModuleContractsOrPersistenceAssembly()
@@ -177,7 +177,7 @@ public sealed class AssemblyReferenceTests
             $"{assembly} emits through System.Diagnostics; exporters belong to the host. Found: {string.Join(", ", leaked)}");
     }
 
-    /// <summary>Each module registers its own migrator and filters (017, 029).</summary>
+    /// <summary>Each module registers its own migrator and filters (013).</summary>
     [Theory]
     [MemberData(nameof(TheoryRows.Hosts), MemberType = typeof(TheoryRows))]
     public void Host_ShouldNotNameASharedModuleProject(string host)

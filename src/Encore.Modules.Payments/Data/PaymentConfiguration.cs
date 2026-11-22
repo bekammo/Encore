@@ -59,7 +59,7 @@ public sealed class PaymentConfiguration : IEntityTypeConfiguration<Payment>
 
         builder.Ignore(payment => payment.IsLive);
 
-        // One live attempt per order: the real guard against a double charge (013).
+        // One live attempt per order: the real guard against a double charge (011).
         builder
             .HasIndex(payment => payment.OrderId)
             .IsUnique()

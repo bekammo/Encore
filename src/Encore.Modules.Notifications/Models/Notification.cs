@@ -17,6 +17,6 @@ public sealed class Notification
 
     public DateTime OccurredAt { get; set; }
 
-    /// <summary>The gap from <see cref="OccurredAt"/> is delivery latency (016).</summary>
+    /// <summary>The gap from <see cref="OccurredAt"/> is delivery latency (012).</summary>
     public DateTime CreatedAt { get; set; }
 }

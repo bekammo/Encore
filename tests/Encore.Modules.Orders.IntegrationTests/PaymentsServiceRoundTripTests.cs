@@ -13,7 +13,7 @@ namespace Encore.Modules.Orders.IntegrationTests;
 
 /// <summary>
 /// Every other test of this seam fakes one side; only here do both run, so a wire format they
-/// disagree on fails (018). The database is never emptied, so every test uses fresh order ids.
+/// disagree on fails (014). The database is never emptied, so every test uses fresh order ids.
 /// </summary>
 public sealed class PaymentsServiceRoundTripTests(OrdersDatabase database)
     : IClassFixture<OrdersDatabase>, IAsyncLifetime

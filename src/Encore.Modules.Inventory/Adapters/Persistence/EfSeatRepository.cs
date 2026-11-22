@@ -57,7 +57,7 @@ public sealed class EfSeatRepository(InventoryDbContext context) : ISeatReposito
 
         // UNION ALL keeps duplicates: a requested seat the client already holds comes back from
         // both halves, and an unrequested row only from the second. Counting rows finds the live
-        // holds; compiling the predicate to test them again cost every hold under load (032).
+        // holds; compiling the predicate to test them again cost every hold under load (015).
         var liveHolds = halves
             .GroupBy(seat => seat.Id)
             .Where(group => !seatIds.Contains(group.Key) || group.Count() > 1)

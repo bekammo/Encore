@@ -7,7 +7,7 @@ namespace Encore.Modules.Inventory.Adapters.Messaging;
 
 /// <summary>
 /// No reflection at dispatch time: each entry is a delegate closed over its type at
-/// registration, so the compiler checks that payload and handler agree (016). An unknown name
+/// registration, so the compiler checks that payload and handler agree (012). An unknown name
 /// throws rather than being skipped, so the message dead-letters visibly.
 /// </summary>
 internal sealed class OutboxEventCatalog
@@ -29,7 +29,7 @@ internal sealed class OutboxEventCatalog
                     $"Outbox message {message.MessageId} ('{message.EventType}') deserialised to null.");
             }
 
-            // Any number of consumers, including none: an event nobody handles is marked delivered (024).
+            // Any number of consumers, including none: an event nobody handles is marked delivered (012).
             var handlers = provider.GetServices<IIntegrationEventHandler<TEvent>>();
 
             // Sequential: if one throws, the message is retried and every handler runs again.

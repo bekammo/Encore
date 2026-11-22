@@ -9,7 +9,7 @@ namespace Encore.Modules.Notifications.Data;
 
 /// <summary>
 /// Sends nothing, only records. Idempotent by insert-and-catch: the unique index is the guard,
-/// and a redelivery that hits it is a success, not an error (016).
+/// and a redelivery that hits it is a success, not an error (012).
 /// </summary>
 internal sealed class SeatSoldNotifier(
     NotificationsDbContext notifications,

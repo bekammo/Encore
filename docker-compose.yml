@@ -7,7 +7,7 @@ services:
     # payments-api, plus 100 more for a host when HOLD_CAP_LOCK=Postgres gives the advisory
     # lock its own data source (005). The rest is headroom for the chaos rig's psql, a
     # `dotnet run` and the Testcontainers suites. At the default, the strangled pair alone overran the server
-    # with `53300: too many clients` (019).
+    # with `53300: too many clients` (015).
     command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: encore
@@ -15,7 +15,7 @@ services:
       POSTGRES_DB: encore
     # 55432 on the host: a native PostgreSQL 18 service owns 5432 on the development
     # machine, and `docker ps` still shows the mapping as Docker's. Container-to-container
-    # paths use 5432 and are unaffected (020).
+    # paths use 5432 and are unaffected.
     ports:
       - "55432:5432"
     volumes:
@@ -65,13 +65,13 @@ services:
       ConnectionStrings__Payments: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
       ConnectionStrings__Notifications: "Host=postgres;Port=5432;Database=encore;Username=encore;Password=encore;Maximum Pool Size=100"
       ConnectionStrings__Redis: "redis:6379"
-      # Run profiles are the only place migrate-on-startup is set (017).
+      # Run profiles are the only place migrate-on-startup is set (013).
       Catalog__MigrateOnStartup: "true"
       Orders__MigrateOnStartup: "true"
       Inventory__MigrateOnStartup: "true"
       Payments__MigrateOnStartup: "true"
       Notifications__MigrateOnStartup: "true"
-      # The background workloads can each be switched off so a run can price them (019).
+      # The background workloads can each be switched off so a run can price them (015).
       # The outbox drain has no flag: it is atomic with the seat write, and turning it off
       # would be a different system. SWEEP_ENABLED=false also asks 006's question under
       # load: the sale must still sell every seat and oversell none.
@@ -80,26 +80,26 @@ services:
       Orders__OrderExpirySweep__Enabled: "${ORDER_EXPIRY_SWEEP_ENABLED:-true}"
       Payments__Reconciliation__Enabled: "${RECONCILER_ENABLED:-true}"
       # Overridden only by the chaos rig, to see whether the per-lock cost of a Redis
-      # outage moves with it (019).
+      # outage moves with it (015).
       Inventory__RedisLock__ConnectTimeoutMs: "${REDIS_CONNECT_TIMEOUT_MS:-1000}"
       # How long the lock stops asking Redis after a refusal. 00:00:00 asks every time: the
-      # control for measuring what the cooldown saves (019).
+      # control for measuring what the cooldown saves (015).
       Inventory__RedisLock__Cooldown: "${REDIS_LOCK_COOLDOWN:-00:00:01}"
       # Who serialises the hold cap's count: Redis, or a Postgres advisory lock (005).
       Inventory__HoldCapLock: "${HOLD_CAP_LOCK:-Redis}"
       # The harness drives the seat actions directly. They sell without an order or a
-      # payment, so they are off unless a deployment maps them, as this one does (030).
+      # payment, so they are off unless a deployment maps them, as this one does (007).
       Inventory__ExposeSeatRoutes: "true"
-      # Operator writes need this key; k6's setup sends the same default (030).
+      # Operator writes need this key; k6's setup sends the same default (007).
       Operator__ApiKey: "${OPERATOR_API_KEY:-local-operator-key}"
       # Every k6 request comes from one address, so a per-IP limit would measure the limiter
-      # rather than contention. RATE_LIMIT_ENABLED=true turns it on (030).
+      # rather than contention. RATE_LIMIT_ENABLED=true turns it on (007).
       RateLimiting__PerIp__Enabled: "${RATE_LIMIT_ENABLED:-false}"
       # Telemetry is off unless this names a collector, so a load run measures the system
-      # without it. OTEL_ENDPOINT=http://lgtm:4317 with `--profile telemetry` turns it on (021).
+      # without it. OTEL_ENDPOINT=http://lgtm:4317 with `--profile telemetry` turns it on (001).
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_ENDPOINT:-}"
 
-  # Payments as its own process (018). Behind the `strangled` profile so the monolith's
+  # Payments as its own process (014). Behind the `strangled` profile so the monolith's
   # workflow is unchanged. Same `payments` schema in the same database: the process
   # boundary moved, the data boundary has not.
   payments-api:
@@ -118,7 +118,7 @@ services:
       # A local development token, checked in so `up` works. Not a secret; a deployment
       # supplies its own.
       Payments__ServiceToken: "${PAYMENTS_SERVICE_TOKEN:-local-development-token}"
-      # This process owns the reconciler; `api-strangled` turns its own off (014).
+      # This process owns the reconciler; `api-strangled` turns its own off (011).
       Payments__Reconciliation__Enabled: "true"
       # Chaos-rig knobs. MinimumAge is one hold duration so a sweep does not race a confirm
       # that could still succeed; a run is minutes long, so the rig lowers it to watch
@@ -131,7 +131,7 @@ services:
       # raises the rate to produce TimedOut rows for reconciliation to settle.
       Payments__Simulation__TimeoutRate: "${PAYMENTS_TIMEOUT_RATE:-0}"
       Payments__Simulation__LostRequestRate: "${PAYMENTS_LOST_REQUEST_RATE:-0.5}"
-      # Off by default for the same reason; the orders run raises it to produce payment_due (034).
+      # Off by default for the same reason; the orders run raises it to produce payment_due (009).
       Payments__Simulation__CaptureDeclineRate: "${PAYMENTS_CAPTURE_DECLINE_RATE:-0}"
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_ENDPOINT:-}"
 
@@ -171,7 +171,7 @@ services:
       Orders__Payments__ServiceToken: "${PAYMENTS_SERVICE_TOKEN:-local-development-token}"
       # Off: payments-api owns the reconciler. RECONCILER_EVERYWHERE=true runs two sweeps
       # over one table so the chaos rig can test the advisory lock that arbitrates them
-      # (014). The lock is the guard, not the plan; do not set it outside the rig.
+      # (011). The lock is the guard, not the plan; do not set it outside the rig.
       Payments__Reconciliation__Enabled: "${RECONCILER_EVERYWHERE:-false}"
       Payments__Reconciliation__MinimumAge: "${RECONCILER_MIN_AGE:-00:05:00}"
       Payments__Reconciliation__PollInterval: "${RECONCILER_POLL:-00:01:00}"
@@ -186,7 +186,7 @@ services:
 
   # Grafana, Tempo, Prometheus and Loki in one container, behind its own profile so nothing
   # else starts it. Receives OTLP on 4317 (gRPC) and 4318 (HTTP); Grafana on 3000, anonymous
-  # admin. No volume: a session's telemetry is for looking at, not for keeping (021).
+  # admin. No volume: a session's telemetry is for looking at, not for keeping (001).
   lgtm:
     profiles: ["telemetry"]
     image: grafana/otel-lgtm:0.33.1
@@ -201,7 +201,7 @@ services:
       - ./ops/grafana/dashboards:/otel-lgtm/encore-dashboards:ro
 
   # The load harness: k6 in a container, so the rig adds no project and no package the
-  # build rules would have to reason about (019). `--build` is required, as for `tests`:
+  # build rules would have to reason about (015). `--build` is required, as for `tests`:
   # without it the run measures the previous api image, and a stale baseline misattributes
   # every later change. The tag is pinned so the rig does not change between runs.
   load:
@@ -213,7 +213,7 @@ services:
     volumes:
       - ./load:/scripts:ro
       # One summary per run. Gitignored: one machine on one day is not a claim. The session
-      # the README quotes is copied to load/evidence/ (033).
+      # the README quotes is copied to load/evidence/ (015).
       - ./load/results:/results
     environment:
       ENCORE_BASE_URL: "http://api:8080"
@@ -242,7 +242,7 @@ services:
     entrypoint: ["k6", "run", "/scripts/flash-sale.js"]
 
   # The test suite, on Linux because Smart App Control blocks freshly built assemblies on
-  # the host (020). It does not depend on the services above: the integration tests start
+  # the host. It does not depend on the services above: the integration tests start
   # their own throwaway instances, so a run never touches the database in use by hand.
   tests:
     profiles: ["tests"]

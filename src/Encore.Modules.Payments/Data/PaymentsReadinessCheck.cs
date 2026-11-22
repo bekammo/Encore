@@ -6,7 +6,7 @@ namespace Encore.Modules.Payments.Data;
 
 /// <summary>
 /// Unhealthy only for a real outage. Unsettled attempts go in the description and never fail the
-/// check (016, 029).
+/// check (013).
 /// </summary>
 internal sealed class PaymentsReadinessCheck(
     PaymentsDbContext dbContext,

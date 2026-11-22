@@ -1,6 +1,6 @@
 namespace Encore.Modules.Catalog.Models;
 
-/// <summary>A plain POCO: it has no invariants to protect (013).</summary>
+/// <summary>A plain POCO: it has no invariants to protect (011).</summary>
 public sealed class Event
 {
     public Guid Id { get; set; }

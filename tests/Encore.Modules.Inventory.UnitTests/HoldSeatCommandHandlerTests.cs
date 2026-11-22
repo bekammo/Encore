@@ -234,7 +234,7 @@ public sealed class HoldSeatCommandHandlerTests
         Assert.Equal(HoldSeatOutcome.LostRace, result.Outcome);
     }
 
-    /// <summary>A hold that exists only in memory must not reach a later save (011).</summary>
+    /// <summary>A hold that exists only in memory must not reach a later save (010).</summary>
     [Fact]
     public async Task Handle_WhenBothAttemptsLoseRace_ShouldReloadWhatItChanged()
     {

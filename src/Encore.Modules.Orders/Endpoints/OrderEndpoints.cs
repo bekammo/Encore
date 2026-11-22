@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Encore.Modules.Orders.Endpoints;
 
-/// <summary>Confirm and cancel are actions, not a status a client may write (008).</summary>
+/// <summary>Confirm and cancel are actions, not a status a client may write (007).</summary>
 public static class OrderEndpoints
 {
     public const string CheckoutRateLimitPolicy = "orders-checkout";
@@ -18,7 +18,7 @@ public static class OrderEndpoints
             .AddEndpointFilter<ClientIdEndpointFilter>();
 
         // Empty pattern, so the route is exactly /orders.
-        // Checkout takes holds, the writes a bot would hammer (030).
+        // Checkout takes holds, the writes a bot would hammer (007).
         orders.MapPost("", CheckoutAsync)
             .RequireRateLimiting(CheckoutRateLimitPolicy);
 

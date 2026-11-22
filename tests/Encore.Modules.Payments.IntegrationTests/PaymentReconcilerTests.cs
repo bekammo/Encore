@@ -97,7 +97,7 @@ public sealed class PaymentReconcilerTests(PaymentsDatabase database)
         Assert.False(payment.IsLive);
     }
 
-    /// <summary>Unknown is not NotFound: nothing is written and the attempt stays live (014).</summary>
+    /// <summary>Unknown is not NotFound: nothing is written and the attempt stays live (011).</summary>
     [Fact]
     public async Task Reconcile_WhenTheLookupGetsNoAnswer_ShouldLeaveTheAttemptUnresolved()
     {

@@ -4,7 +4,7 @@ namespace Encore.Modules.Inventory.Contracts.Events;
 /// Chosen names rather than CLR type names, and payloads separate from the domain events, so
 /// refactoring cannot break consumers; a breaking payload change gets a new <c>.vN</c>. The
 /// payloads spell their JSON names, so a consumer holding only this assembly reads what
-/// Inventory writes. They are read strictly, so a member added to one needs a default (024).
+/// Inventory writes. They are read strictly, so a member added to one needs a default (012).
 /// </summary>
 public static class InventoryEventTypes
 {

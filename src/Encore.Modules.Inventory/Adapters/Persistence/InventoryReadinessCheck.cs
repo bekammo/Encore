@@ -7,7 +7,7 @@ namespace Encore.Modules.Inventory.Adapters.Persistence;
 
 /// <summary>
 /// Unhealthy only for a real outage, since that takes the host out of rotation. The backlog goes
-/// in the description and never fails the check (016, 029).
+/// in the description and never fails the check (013).
 /// </summary>
 internal sealed class InventoryReadinessCheck(
     InventoryDbContext dbContext,
