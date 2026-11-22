@@ -81,7 +81,7 @@ public static class OrdersModule
         }
     }
 
-    // The strangler switch (018): Replace wins over Payments' TryAdd in either registration
+    // The strangler switch (014): Replace wins over Payments' TryAdd in either registration
     // order. No retry policy: a timeout is already a handled state.
     private static void AddPaymentsClient(IServiceCollection services, IConfiguration configuration)
     {

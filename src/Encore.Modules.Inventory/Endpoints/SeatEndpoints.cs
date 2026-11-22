@@ -15,7 +15,7 @@ namespace Encore.Modules.Inventory.Endpoints;
 /// </summary>
 /// <remarks>
 /// The actions go around the order: no price, no payment, no on-sale check. So they are mapped
-/// only when <see cref="ExposeSeatRoutesKey"/> asks for them, which the load harness does (030).
+/// only when <see cref="ExposeSeatRoutesKey"/> asks for them, which the load harness does (007).
 /// </remarks>
 public static class SeatEndpoints
 {

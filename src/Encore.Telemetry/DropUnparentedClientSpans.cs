@@ -4,7 +4,7 @@ using OpenTelemetry.Trace;
 namespace Encore.Telemetry;
 
 /// <summary>
-/// The root of a <see cref="ParentBasedSampler"/> (021), so it judges only spans nothing
+/// The root of a <see cref="ParentBasedSampler"/> (001), so it judges only spans nothing
 /// started. An unparented client span is a background poll's query (outbox claim, expiry
 /// sweep, reconciler): a one-span trace about once a second per job, burying the requests.
 /// Npgsql's metrics still price them.

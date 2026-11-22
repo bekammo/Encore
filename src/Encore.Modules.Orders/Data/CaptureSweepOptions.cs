@@ -6,7 +6,7 @@ public sealed class CaptureSweepOptions
 
     /// <summary>
     /// On by default: without the sweep, an order nobody confirms again would give its seats away
-    /// when its authorisation lapses (025).
+    /// when its authorisation lapses (009).
     /// </summary>
     public bool Enabled { get; set; } = true;
 

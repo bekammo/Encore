@@ -23,10 +23,10 @@ tries to answer with measurements.
 **Where to go from here**
 - [WRITEUP.md](WRITEUP.md) is the story in one sitting: what I built, what broke under load,
   and what that changed.
-- [DECISIONS.md](DECISIONS.md) holds 35 decisions, each with the alternative it beat and what
+- [DECISIONS.md](DECISIONS.md) holds 15 decisions, each with the alternative it beat and what
   it costs. If you only read five: [001][d001] (the thesis), [005][d005] (a rule allowed to
-  fail open), [010][d010] (why the sale sits between authorise and capture), [018][d018] (an
-  extraction that did nothing until a chaos run caught it) and [032][d032] (a regression
+  fail open), [009][d009] (why the sale sits between authorise and capture), [014][d014] (an
+  extraction that did nothing until a chaos run caught it) and [015][d015] (a regression
   found by measuring again).
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) lists every setting, its default and where
   it's set.
@@ -48,7 +48,7 @@ and the baseline digests are committed in [`load/evidence/`](load/evidence/2026-
 
 These are one laptop's numbers. They're good for comparing one run with the next, not as a
 capacity claim: the same code has drifted by about a sixth between sessions on this machine
-alone ([032][d032]). The order invariants don't depend on the laptop, though.
+alone ([015][d015]). The order invariants don't depend on the laptop, though.
 `CheckoutCompositionTests` asserts them on every CI run, and the chaos script exits non-zero
 if any of them breaks.
 
@@ -111,7 +111,7 @@ rows, so layering them would buy nothing.
 module behind three internal routes. One configuration key switches Orders between the
 in-process adapter and the HTTP one, and a composition test runs Orders' HTTP client against
 the real routes. It's a Strangler Fig extraction, and it quietly did nothing until the first
-chaos run caught it ([018][d018]).
+chaos run caught it ([014][d014]).
 
 <details>
 <summary>Solution layout</summary>
@@ -164,10 +164,10 @@ losing or converting a hold always changes exactly one row.
 
 **Checkout** in Orders authorises the payment, sells every seat in one transaction, and only
 then captures. The one step that can't be undone, the sale, sits between two that can
-([010][d010]).
+([009][d009]).
 - Any path that doesn't end with every seat sold voids the authorisation.
 - A capture the gateway refuses leaves the order `payment_due`, not `failed`. The seats stay
-  sold, and the customer's next confirm authorises again and pays ([034][d034]).
+  sold, and the customer's next confirm authorises again and pays ([009][d009]).
 - A cancel releases the seats before it touches the money, so it can never refund a seat it
   couldn't release.
 - Once money has moved, no step is abandoned halfway, even if the client disconnects.
@@ -178,7 +178,7 @@ then captures. The one step that can't be undone, the sale, sits between two tha
   stay held or the authorisation lapses with the seats already sold.
 - A third job ends what a customer abandons. An expiry sweep finds `Pending` orders whose
   holds lapsed, gives their seats back, then voids their money, asking Inventory about each
-  seat first ([031][d031]).
+  seat first ([008][d008]).
 
 ## Running it
 
@@ -255,7 +255,7 @@ On top of the usual layers:
 - **Falsification tests** switch the background jobs off and check that nothing correct
   depended on them.
 - **Composition tests** run the real modules together across each seam, because testing each
-  side of a seam separately turned out not to prove the seam ([018][d018]).
+  side of a seam separately turned out not to prove the seam ([014][d014]).
 
 ## Observability
 
@@ -280,7 +280,7 @@ the seats keep selling.*
 ![One confirm as a single trace across both processes](docs/images/confirm-trace.png)
 
 *One confirm: the authorisation in `encore-payments`, the sale of the seats in `encore-api`,
-then the capture. It's the ordering [010][d010] argues for, visible in a single trace.*
+then the capture. It's the ordering [009][d009] argues for, visible in a single trace.*
 
 ## Trade-offs and limitations
 
@@ -289,7 +289,7 @@ argued in `DECISIONS.md`:
 
 - **No customer authentication.** `X-Client-Id` is a claimed identity: enough to exercise
   contention and per-client rules, not enough to stop abuse. The gap is narrowed in other
-  ways ([030][d030]):
+  ways ([007][d007]):
   - The direct seat routes the load harness drives are off by default.
   - Operator writes need a shared key.
   - Checkout and holds are rate-limited per IP address. That's a floor against one machine,
@@ -299,19 +299,18 @@ argued in `DECISIONS.md`:
   Redis, but it costs about 16% of throughput while Redis is healthy. It's one configuration
   key away, and Redis stays the default ([005][d005]).
 - **Payments' data didn't move.** Payments runs as its own process, but its schema still
-  lives in the shared database ([018][d018]).
+  lives in the shared database ([014][d014]).
 - **No message bus.** Events are delivered in process from the outbox. Cross-process
   delivery, and with it `Payment` domain events, waits for a consumer that needs it
-  ([013][d013]).
+  ([011][d011]).
 - **The payment gateway is simulated.** It can decline, time out, lose requests and refuse a
-  capture, but it never refuses a void ([014][d014]).
+  capture, but it never refuses a void ([011][d011]).
 - **A refused capture can leave seats sold and unpaid.** The order says so (`payment_due`),
   and nothing re-charges the customer unasked. Collecting from someone who never confirms
-  again is an operator's job ([034][d034]).
+  again is an operator's job ([009][d009]).
 - **No deployment.** It runs under Docker Compose on one machine. A cloud deployment would
   add cost without adding evidence: the chaos rig works by stopping containers, which it
-  can't do to managed services, and the invariants hold wherever k6 runs ([026][d026],
-  [035][d035]).
+  can't do to managed services, and the invariants hold wherever k6 runs ([015][d015]).
 
 ## How this was built
 
@@ -329,13 +328,9 @@ merged.
 
 [d001]: DECISIONS.md#001--inventory-is-hexagonal-and-everything-else-is-flat
 [d005]: DECISIONS.md#005--the-hold-cap-is-a-policy-not-an-invariant
-[d010]: DECISIONS.md#010--authorise-sell-capture
-[d013]: DECISIONS.md#013--payment-has-a-state-machine-and-one-live-attempt-per-order
-[d014]: DECISIONS.md#014--a-timed-out-authorisation-is-reconciled-by-asking-the-gateway
-[d018]: DECISIONS.md#018--payments-becomes-a-service-and-a-seam-is-not-proven-by-testing-each-side-of-it
-[d026]: DECISIONS.md#026--why-there-is-no-deployment
-[d030]: DECISIONS.md#030--what-checkout-does-not-guard-is-closed-keyed-or-rate-limited
-[d031]: DECISIONS.md#031--an-abandoned-order-is-expired-by-a-sweep-that-asks-inventory-first
-[d032]: DECISIONS.md#032--a-holds-one-read-counts-its-rows-instead-of-compiling-a-predicate
-[d034]: DECISIONS.md#034--a-refused-capture-leaves-the-order-payment_due-never-failed
-[d035]: DECISIONS.md#035--the-multi-host-run-is-dropped
+[d007]: DECISIONS.md#007--the-http-surface-actions-one-status-rule-and-no-route-around-checkout
+[d008]: DECISIONS.md#008--orders-records-the-expiry-inventory-decides-it
+[d009]: DECISIONS.md#009--authorise-sell-capture-and-a-cancel-runs-it-backwards
+[d011]: DECISIONS.md#011--one-live-payment-attempt-per-order-and-a-timeout-is-settled-by-asking-the-gateway
+[d014]: DECISIONS.md#014--payments-becomes-a-service-and-a-seam-is-not-proven-by-testing-each-side-of-it
+[d015]: DECISIONS.md#015--measure-first-then-break-it-on-purpose

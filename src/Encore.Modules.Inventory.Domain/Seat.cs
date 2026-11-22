@@ -98,7 +98,7 @@ public sealed class Seat
 
     /// <summary>
     /// The sweep's transition, and <see cref="Hold"/>'s reclaim. Only the status changes: the
-    /// lapsed holder pair stays, so a swept seat refuses a sale exactly as an unswept one (023).
+    /// lapsed holder pair stays, so a swept seat refuses a sale exactly as an unswept one (006).
     /// </summary>
     public bool ExpireHold(DateTime utcNow)
     {

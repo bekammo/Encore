@@ -6,7 +6,7 @@ public static class PaymentsServiceApi
 
     /// <summary>
     /// Every success <c>outcome</c> and refusal <c>reason</c>. The client reads an unknown one as
-    /// a timeout, so a spelling the two sides disagree on would fail silently (018).
+    /// a timeout, so a spelling the two sides disagree on would fail silently (014).
     /// </summary>
     public static class Outcomes
     {

@@ -10,7 +10,7 @@ namespace Encore.Modules.Catalog.Endpoints;
 
 /// <summary>
 /// No client identity: the catalogue is public, and writes are the operator's, behind the
-/// operator key (030).
+/// operator key (007).
 /// </summary>
 public static class CatalogEndpoints
 {
@@ -174,7 +174,7 @@ public static class CatalogEndpoints
 
         if (!venueExists)
         {
-            // 409, not 404: the route exists; the venue named in the body does not (008).
+            // 409, not 404: the route exists; the venue named in the body does not (007).
             return CatalogResults.Conflict(
                 context.Request.Path,
                 reason: "venue_not_found",
@@ -237,7 +237,7 @@ public static class CatalogEndpoints
             : TypedResults.Ok(ToResponse(show));
     }
 
-    // Unspecified is refused, not assumed UTC: a guess would put a show on sale at the wrong instant (008).
+    // Unspecified is refused, not assumed UTC: a guess would put a show on sale at the wrong instant (007).
     private static bool TryToUtc(DateTime value, out DateTime utc)
     {
         utc = value.Kind switch
@@ -257,7 +257,7 @@ public static class CatalogEndpoints
             $"{field} must carry a timezone: end it with Z for UTC, or give an offset.",
             "ambiguous_timestamp");
 
-    // Above zero, because Payments refuses to authorise nothing (028). Within numeric(19,4), because
+    // Above zero, because Payments refuses to authorise nothing (009). Within numeric(19,4), because
     // Postgres overflows on a 16th whole digit and silently rounds a 5th decimal away.
     private static bool IsSellablePrice(decimal price) =>
         price is > 0 and < PriceLimit && decimal.Round(price, PriceDecimals) == price;

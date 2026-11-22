@@ -45,7 +45,7 @@ public sealed class ExpiredHoldSweeperTests(InventoryDatabase database)
 
         Assert.Equal(SeatStatus.Available, seat.Status);
 
-        // The lapsed pair stays on record, so the sweep cannot change what a sale answers (023).
+        // The lapsed pair stays on record, so the sweep cannot change what a sale answers (006).
         Assert.Equal(_clientA, seat.HeldByClientId);
         Assert.Equal(LapsedAt + Seat.HoldDuration, seat.HoldExpiresAt);
     }

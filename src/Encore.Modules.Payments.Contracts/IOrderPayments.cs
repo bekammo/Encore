@@ -11,7 +11,7 @@ public interface IOrderPayments
         AuthorizePaymentRequest request,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Called only once the seats are sold (010).</summary>
+    /// <summary>Called only once the seats are sold (009).</summary>
     Task<CapturePaymentResponse> CaptureAsync(
         CapturePaymentRequest request,
         CancellationToken cancellationToken = default);

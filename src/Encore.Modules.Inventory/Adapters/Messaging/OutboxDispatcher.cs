@@ -13,7 +13,7 @@ namespace Encore.Modules.Inventory.Adapters.Messaging;
 /// <summary>
 /// At least once, in no order a consumer may rely on: a failing message is overtaken rather
 /// than blocking the queue, even by a row from its own transaction, and several dispatchers
-/// share the table (024). No seat invariant depends on it running.
+/// share the table (012). No seat invariant depends on it running.
 /// </summary>
 internal sealed class OutboxDispatcher(
     IServiceScopeFactory scopeFactory,
@@ -86,7 +86,7 @@ internal sealed class OutboxDispatcher(
             return 0;
         }
 
-        // Wall clock, not TimeProvider: this bounds how long real row locks are held (016).
+        // Wall clock, not TimeProvider: this bounds how long real row locks are held (012).
         var started = Stopwatch.StartNew();
         var delivered = 0;
 

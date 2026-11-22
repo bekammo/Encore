@@ -504,7 +504,7 @@ public sealed class SeatTests
     }
 
     /// <summary>
-    /// An order must not end Failed or Expired depending on whether the sweep had passed (006, 023).
+    /// An order must not end Failed or Expired depending on whether the sweep had passed (006).
     /// </summary>
     [Theory]
     [InlineData("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", SeatTransitionReason.HoldExpired)]
@@ -535,7 +535,7 @@ public sealed class SeatTests
         Assert.Equal(SeatTransitionReason.NoActiveHold, ex.Reason);
     }
 
-    /// <summary>The lapsed pair on record (023) does not make this an idempotent re-hold.</summary>
+    /// <summary>The lapsed pair on record (006) does not make this an idempotent re-hold.</summary>
     [Fact]
     public void ExpireHold_ThenHoldByTheLapsedHolder_ShouldHoldAfreshWithOneRelease()
     {

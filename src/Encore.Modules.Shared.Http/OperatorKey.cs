@@ -5,7 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Encore.Modules.Shared.Http;
 
 /// <summary>
-/// Guards the operator's writes: venues, events and seat maps (030). A module asks for the filter
+/// Guards the operator's writes: venues, events and seat maps (007). A module asks for the filter
 /// when it maps those routes, so a host that serves them without a key fails at startup rather
 /// than serving them open.
 /// </summary>

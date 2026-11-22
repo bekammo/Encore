@@ -70,7 +70,7 @@ internal sealed class InProcessSeatReservations(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        // All or none (011): every seat sold, or none did and only the refusals count.
+        // All or none (010): every seat sold, or none did and only the refusals count.
         if (result.AllSold)
         {
             InventoryTelemetry.SeatOutcomes.Add(

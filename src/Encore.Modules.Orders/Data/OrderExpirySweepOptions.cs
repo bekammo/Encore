@@ -6,7 +6,7 @@ public sealed class OrderExpirySweepOptions
 
     /// <summary>
     /// On by default: without the sweep, an abandoned order stays <c>Pending</c> for good, blocks
-    /// the customer's next checkout for the event, and keeps its authorisation held (031).
+    /// the customer's next checkout for the event, and keeps its authorisation held (008).
     /// </summary>
     public bool Enabled { get; set; } = true;
 
@@ -16,7 +16,7 @@ public sealed class OrderExpirySweepOptions
 
     /// <summary>
     /// How long past the recorded expiry an order waits, so a confirm that started just before
-    /// the holds lapsed finishes first. Inventory, not this clock, decides each seat (006, 009).
+    /// the holds lapsed finishes first. Inventory, not this clock, decides each seat (006, 008).
     /// </summary>
     public TimeSpan Grace { get; set; } = TimeSpan.FromMinutes(1);
 }

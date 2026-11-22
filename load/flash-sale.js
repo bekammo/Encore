@@ -1,4 +1,4 @@
-// Encore's flash-sale load harness, and the traffic half of the chaos rig (019).
+// Encore's flash-sale load harness, and the traffic half of the chaos rig (015).
 //
 // ConcurrentHoldTests proves one winner per seat; it is the correctness proof and stays
 // the important one. It is not a measurement: it says nothing about the hold path's p99,
@@ -30,8 +30,8 @@
 //   reconciler  checkouts against a gateway that loses answers, while two reconcilers
 //               sweep one table.
 //   orders      multi-seat checkouts, confirmed, cancelled, or both at once. Nothing
-//               is injected; the fault is the customer. Puts 011's all-or-none sale
-//               and 012's cancel under load rather than in a test with hooks.
+//               is injected; the fault is the customer. Puts 010's all-or-none sale
+//               and 009's cancel under load rather than in a test with hooks.
 //
 // This script injects nothing; k6 has no access to the Docker daemon. load/chaos.sh
 // owns the timeline, and gaps between windows keep clock skew from landing a fault in
@@ -42,7 +42,7 @@ import { Counter, Rate, Trend } from 'k6/metrics';
 
 const BASE_URL = __ENV.ENCORE_BASE_URL || 'http://api:8080';
 
-// Venues, events and seat maps are the operator's writes (030). Compose passes the same
+// Venues, events and seat maps are the operator's writes (007). Compose passes the same
 // default to the API, so the two agree unless OPERATOR_API_KEY overrides both.
 const OPERATOR_KEY = __ENV.OPERATOR_KEY || 'local-operator-key';
 
@@ -113,7 +113,7 @@ const RECONCILER_SECONDS = Number(__ENV.RECONCILER_SECONDS || 45);
 //
 // The cancel leaves after a random delay across the confirm's duration. Sent together,
 // a ~11 ms cancel settles every race before a ~320 ms confirm reaches the sale, and the
-// interleaving that matters (012) is a cancel between the sale and the capture.
+// interleaving that matters (009) is a cancel between the sale and the capture.
 const ORDERS_VUS = Number(__ENV.ORDERS_VUS || 10);
 const ORDERS_SECONDS = Number(__ENV.ORDERS_SECONDS || 30);
 const ORDERS_SEATS = Number(__ENV.ORDERS_SEATS || 6000);
@@ -359,7 +359,7 @@ function thresholds() {
 
     // A declaration, and the one that gives the assertion above a control. Without it
     // there is no telling whether 5xx came from the outage or from an overloaded
-    // Postgres in the healthy window (019).
+    // Postgres in the healthy window (015).
     t['unexpected_responses{phase:redis_up}'] = ['count>=0'];
 
     // Oversell, asserted separately per window because each has its own pool.
@@ -384,7 +384,7 @@ function thresholds() {
     t['orders_confirmed{phase:payments_up}'] = ['count>=0'];
     t['confirm_timed_out{phase:payments_up}'] = ['count>=0'];
 
-    // A service that is down must present as a timeout and nothing else (018),
+    // A service that is down must present as a timeout and nothing else (014),
     // asserted under load rather than against a stubbed handler.
     t['confirm_timed_out{phase:payments_down}'] = ['count>0'];
     t['orders_confirmed{phase:payments_down}'] = ['count==0'];
@@ -644,7 +644,7 @@ export function buyStall(data) {
 // that reaches Payments. One seat per order, so no order ends partly.
 //
 // Nothing is retried: a confirm that timed out is exactly the state reconciliation is
-// about (014), and a harness retry would resolve the ambiguity this run observes.
+// about (011), and a harness retry would resolve the ambiguity this run observes.
 function checkout(data) {
   const clientId = uuid();
   const seatId = pick(data.checkout);
@@ -681,7 +681,7 @@ function checkout(data) {
     const status = res.json('status');
 
     if (status === 'awaiting_capture') {
-      // Authorised and sold, capture unanswered (010). Resolved by the next confirm,
+      // Authorised and sold, capture unanswered (009). Resolved by the next confirm,
       // so neither a success nor a fault.
       ordersAwaitingCapture.add(1);
     } else {
@@ -780,7 +780,7 @@ function recordCancel(res) {
 
 // One customer, one order of one to four seats, then one of three endings. Nothing is
 // retried, as in checkout above, except a payment_due: confirming again is the customer's
-// documented next step (034). chaos.sh reads what actually happened from Postgres.
+// documented next step (009). chaos.sh reads what actually happened from Postgres.
 export async function orders(data) {
   const clientId = uuid();
   const seatIds = pickDistinct(data.orders, 1 + Math.floor(Math.random() * 4));

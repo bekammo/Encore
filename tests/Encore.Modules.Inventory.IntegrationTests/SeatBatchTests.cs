@@ -12,7 +12,7 @@ namespace Encore.Modules.Inventory.IntegrationTests;
 
 /// <summary>
 /// A sale writes every seat or none; holds and releases answer per seat but write in one
-/// transaction (011). Seats written together share one <c>xmin</c>, which is how "one
+/// transaction (010). Seats written together share one <c>xmin</c>, which is how "one
 /// transaction" is checked. The database is never emptied, so assertions are scoped to the
 /// test's own seats.
 /// </summary>

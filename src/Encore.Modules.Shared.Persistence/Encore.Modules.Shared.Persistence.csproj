@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Not a module (017): only inert code that names no module or contracts assembly. No
+  <!-- Not a module (013): only inert code that names no module or contracts assembly. No
        ProjectReference; modules reference this, never the reverse. -->
 
   <!-- Hosting abstractions only, not Microsoft.AspNetCore.App: every module references this,

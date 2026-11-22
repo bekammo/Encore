@@ -11,7 +11,7 @@ public sealed class ClientIdEndpointFilter : IEndpointFilter
     public const string HeaderName = "X-Client-Id";
 
     // One key for every module: two copies of this filter on one route read the same header and
-    // store the same value (029).
+    // store the same value (013).
     private const string ItemKey = "Encore.ClientId";
 
     public async ValueTask<object?> InvokeAsync(

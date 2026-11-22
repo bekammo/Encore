@@ -19,7 +19,7 @@ public sealed class PaymentsSchemaTests(PaymentsDatabase database) : IClassFixtu
         Assert.Empty(await context.Database.GetPendingMigrationsAsync());
     }
 
-    /// <summary>TimedOut is in the list on purpose: no answer may mean funds are held (013).</summary>
+    /// <summary>TimedOut is in the list on purpose: no answer may mean funds are held (011).</summary>
     [Theory]
     [InlineData(PaymentStatus.Pending)]
     [InlineData(PaymentStatus.Authorized)]

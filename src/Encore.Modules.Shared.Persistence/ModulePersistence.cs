@@ -10,7 +10,7 @@ public static class ModulePersistence
 
     /// <summary>
     /// Keeps the migrations history in the module's own schema, so extracting a module never
-    /// means unpicking rows from a shared table (017). Each module wraps this as
+    /// means unpicking rows from a shared table (013). Each module wraps this as
     /// <c>Use{Module}Npgsql</c>, so DI, the design-time factory and the tests agree on both.
     /// </summary>
     public static DbContextOptionsBuilder UseModuleNpgsql(

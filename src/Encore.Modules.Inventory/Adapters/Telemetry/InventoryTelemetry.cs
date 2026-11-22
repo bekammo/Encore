@@ -5,12 +5,12 @@ namespace Encore.Modules.Inventory.Adapters.Telemetry;
 
 /// <summary>
 /// BCL instruments only, recorded at the adapters' edges, never in the Domain or the use cases
-/// (021). Static rather than from <c>IMeterFactory</c>: one set per process either way, and the
+/// (001). Static rather than from <c>IMeterFactory</c>: one set per process either way, and the
 /// adapters that record are also built by hand in tests.
 /// </summary>
 internal static class InventoryTelemetry
 {
-    /// <summary>Keeps the <c>Encore.</c> prefix: hosts subscribe to <c>Encore.*</c> (021).</summary>
+    /// <summary>Keeps the <c>Encore.</c> prefix: hosts subscribe to <c>Encore.*</c> (001).</summary>
     public const string Name = "Encore.Inventory";
 
     public static readonly ActivitySource Source = new(Name);

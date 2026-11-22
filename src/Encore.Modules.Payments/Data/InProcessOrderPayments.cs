@@ -7,9 +7,9 @@ using Npgsql;
 namespace Encore.Modules.Payments.Data;
 
 /// <summary>
-/// The row is written before the gateway is called (013): after a crash the next attempt asks
+/// The row is written before the gateway is called (011): after a crash the next attempt asks
 /// again under the same key instead of minting one that could authorise twice. Once the row is
-/// committed, the gateway call and the save of its answer ignore the caller's token (022).
+/// committed, the gateway call and the save of its answer ignore the caller's token (009).
 /// </summary>
 internal sealed class InProcessOrderPayments(
     PaymentsDbContext payments,
@@ -45,7 +45,7 @@ internal sealed class InProcessOrderPayments(
                 break;
 
             // Forced: at the same instant Resume changes nothing, and the write is what lets
-            // xmin order this against another confirm or the reconciler (022).
+            // xmin order this against another confirm or the reconciler (011).
             case PaymentStatus.Pending:
                 payment.Resume(utcNow);
                 _payments.Entry(payment).Property(attempt => attempt.AttemptedAt).IsModified = true;
@@ -210,7 +210,7 @@ internal sealed class InProcessOrderPayments(
         }
 
         // Pending and TimedOut have no reference to void; the reconciler releases whatever they
-        // turn out to hold (014, 022).
+        // turn out to hold (011).
         if (payment?.Status is not PaymentStatus.Authorized)
         {
             return VoidPaymentResponse.NoAuthorization;
